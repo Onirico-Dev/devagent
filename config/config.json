@@ -1,0 +1,8 @@
+{
+  "name": "DevAgent",
+  "version": "0.1.0",
+  "mode": "development",
+  "workspace": "workspace",
+  "transactions": "transactions",
+  "logs": "logs"
+}
