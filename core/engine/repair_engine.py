@@ -14,7 +14,7 @@ class RepairEngine:
     ):
 
         prompt = f"""
-Você é o módulo de reparo do DevAgent.
+Você é o módulo de diagnóstico do DevAgent.
 
 Objetivo original:
 {instruction}
@@ -25,66 +25,71 @@ Erro encontrado:
 Saída dos testes:
 {test_output}
 
-Analise o problema e proponha uma correção concreta.
+Analise tecnicamente a falha.
 
-Retorne SOMENTE JSON válido com exatamente estes campos:
+Você NÃO executa comandos.
+Você NÃO altera arquivos.
+Você NÃO deve inventar caminhos.
+
+Retorne SOMENTE JSON válido, sem markdown,
+com exatamente estes campos:
 
 {{
-  "diagnosis": "causa provável",
-  "correction": "descrição da correção",
-  "risk": "baixo, medio ou alto",
-  "action": "create ou modify",
-  "path": "caminho do arquivo",
-  "content": "conteúdo completo que deve ficar no arquivo"
+  "diagnosis": "causa provável da falha",
+  "correction": "descrição objetiva da correção",
+  "risk": "baixo, medio ou alto"
 }}
 
-Regras:
-
-1. Não execute comandos.
-2. Não invente arquivos desnecessários.
-3. Não altere arquivos fora do objetivo.
-4. Para MODIFY, retorne o conteúdo completo do arquivo.
-5. Para CREATE, retorne o conteúdo completo do novo arquivo.
-6. Se não for possível propor uma correção segura, use:
-   "action": "none"
-7. Nunca use markdown.
-8. Retorne somente JSON.
+Classifique o risco da correção.
 """
 
         response = self.ai.generate(prompt)
 
         try:
-
             result = json.loads(response)
-
         except json.JSONDecodeError:
 
             return {
                 "diagnosis": response,
                 "correction": "",
                 "risk": "alto",
-                "action": "none",
-                "path": "",
-                "content": "",
             }
 
         required = {
             "diagnosis",
             "correction",
             "risk",
-            "action",
-            "path",
-            "content",
         }
 
-        if not required.issubset(result):
+        if not required.issubset(result.keys()):
+
             return {
-                "diagnosis": "Resposta de reparo incompleta.",
+                "diagnosis": (
+                    "Resposta da IA não possui "
+                    "o formato esperado."
+                ),
                 "correction": "",
                 "risk": "alto",
-                "action": "none",
-                "path": "",
-                "content": "",
             }
 
-        return result
+        risk = str(
+            result["risk"]
+        ).lower().strip()
+
+        if risk not in {
+            "baixo",
+            "medio",
+            "alto",
+        }:
+
+            result["risk"] = "alto"
+
+        return {
+            "diagnosis": str(
+                result["diagnosis"]
+            ),
+            "correction": str(
+                result["correction"]
+            ),
+            "risk": result["risk"],
+        }
