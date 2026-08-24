@@ -1,0 +1,55 @@
+class RepairController:
+
+    def __init__(self, max_attempts=3):
+        if max_attempts < 1:
+            raise ValueError(
+                "max_attempts deve ser maior que zero."
+            )
+
+        self.max_attempts = max_attempts
+        self.attempts = {}
+
+    def start(self, transaction_id):
+        self.attempts[transaction_id] = 0
+
+    def can_repair(self, transaction_id):
+        return (
+            self.attempts.get(transaction_id, 0)
+            < self.max_attempts
+        )
+
+    def register_attempt(self, transaction_id):
+
+        if transaction_id not in self.attempts:
+            self.start(transaction_id)
+
+        if not self.can_repair(transaction_id):
+            return False
+
+        self.attempts[transaction_id] += 1
+
+        return True
+
+    def get_attempts(self, transaction_id):
+        return self.attempts.get(
+            transaction_id,
+            0,
+        )
+
+    def remaining(self, transaction_id):
+        return max(
+            0,
+            self.max_attempts
+            - self.get_attempts(transaction_id),
+        )
+
+    def exhausted(self, transaction_id):
+        return not self.can_repair(
+            transaction_id
+        )
+
+    def reset(self, transaction_id):
+        self.attempts.pop(
+            transaction_id,
+            None,
+        )
