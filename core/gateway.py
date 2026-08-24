@@ -5,6 +5,7 @@ from core.executor.transaction_manager import TransactionManager
 from core.executor.test_runner import TestRunner
 from core.executor.git_manager import GitManager
 from core.engine.repair_engine import RepairEngine
+from core.memory.task_history import TaskHistory
 
 
 class DevAgentGateway:
@@ -27,6 +28,13 @@ class DevAgentGateway:
             agent.ai
         )
 
+        self.history = TaskHistory(
+            str(
+                self.transactions.root
+                / "tasks.json"
+            )
+        )
+
     def create_task(self, instruction):
 
         result = self.agent.process(
@@ -44,6 +52,12 @@ class DevAgentGateway:
             )
         )
 
+        self.history.create(
+            approval_id=approval_id,
+            instruction=instruction,
+            plan=result,
+        )
+
         return {
             "approval_id": approval_id,
             "status": "pending",
@@ -51,6 +65,11 @@ class DevAgentGateway:
         }
 
     def approve(self, approval_id):
+
+        self.history.update(
+            approval_id,
+            status="approved",
+        )
 
         request = self.supervisor.approve(
             approval_id
@@ -68,15 +87,19 @@ class DevAgentGateway:
             transaction
         )
 
+        self.history.update(
+            approval_id,
+            status="executing",
+            transaction_id=(
+                transaction.transaction_id
+            ),
+        )
+
         repair_attempts = 0
 
         try:
 
             while True:
-
-                transaction.status = (
-                    transaction.status
-                )
 
                 for change in transaction.changes:
 
@@ -108,6 +131,11 @@ class DevAgentGateway:
                             change.path
                         )
 
+                self.history.update(
+                    approval_id,
+                    status="testing",
+                )
+
                 test_result = self.tests.run(
                     [
                         change.path
@@ -122,6 +150,21 @@ class DevAgentGateway:
                             transaction.transaction_id,
                             instruction,
                         )
+                    )
+
+                    self.history.update(
+                        approval_id,
+                        status="committed",
+                        transaction_id=(
+                            transaction.transaction_id
+                        ),
+                        extra={
+                            "tests": test_result,
+                            "git": git_result,
+                            "repair_attempts": (
+                                repair_attempts
+                            ),
+                        },
                     )
 
                     return {
@@ -145,6 +188,17 @@ class DevAgentGateway:
                 ):
                     self.transactions.rollback(
                         transaction
+                    )
+
+                    self.history.update(
+                        approval_id,
+                        status="rolled_back",
+                        extra={
+                            "tests": test_result,
+                            "repair_attempts": (
+                                repair_attempts
+                            ),
+                        },
                     )
 
                     return {
@@ -183,6 +237,18 @@ class DevAgentGateway:
                         transaction
                     )
 
+                    self.history.update(
+                        approval_id,
+                        status="rolled_back",
+                        extra={
+                            "tests": test_result,
+                            "repair": diagnosis,
+                            "repair_attempts": (
+                                repair_attempts
+                            ),
+                        },
+                    )
+
                     return {
                         "approval_id": approval_id,
                         "status": "rolled_back",
@@ -200,6 +266,23 @@ class DevAgentGateway:
 
                     self.transactions.rollback(
                         transaction
+                    )
+
+                    self.history.update(
+                        approval_id,
+                        status="rolled_back",
+                        extra={
+                            "tests": test_result,
+                            "repair": {
+                                **diagnosis,
+                                "status": (
+                                    "high_risk_blocked"
+                                ),
+                            },
+                            "repair_attempts": (
+                                repair_attempts
+                            ),
+                        },
                     )
 
                     return {
@@ -224,6 +307,23 @@ class DevAgentGateway:
                     transaction
                 )
 
+                self.history.update(
+                    approval_id,
+                    status="rolled_back",
+                    extra={
+                        "tests": test_result,
+                        "repair": {
+                            **diagnosis,
+                            "status": (
+                                "proposal_requires_next_step"
+                            ),
+                        },
+                        "repair_attempts": (
+                            repair_attempts
+                        ),
+                    },
+                )
+
                 return {
                     "approval_id": approval_id,
                     "status": "rolled_back",
@@ -242,7 +342,7 @@ class DevAgentGateway:
                     },
                 }
 
-        except Exception:
+        except Exception as error:
 
             try:
                 self.transactions.rollback(
@@ -251,10 +351,40 @@ class DevAgentGateway:
             except Exception:
                 pass
 
+            self.history.update(
+                approval_id,
+                status="failed",
+                extra={
+                    "error": str(error),
+                    "repair_attempts": (
+                        repair_attempts
+                    ),
+                },
+            )
+
             raise
 
     def reject(self, approval_id):
 
-        return self.supervisor.reject(
+        result = self.supervisor.reject(
             approval_id
         )
+
+        self.history.update(
+            approval_id,
+            status="rejected",
+        )
+
+        return result
+
+    def list_tasks(self):
+
+        return self.history.list_all()
+
+    def get_task(self, task_id):
+
+        return self.history.get(task_id)
+
+    def latest_task(self):
+
+        return self.history.latest()
