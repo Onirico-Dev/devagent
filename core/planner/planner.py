@@ -8,7 +8,7 @@ class Planner:
 
         if command.action == "create":
 
-            content = None
+            content = ""
 
             instruction_lower = command.instruction.lower()
 
