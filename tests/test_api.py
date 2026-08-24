@@ -165,3 +165,58 @@ def test_full_task_flow():
 
         if os.path.exists("api_teste.py"):
             os.remove("api_teste.py")
+
+
+def test_reject_task():
+    server, _ = start_server()
+
+    try:
+        status, created = request(
+            server,
+            "POST",
+            "/plan",
+            {
+                "instruction": (
+                    'Crie rejeitado.py contendo '
+                    'print("NÃO DEVE EXECUTAR")'
+                )
+            },
+        )
+
+        assert status == 200
+        assert created["status"] == "pending"
+
+        approval_id = created["approval_id"]
+
+        status, rejected = request(
+            server,
+            "POST",
+            f"/reject/{approval_id}",
+        )
+
+        assert status == 200
+        assert rejected["status"] == "rejected"
+
+        status, task = request(
+            server,
+            "GET",
+            f"/tasks/{approval_id}",
+        )
+
+        assert status == 200
+        assert task["status"] == "rejected"
+
+        import os
+
+        assert not os.path.exists(
+            "rejeitado.py"
+        )
+
+    finally:
+        server.shutdown()
+        server.server_close()
+
+        import os
+
+        if os.path.exists("rejeitado.py"):
+            os.remove("rejeitado.py")
