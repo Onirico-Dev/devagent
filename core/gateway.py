@@ -3,6 +3,7 @@ from core.supervisor import Supervisor
 from core.executor.safe_executor import SafeExecutor
 from core.executor.transaction_manager import TransactionManager
 from core.executor.test_runner import TestRunner
+from core.executor.git_manager import GitManager
 
 
 class DevAgentGateway:
@@ -18,6 +19,7 @@ class DevAgentGateway:
         self.executor = SafeExecutor(root)
         self.transactions = TransactionManager(root)
         self.test_runner = TestRunner(root)
+        self.git = GitManager(root)
 
     def create_task(self, instruction):
 
@@ -59,7 +61,7 @@ class DevAgentGateway:
             transaction
         )
 
-        # Backup dos arquivos que já existem.
+        # Backup dos arquivos existentes.
         for change in transaction.changes:
 
             if change.change_type.value in {
@@ -69,27 +71,27 @@ class DevAgentGateway:
 
                 self.transactions.backup_file(
                     transaction,
-                    change.path
+                    change.path,
                 )
 
-        # Registrar arquivos que serão criados.
+        # Registrar arquivos novos.
         for change in transaction.changes:
 
             if change.change_type.value == "create":
 
                 self.transactions.register_created(
                     transaction,
-                    change.path
+                    change.path,
                 )
 
         try:
 
-            # Execução
+            # 1. Executar
             transaction = self.executor.execute(
                 transaction
             )
 
-            # Testes
+            # 2. Testar
             test_result = self.test_runner.run(
                 [
                     change.path
@@ -97,16 +99,21 @@ class DevAgentGateway:
                 ]
             )
 
-            if test_result["success"]:
+            # 3. Falha → rollback
+            if not test_result["success"]:
+
+                transaction = self.transactions.rollback(
+                    transaction
+                )
 
                 return {
                     "approval_id": approval_id,
-                    "status": "committed",
+                    "status": "rolled_back",
                     "transaction_id": (
                         transaction.transaction_id
                     ),
                     "tests": {
-                        "success": True,
+                        "success": False,
                         "returncode": (
                             test_result["returncode"]
                         ),
@@ -119,19 +126,20 @@ class DevAgentGateway:
                     },
                 }
 
-            # Testes falharam.
-            transaction = self.transactions.rollback(
-                transaction
+            # 4. Testes passaram → commit Git
+            git_result = self.git.commit_transaction(
+                transaction.transaction_id,
+                instruction,
             )
 
             return {
                 "approval_id": approval_id,
-                "status": "rolled_back",
+                "status": "committed",
                 "transaction_id": (
                     transaction.transaction_id
                 ),
                 "tests": {
-                    "success": False,
+                    "success": True,
                     "returncode": (
                         test_result["returncode"]
                     ),
@@ -142,13 +150,30 @@ class DevAgentGateway:
                         test_result["stderr"]
                     ),
                 },
+                "git": git_result,
             }
 
         except Exception as exc:
 
-            transaction = self.transactions.rollback(
-                transaction
-            )
+            try:
+
+                transaction = self.transactions.rollback(
+                    transaction
+                )
+
+            except Exception as rollback_error:
+
+                return {
+                    "approval_id": approval_id,
+                    "status": "failed",
+                    "transaction_id": (
+                        transaction.transaction_id
+                    ),
+                    "error": str(exc),
+                    "rollback_error": str(
+                        rollback_error
+                    ),
+                }
 
             return {
                 "approval_id": approval_id,
