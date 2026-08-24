@@ -1,112 +1,31 @@
-from pathlib import Path
-
 from core.security import SecurityPolicy
 from core.supervisor import Supervisor
 from core.executor.safe_executor import SafeExecutor
 from core.executor.transaction_manager import TransactionManager
 from core.executor.test_runner import TestRunner
 from core.executor.git_manager import GitManager
-from core.engine.repair_executor import RepairExecutor
-from core.engine.repair_controller import RepairController
+from core.engine.repair_engine import RepairEngine
 
 
 class DevAgentGateway:
 
-    def __init__(self, agent, root="."):
+    MAX_REPAIR_ATTEMPTS = 2
 
+    def __init__(self, agent, root="."):
         self.agent = agent
-        self.root = Path(root).resolve()
+        self.root = root
 
         self.supervisor = Supervisor()
+        self.security = SecurityPolicy(root)
 
-        self.security = SecurityPolicy(
-            str(self.root)
+        self.executor = SafeExecutor(root)
+        self.transactions = TransactionManager(root)
+        self.tests = TestRunner(root)
+        self.git = GitManager(root)
+
+        self.repair_engine = RepairEngine(
+            agent.ai
         )
-
-        self.executor = SafeExecutor(
-            str(self.root)
-        )
-
-        self.transaction_manager = (
-            TransactionManager(
-                str(self.root)
-            )
-        )
-
-        self.test_runner = TestRunner(
-            str(self.root)
-        )
-
-        self.git = GitManager(
-            str(self.root)
-        )
-
-        self.repair_controller = (
-            RepairController(
-                max_attempts=3
-            )
-        )
-
-        self.repair_executor = (
-            RepairExecutor(
-                security=self.security,
-                transaction_manager=self.transaction_manager,
-                executor=self.executor,
-                test_runner=self.test_runner,
-            )
-        )
-
-        self.events_file = (
-            self.root
-            / "transactions"
-            / "events.log"
-        )
-
-        self.events_file.parent.mkdir(
-            parents=True,
-            exist_ok=True
-        )
-
-    # ---------------------------------------------------------
-    # LOG
-    # ---------------------------------------------------------
-
-    def _log(self, event, **data):
-
-        parts = [event]
-
-        for key, value in data.items():
-
-            value = str(value).replace(
-                "\n",
-                " "
-            )
-
-            parts.append(
-                f"{key}={value}"
-            )
-
-        line = " ".join(parts)
-
-        with self.events_file.open(
-            "a",
-            encoding="utf-8"
-        ) as file:
-
-            from datetime import datetime
-
-            timestamp = (
-                datetime.now()
-                .isoformat(timespec="seconds")
-            )
-
-            file.write(
-                f"{timestamp} {line}\n"
-            )
-
-    # ---------------------------------------------------------
-    # CREATE TASK
-    # ---------------------------------------------------------
 
     def create_task(self, instruction):
 
@@ -115,7 +34,6 @@ class DevAgentGateway:
         )
 
         for change in result["changes"]:
-
             self.security.validate_path(
                 change["path"]
             )
@@ -126,21 +44,11 @@ class DevAgentGateway:
             )
         )
 
-        self._log(
-            "task.created",
-            approval_id=approval_id,
-            instruction=instruction,
-        )
-
         return {
             "approval_id": approval_id,
             "status": "pending",
             "plan": result,
         }
-
-    # ---------------------------------------------------------
-    # APPROVAL
-    # ---------------------------------------------------------
 
     def approve(self, approval_id):
 
@@ -148,382 +56,205 @@ class DevAgentGateway:
             approval_id
         )
 
-        plan = request["plan"]
-
-        instruction = plan[
+        instruction = request["plan"][
             "instruction"
         ]
 
-        self._log(
-            "task.approved",
-            approval_id=approval_id,
+        transaction = self.agent.build_transaction(
+            instruction
         )
 
-        transaction = (
-            self.agent.build_transaction(
-                instruction
-            )
+        transaction = self.transactions.begin(
+            transaction
         )
 
-        transaction = (
-            self.transaction_manager.begin(
-                transaction
-            )
-        )
-
-        transaction_id = (
-            transaction.transaction_id
-        )
-
-        self.repair_controller.start(
-            transaction_id
-        )
-
-        self._log(
-            "transaction.executing",
-            transaction=transaction_id,
-        )
+        repair_attempts = 0
 
         try:
 
-            # -------------------------------------------------
-            # PREPARAÇÃO DO BACKUP
-            # -------------------------------------------------
+            while True:
 
-            for change in transaction.changes:
-
-                self.security.validate_path(
-                    change.path
+                transaction.status = (
+                    transaction.status
                 )
 
-                if (
-                    change.change_type.value
-                    == "modify"
-                ):
+                for change in transaction.changes:
 
-                    self.transaction_manager.backup_file(
-                        transaction,
-                        change.path,
+                    self.security.validate_path(
+                        change.path
                     )
 
-                elif (
-                    change.change_type.value
-                    == "create"
-                ):
+                    if (
+                        change.change_type.value
+                        != "create"
+                    ):
+                        self.transactions.backup_file(
+                            transaction,
+                            change.path
+                        )
 
-                    self.transaction_manager.register_created(
-                        transaction,
-                        change.path,
-                    )
-
-            # -------------------------------------------------
-            # PRIMEIRA EXECUÇÃO
-            # -------------------------------------------------
-
-            transaction = (
                 self.executor.execute(
                     transaction
                 )
-            )
 
-            self._log(
-                "transaction.executed",
-                transaction=transaction_id,
-            )
+                for change in transaction.changes:
 
-            # -------------------------------------------------
-            # TESTE
-            # -------------------------------------------------
+                    if (
+                        change.change_type.value
+                        == "create"
+                    ):
+                        self.transactions.register_created(
+                            transaction,
+                            change.path
+                        )
 
-            self._log(
-                "tests.started",
-                transaction=transaction_id,
-            )
-
-            test_result = (
-                self.test_runner.run(
+                test_result = self.tests.run(
                     [
                         change.path
-                        for change
-                        in transaction.changes
+                        for change in transaction.changes
                     ]
                 )
-            )
 
-            if test_result["success"]:
-
-                self._log(
-                    "tests.passed",
-                    transaction=transaction_id,
-                )
-
-                transaction.metadata[
-                    "tests"
-                ] = test_result
-
-                git_result = (
-                    self.git.commit_transaction(
-                        transaction_id,
-                        instruction,
-                    )
-                )
-
-                self._log(
-                    "transaction.committed",
-                    transaction=transaction_id,
-                )
-
-                return {
-                    "approval_id": approval_id,
-                    "status": "committed",
-                    "transaction_id": transaction_id,
-                    "tests": test_result,
-                    "git": git_result,
-                }
-
-            # -------------------------------------------------
-            # PRIMEIRA FALHA
-            # -------------------------------------------------
-
-            self._log(
-                "tests.failed",
-                transaction=transaction_id,
-                returncode=test_result[
-                    "returncode"
-                ],
-            )
-
-            last_error = (
-                test_result.get(
-                    "stderr",
-                    ""
-                )
-                or test_result.get(
-                    "stdout",
-                    ""
-                )
-            )
-
-            repair_results = []
-
-            # -------------------------------------------------
-            # CICLO DE REPARO
-            # -------------------------------------------------
-
-            while self.repair_controller.can_repair(
-                transaction_id
-            ):
-
-                allowed = (
-                    self.repair_controller.register_attempt(
-                        transaction_id
-                    )
-                )
-
-                if not allowed:
-                    break
-
-                attempt = (
-                    self.repair_controller.get_attempts(
-                        transaction_id
-                    )
-                )
-
-                self._log(
-                    "repair.started",
-                    transaction=transaction_id,
-                    attempt=attempt,
-                )
-
-                diagnosis = (
-                    self.agent.analyze_failure(
-                        instruction=instruction,
-                        error=last_error,
-                        test_output=test_result,
-                    )
-                )
-
-                repair_results.append(
-                    {
-                        "attempt": attempt,
-                        "diagnosis": diagnosis,
-                    }
-                )
-
-                if diagnosis.get(
-                    "action"
-                ) == "none":
-
-                    self._log(
-                        "repair.unavailable",
-                        transaction=transaction_id,
-                        attempt=attempt,
-                    )
-
-                    break
-
-                repair_result = (
-                    self.repair_executor.execute_repair(
-                        diagnosis,
-                        instruction,
-                    )
-                )
-
-                repair_results[-1][
-                    "result"
-                ] = repair_result
-
-                if repair_result[
-                    "success"
-                ]:
-
-                    self._log(
-                        "repair.succeeded",
-                        transaction=transaction_id,
-                        attempt=attempt,
-                    )
+                if test_result["success"]:
 
                     git_result = (
                         self.git.commit_transaction(
-                            transaction_id,
+                            transaction.transaction_id,
                             instruction,
                         )
-                    )
-
-                    self._log(
-                        "transaction.committed",
-                        transaction=transaction_id,
                     )
 
                     return {
                         "approval_id": approval_id,
                         "status": "committed",
-                        "transaction_id": transaction_id,
-                        "tests": repair_result[
-                            "tests"
-                        ],
-                        "repairs": repair_results,
+                        "transaction_id": (
+                            transaction.transaction_id
+                        ),
+                        "tests": test_result,
                         "git": git_result,
+                        "repair_attempts": (
+                            repair_attempts
+                        ),
                     }
 
-                self._log(
-                    "repair.failed",
-                    transaction=transaction_id,
-                    attempt=attempt,
-                )
+                repair_attempts += 1
 
-                last_error = (
-                    repair_result.get(
-                        "error",
-                        ""
-                    )
-                    or str(
-                        repair_result.get(
-                            "tests",
-                            {}
-                        )
-                    )
-                )
-
-                test_result = (
-                    repair_result.get(
-                        "tests",
-                        test_result,
-                    )
-                )
-
-            # -------------------------------------------------
-            # LIMITE ATINGIDO OU REPARO IMPOSSÍVEL
-            # -------------------------------------------------
-
-            transaction = (
-                self.transaction_manager.rollback(
-                    transaction
-                )
-            )
-
-            self._log(
-                "transaction.rolled_back",
-                transaction=transaction_id,
-            )
-
-            return {
-                "approval_id": approval_id,
-                "status": "rolled_back",
-                "transaction_id": transaction_id,
-                "tests": test_result,
-                "repairs": repair_results,
-                "message": (
-                    "A execução falhou e o DevAgent "
-                    "não conseguiu corrigir o problema "
-                    "dentro do limite permitido."
-                ),
-            }
-
-        except Exception as error:
-
-            self._log(
-                "transaction.failed",
-                transaction=transaction_id,
-                error=str(error),
-            )
-
-            try:
-
-                transaction = (
-                    self.transaction_manager.rollback(
+                if (
+                    repair_attempts
+                    > self.MAX_REPAIR_ATTEMPTS
+                ):
+                    self.transactions.rollback(
                         transaction
                     )
+
+                    return {
+                        "approval_id": approval_id,
+                        "status": "rolled_back",
+                        "transaction_id": (
+                            transaction.transaction_id
+                        ),
+                        "tests": test_result,
+                        "repair_attempts": (
+                            repair_attempts
+                        ),
+                        "repair": {
+                            "status": "limit_reached"
+                        },
+                    }
+
+                diagnosis = (
+                    self.repair_engine.analyze_failure(
+                        instruction=instruction,
+                        error=test_result.get(
+                            "stderr",
+                            ""
+                        ),
+                        test_output=test_result.get(
+                            "stdout",
+                            ""
+                        ),
+                    )
                 )
 
-                self._log(
-                    "transaction.rolled_back",
-                    transaction=transaction_id,
+                if not diagnosis.get(
+                    "correction"
+                ):
+                    self.transactions.rollback(
+                        transaction
+                    )
+
+                    return {
+                        "approval_id": approval_id,
+                        "status": "rolled_back",
+                        "transaction_id": (
+                            transaction.transaction_id
+                        ),
+                        "tests": test_result,
+                        "repair_attempts": (
+                            repair_attempts
+                        ),
+                        "repair": diagnosis,
+                    }
+
+                if diagnosis.get("risk") == "alto":
+
+                    self.transactions.rollback(
+                        transaction
+                    )
+
+                    return {
+                        "approval_id": approval_id,
+                        "status": "rolled_back",
+                        "transaction_id": (
+                            transaction.transaction_id
+                        ),
+                        "tests": test_result,
+                        "repair_attempts": (
+                            repair_attempts
+                        ),
+                        "repair": {
+                            **diagnosis,
+                            "status": (
+                                "high_risk_blocked"
+                            ),
+                        },
+                    }
+
+                self.transactions.rollback(
+                    transaction
                 )
 
                 return {
                     "approval_id": approval_id,
                     "status": "rolled_back",
-                    "transaction_id": transaction_id,
-                    "error": str(error),
+                    "transaction_id": (
+                        transaction.transaction_id
+                    ),
+                    "tests": test_result,
+                    "repair_attempts": (
+                        repair_attempts
+                    ),
+                    "repair": {
+                        **diagnosis,
+                        "status": (
+                            "proposal_requires_next_step"
+                        ),
+                    },
                 }
 
-            except Exception as rollback_error:
+        except Exception:
 
-                self._log(
-                    "rollback.failed",
-                    transaction=transaction_id,
-                    error=str(
-                        rollback_error
-                    ),
+            try:
+                self.transactions.rollback(
+                    transaction
                 )
+            except Exception:
+                pass
 
-                return {
-                    "approval_id": approval_id,
-                    "status": "failed",
-                    "transaction_id": transaction_id,
-                    "error": str(error),
-                    "rollback_error": str(
-                        rollback_error
-                    ),
-                }
-
-    # ---------------------------------------------------------
-    # REJECT
-    # ---------------------------------------------------------
+            raise
 
     def reject(self, approval_id):
 
-        result = self.supervisor.reject(
+        return self.supervisor.reject(
             approval_id
         )
-
-        self._log(
-            "task.rejected",
-            approval_id=approval_id,
-        )
-
-        return {
-            "approval_id": approval_id,
-            "status": "rejected",
-        }
