@@ -37,6 +37,7 @@ def request(
     method,
     path,
     body=None,
+    raw_body=None,
 ):
     connection = HTTPConnection(
         "127.0.0.1",
@@ -44,10 +45,13 @@ def request(
     )
 
     headers = {}
-
     encoded_body = None
 
-    if body is not None:
+    if raw_body is not None:
+        encoded_body = raw_body.encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    elif body is not None:
         encoded_body = json.dumps(
             body
         ).encode("utf-8")
@@ -64,7 +68,6 @@ def request(
     )
 
     response = connection.getresponse()
-
     raw = response.read()
 
     connection.close()
@@ -270,6 +273,212 @@ def test_rollback_task(isolated_project):
         assert not os.path.exists(
             "api_falha.py"
         )
+
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_plan_without_instruction():
+    server, _ = start_server()
+
+    try:
+        status, data = request(
+            server,
+            "POST",
+            "/plan",
+            {}
+        )
+
+        assert status == 400
+        assert data["error"] == (
+            "Campo 'instruction' é obrigatório"
+        )
+
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_plan_with_invalid_json():
+    server, _ = start_server()
+
+    try:
+        status, data = request(
+            server,
+            "POST",
+            "/plan",
+            raw_body="{isso não é JSON}"
+        )
+
+        assert status == 400
+        assert data["error"] == "JSON inválido"
+
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_get_unknown_task():
+    server, _ = start_server()
+
+    try:
+        status, data = request(
+            server,
+            "GET",
+            "/tasks/999999"
+        )
+
+        assert status == 404
+        assert data["error"] == "Tarefa não encontrada"
+
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_approve_unknown_task():
+    server, _ = start_server()
+
+    try:
+        status, data = request(
+            server,
+            "POST",
+            "/approve/999999"
+        )
+
+        assert status == 404
+        assert data["error"] == (
+            "Tarefa não encontrada."
+        )
+
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_reject_unknown_task():
+    server, _ = start_server()
+
+    try:
+        status, data = request(
+            server,
+            "POST",
+            "/reject/999999"
+        )
+
+        assert status == 404
+        assert data["error"] == (
+            "Solicitação não encontrada."
+        )
+
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_approve_already_rejected_task():
+    server, _ = start_server()
+
+    try:
+        status, created = request(
+            server,
+            "POST",
+            "/plan",
+            {
+                "instruction": (
+                    "Crie teste_conflito.py "
+                    'contendo print("OK")'
+                )
+            }
+        )
+
+        assert status == 200
+
+        approval_id = created["approval_id"]
+
+        status, rejected = request(
+            server,
+            "POST",
+            f"/reject/{approval_id}"
+        )
+
+        assert status == 200
+        assert rejected["status"] == "rejected"
+
+        status, data = request(
+            server,
+            "POST",
+            f"/approve/{approval_id}"
+        )
+
+        assert status == 409
+        assert data["error"] == (
+            "Solicitação não está pendente."
+        )
+
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_reject_already_rejected_task():
+    server, _ = start_server()
+
+    try:
+        status, created = request(
+            server,
+            "POST",
+            "/plan",
+            {
+                "instruction": (
+                    "Crie teste_conflito.py "
+                    'contendo print("OK")'
+                )
+            }
+        )
+
+        assert status == 200
+
+        approval_id = created["approval_id"]
+
+        status, rejected = request(
+            server,
+            "POST",
+            f"/reject/{approval_id}"
+        )
+
+        assert status == 200
+        assert rejected["status"] == "rejected"
+
+        status, data = request(
+            server,
+            "POST",
+            f"/reject/{approval_id}"
+        )
+
+        assert status == 409
+        assert data["error"] == (
+            "Solicitação não está pendente."
+        )
+
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_method_not_allowed():
+    server, _ = start_server()
+
+    try:
+        status, data = request(
+            server,
+            "DELETE",
+            "/health"
+        )
+
+        assert status == 405
+        assert data["error"] == "Método não permitido"
 
     finally:
         server.shutdown()
