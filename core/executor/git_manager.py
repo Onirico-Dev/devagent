@@ -64,9 +64,18 @@ class GitManager:
             f"{instruction}"
         )
 
+        if not self.status().strip():
+
+            return {
+                "transaction_id": transaction_id,
+                "message": message,
+                "status": "no_changes",
+            }
+
         self.commit(message)
 
         return {
             "transaction_id": transaction_id,
             "message": message,
+            "status": "committed",
         }
