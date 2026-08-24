@@ -31,6 +31,7 @@ class DevAgentGateway:
         self.history = TaskHistory(
             str(
                 self.transactions.root
+                / "transactions"
                 / "tasks.json"
             )
         )
