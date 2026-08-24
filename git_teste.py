@@ -1,0 +1,1 @@
+print("Git automático funcionando")
