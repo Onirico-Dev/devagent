@@ -220,3 +220,60 @@ def test_reject_task():
 
         if os.path.exists("rejeitado.py"):
             os.remove("rejeitado.py")
+
+
+def test_rollback_task():
+    server, _ = start_server()
+
+    try:
+        status, created = request(
+            server,
+            "POST",
+            "/plan",
+            {
+                "instruction": (
+                    "Crie api_falha.py contendo "
+                    "isto não é Python válido"
+                )
+            },
+        )
+
+        assert status == 200
+        assert created["status"] == "pending"
+
+        approval_id = created["approval_id"]
+
+        status, result = request(
+            server,
+            "POST",
+            f"/approve/{approval_id}",
+        )
+
+        assert status == 200
+        assert result["status"] == "rolled_back"
+        assert result["tests"]["success"] is False
+        assert result["repair_attempts"] >= 1
+
+        status, task = request(
+            server,
+            "GET",
+            f"/tasks/{approval_id}",
+        )
+
+        assert status == 200
+        assert task["status"] == "rolled_back"
+
+        import os
+
+        assert not os.path.exists(
+            "api_falha.py"
+        )
+
+    finally:
+        server.shutdown()
+        server.server_close()
+
+        import os
+
+        if os.path.exists("api_falha.py"):
+            os.remove("api_falha.py")
