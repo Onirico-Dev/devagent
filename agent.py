@@ -10,15 +10,22 @@ from core.schemas.models import Transaction
 class DevAgent:
 
     def __init__(self, root="."):
+
         self.root = root
-        self.pipeline = DevAgentPipeline(root)
         self.session = Session()
 
         self.ai = self._create_ai_adapter()
 
+        self.pipeline = DevAgentPipeline(
+            root=root,
+            ai_adapter=self.ai,
+        )
+
     def _create_ai_adapter(self):
 
-        api_key = os.getenv("GROQ_API_KEY")
+        api_key = os.getenv(
+            "GROQ_API_KEY"
+        )
 
         if api_key:
             return GroqAdapter(
@@ -50,6 +57,7 @@ class DevAgent:
             result["changes"].append({
                 "type": change.change_type.value,
                 "path": change.path,
+                "content": change.content,
                 "reason": change.reason,
             })
 
@@ -59,7 +67,10 @@ class DevAgent:
 
         return result
 
-    def build_transaction(self, instruction):
+    def build_transaction(
+        self,
+        instruction,
+    ):
 
         plan = self.pipeline.process(
             instruction
