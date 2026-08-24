@@ -8,9 +8,20 @@ class Planner:
 
         if command.action == "create":
 
+            content = None
+
+            instruction_lower = command.instruction.lower()
+
+            if instruction_lower.startswith("contendo "):
+                content = command.instruction[9:]
+
+            elif instruction_lower.startswith("com conteúdo "):
+                content = command.instruction[13:]
+
             change = Change(
                 change_type=ChangeType.CREATE,
                 path=command.target,
+                content=content,
                 reason=command.instruction,
             )
 
@@ -26,6 +37,7 @@ class Planner:
             change = Change(
                 change_type=ChangeType.MODIFY,
                 path=command.target,
+                content=command.instruction,
                 reason=command.instruction,
             )
 
@@ -57,4 +69,3 @@ class Planner:
             tests=[],
             risks=[],
         )
-

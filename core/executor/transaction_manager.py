@@ -11,22 +11,45 @@ from core.schemas.models import (
 class TransactionManager:
 
     def __init__(self, root=".", backup_dir="transactions"):
+
         self.root = Path(root).resolve()
-        self.backup_dir = Path(backup_dir).resolve()
+        self.backup_dir = (
+            self.root / backup_dir
+        ).resolve()
 
     def begin(self, transaction):
-        transaction.transaction_id = str(uuid.uuid4())
 
-        backup = self.backup_dir / transaction.transaction_id
-        backup.mkdir(parents=True, exist_ok=True)
+        transaction.transaction_id = str(
+            uuid.uuid4()
+        )
 
-        transaction.metadata["backup"] = str(backup)
+        backup = (
+            self.backup_dir /
+            transaction.transaction_id
+        )
+
+        backup.mkdir(
+            parents=True,
+            exist_ok=True
+        )
+
+        transaction.metadata["backup"] = str(
+            backup
+        )
+
+        transaction.metadata["created"] = []
 
         return transaction
 
-    def backup_file(self, transaction, relative_path):
+    def backup_file(
+        self,
+        transaction,
+        relative_path
+    ):
 
-        source = (self.root / relative_path).resolve()
+        source = (
+            self.root / relative_path
+        ).resolve()
 
         if not source.exists():
             return
@@ -35,13 +58,29 @@ class TransactionManager:
             transaction.metadata["backup"]
         )
 
-        destination = backup_root / relative_path
+        destination = (
+            backup_root / relative_path
+        )
+
         destination.parent.mkdir(
             parents=True,
             exist_ok=True
         )
 
-        shutil.copy2(source, destination)
+        shutil.copy2(
+            source,
+            destination
+        )
+
+    def register_created(
+        self,
+        transaction,
+        relative_path
+    ):
+
+        transaction.metadata[
+            "created"
+        ].append(relative_path)
 
     def rollback(self, transaction):
 
@@ -49,31 +88,51 @@ class TransactionManager:
             transaction.metadata["backup"]
         )
 
-        if not backup_root.exists():
-            transaction.status = TransactionStatus.ROLLED_BACK
-            return transaction
+        # Remove arquivos que foram criados
+        # durante a transação.
+        for relative_path in transaction.metadata.get(
+            "created",
+            []
+        ):
 
-        for backup_file in backup_root.rglob("*"):
+            target = (
+                self.root / relative_path
+            ).resolve()
 
-            if not backup_file.is_file():
-                continue
+            if target.exists() and target.is_file():
 
-            relative = backup_file.relative_to(
-                backup_root
-            )
+                target.unlink()
 
-            destination = self.root / relative
+        # Restaura arquivos antigos.
+        if backup_root.exists():
 
-            destination.parent.mkdir(
-                parents=True,
-                exist_ok=True
-            )
+            for backup_file in backup_root.rglob("*"):
 
-            shutil.copy2(
-                backup_file,
-                destination
-            )
+                if not backup_file.is_file():
+                    continue
 
-        transaction.status = TransactionStatus.ROLLED_BACK
+                relative = (
+                    backup_file.relative_to(
+                        backup_root
+                    )
+                )
+
+                destination = (
+                    self.root / relative
+                )
+
+                destination.parent.mkdir(
+                    parents=True,
+                    exist_ok=True
+                )
+
+                shutil.copy2(
+                    backup_file,
+                    destination
+                )
+
+        transaction.status = (
+            TransactionStatus.ROLLED_BACK
+        )
 
         return transaction
