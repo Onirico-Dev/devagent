@@ -483,3 +483,122 @@ def test_method_not_allowed():
     finally:
         server.shutdown()
         server.server_close()
+
+def test_health_endpoint():
+    server, _ = start_server()
+
+    try:
+        status, data = request(
+            server,
+            "GET",
+            "/health",
+        )
+
+        assert status == 200
+        assert data == {
+            "status": "ok",
+            "service": "devagent",
+        }
+
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_tasks_endpoint():
+    server, _ = start_server()
+
+    try:
+        status, data = request(
+            server,
+            "GET",
+            "/tasks",
+        )
+
+        assert status == 200
+        assert "tasks" in data
+        assert isinstance(data["tasks"], list)
+
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_latest_without_tasks(tmp_path):
+    server, _ = start_server(tmp_path)
+
+    try:
+        status, data = request(
+            server,
+            "GET",
+            "/tasks/latest",
+        )
+
+        assert status == 404
+        assert data["error"] == "Nenhuma tarefa encontrada"
+
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_plan_get_task_and_latest():
+    server, _ = start_server()
+
+    try:
+        status, created = request(
+            server,
+            "POST",
+            "/plan",
+            {
+                "instruction": (
+                    "Crie contrato_api.py "
+                    'contendo print("API")'
+                )
+            },
+        )
+
+        assert status == 200
+        assert "approval_id" in created
+
+        approval_id = created["approval_id"]
+
+        status, task = request(
+            server,
+            "GET",
+            f"/tasks/{approval_id}",
+        )
+
+        assert status == 200
+        assert task["approval_id"] == approval_id
+
+        status, latest = request(
+            server,
+            "GET",
+            "/tasks/latest",
+        )
+
+        assert status == 200
+        assert latest["approval_id"] == approval_id
+
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_unknown_endpoint():
+    server, _ = start_server()
+
+    try:
+        status, data = request(
+            server,
+            "GET",
+            "/nao-existe",
+        )
+
+        assert status == 404
+        assert data["error"] == "Endpoint não encontrado"
+
+    finally:
+        server.shutdown()
+        server.server_close()
