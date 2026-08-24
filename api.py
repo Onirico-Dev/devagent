@@ -48,6 +48,67 @@ class APIHandler(BaseHTTPRequestHandler):
 
             return
 
+        if self.path == "/tasks":
+
+            self.send_json(
+                200,
+                {
+                    "tasks": gateway.list_tasks()
+                }
+            )
+
+            return
+
+        if self.path == "/tasks/latest":
+
+            task = gateway.latest_task()
+
+            if task is None:
+
+                self.send_json(
+                    404,
+                    {
+                        "error": "Nenhuma tarefa encontrada"
+                    }
+                )
+
+                return
+
+            self.send_json(
+                200,
+                task
+            )
+
+            return
+
+        if self.path.startswith("/tasks/"):
+
+            task_id = self.path.split(
+                "/"
+            )[-1]
+
+            task = gateway.get_task(
+                task_id
+            )
+
+            if task is None:
+
+                self.send_json(
+                    404,
+                    {
+                        "error": "Tarefa não encontrada"
+                    }
+                )
+
+                return
+
+            self.send_json(
+                200,
+                task
+            )
+
+            return
+
         self.send_json(
             404,
             {
