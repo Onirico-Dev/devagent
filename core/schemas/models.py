@@ -11,7 +11,9 @@ class ChangeType(str, Enum):
 
 class TransactionStatus(str, Enum):
     PENDING = "pending"
+    APPROVED = "approved"
     EXECUTING = "executing"
+    TESTING = "testing"
     COMMITTED = "committed"
     ROLLED_BACK = "rolled_back"
     FAILED = "failed"

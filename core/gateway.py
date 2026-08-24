@@ -1,9 +1,13 @@
+from datetime import datetime
+from pathlib import Path
+
 from core.security import SecurityPolicy
 from core.supervisor import Supervisor
 from core.executor.safe_executor import SafeExecutor
 from core.executor.transaction_manager import TransactionManager
 from core.executor.test_runner import TestRunner
 from core.executor.git_manager import GitManager
+from core.schemas.models import TransactionStatus
 
 
 class DevAgentGateway:
@@ -11,15 +15,56 @@ class DevAgentGateway:
     def __init__(self, agent, root="."):
 
         self.agent = agent
-        self.root = root
+        self.root = Path(root).resolve()
 
         self.supervisor = Supervisor()
-        self.security = SecurityPolicy(root)
+        self.security = SecurityPolicy(str(self.root))
 
-        self.executor = SafeExecutor(root)
-        self.transactions = TransactionManager(root)
-        self.test_runner = TestRunner(root)
-        self.git = GitManager(root)
+        self.executor = SafeExecutor(str(self.root))
+        self.transactions = TransactionManager(str(self.root))
+        self.test_runner = TestRunner(str(self.root))
+        self.git = GitManager(str(self.root))
+
+        self.log_file = (
+            self.root
+            / "transactions"
+            / "events.log"
+        )
+
+        self.log_file.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+    def _log(self, event, transaction_id=None, **data):
+
+        timestamp = datetime.now().isoformat(
+            timespec="seconds"
+        )
+
+        parts = [
+            timestamp,
+            event,
+        ]
+
+        if transaction_id:
+            parts.append(
+                f"transaction={transaction_id}"
+            )
+
+        for key, value in data.items():
+            parts.append(
+                f"{key}={value}"
+            )
+
+        with self.log_file.open(
+            "a",
+            encoding="utf-8",
+        ) as file:
+
+            file.write(
+                " ".join(parts) + "\n"
+            )
 
     def create_task(self, instruction):
 
@@ -37,6 +82,12 @@ class DevAgentGateway:
             self.supervisor.request_approval(
                 result
             )
+        )
+
+        self._log(
+            "task.created",
+            approval_id=approval_id,
+            instruction=instruction,
         )
 
         return {
@@ -61,7 +112,16 @@ class DevAgentGateway:
             transaction
         )
 
-        # Backup dos arquivos existentes.
+        transaction.status = (
+            TransactionStatus.APPROVED
+        )
+
+        self._log(
+            "task.approved",
+            transaction.transaction_id,
+            approval_id=approval_id,
+        )
+
         for change in transaction.changes:
 
             if change.change_type.value in {
@@ -74,7 +134,6 @@ class DevAgentGateway:
                     change.path,
                 )
 
-        # Registrar arquivos novos.
         for change in transaction.changes:
 
             if change.change_type.value == "create":
@@ -86,24 +145,57 @@ class DevAgentGateway:
 
         try:
 
-            # 1. Executar
+            self._log(
+                "transaction.executing",
+                transaction.transaction_id,
+            )
+
             transaction = self.executor.execute(
                 transaction
             )
 
-            # 2. Testar
+            self._log(
+                "transaction.executed",
+                transaction.transaction_id,
+            )
+
+            transaction.status = (
+                TransactionStatus.TESTING
+            )
+
+            self._log(
+                "tests.started",
+                transaction.transaction_id,
+            )
+
             test_result = self.test_runner.run(
                 [
                     change.path
                     for change in transaction.changes
+                    if change.change_type.value
+                    in {"create", "modify"}
                 ]
             )
 
-            # 3. Falha → rollback
             if not test_result["success"]:
 
-                transaction = self.transactions.rollback(
-                    transaction
+                self._log(
+                    "tests.failed",
+                    transaction.transaction_id,
+                    returncode=test_result[
+                        "returncode"
+                    ],
+                )
+
+                transaction = (
+                    self.transactions.rollback(
+                        transaction
+                    )
+                )
+
+                self._log(
+                    "transaction.rolled_back",
+                    transaction.transaction_id,
                 )
 
                 return {
@@ -112,24 +204,28 @@ class DevAgentGateway:
                     "transaction_id": (
                         transaction.transaction_id
                     ),
-                    "tests": {
-                        "success": False,
-                        "returncode": (
-                            test_result["returncode"]
-                        ),
-                        "stdout": (
-                            test_result["stdout"]
-                        ),
-                        "stderr": (
-                            test_result["stderr"]
-                        ),
-                    },
+                    "tests": test_result,
                 }
 
-            # 4. Testes passaram → commit Git
-            git_result = self.git.commit_transaction(
+            self._log(
+                "tests.passed",
                 transaction.transaction_id,
-                instruction,
+            )
+
+            git_result = (
+                self.git.commit_transaction(
+                    transaction.transaction_id,
+                    instruction,
+                )
+            )
+
+            transaction.status = (
+                TransactionStatus.COMMITTED
+            )
+
+            self._log(
+                "transaction.committed",
+                transaction.transaction_id,
             )
 
             return {
@@ -138,30 +234,45 @@ class DevAgentGateway:
                 "transaction_id": (
                     transaction.transaction_id
                 ),
-                "tests": {
-                    "success": True,
-                    "returncode": (
-                        test_result["returncode"]
-                    ),
-                    "stdout": (
-                        test_result["stdout"]
-                    ),
-                    "stderr": (
-                        test_result["stderr"]
-                    ),
-                },
+                "tests": test_result,
                 "git": git_result,
             }
 
         except Exception as exc:
 
+            self._log(
+                "transaction.error",
+                transaction.transaction_id,
+                error=repr(exc),
+            )
+
             try:
 
-                transaction = self.transactions.rollback(
-                    transaction
+                transaction = (
+                    self.transactions.rollback(
+                        transaction
+                    )
+                )
+
+                self._log(
+                    "transaction.rolled_back",
+                    transaction.transaction_id,
+                    reason="exception",
                 )
 
             except Exception as rollback_error:
+
+                transaction.status = (
+                    TransactionStatus.FAILED
+                )
+
+                self._log(
+                    "rollback.failed",
+                    transaction.transaction_id,
+                    error=repr(
+                        rollback_error
+                    ),
+                )
 
                 return {
                     "approval_id": approval_id,
@@ -188,6 +299,11 @@ class DevAgentGateway:
 
         result = self.supervisor.reject(
             approval_id
+        )
+
+        self._log(
+            "task.rejected",
+            approval_id=approval_id,
         )
 
         return {
