@@ -17,18 +17,11 @@ class MockAdapter(AIAdapter):
                 "O prompt não pode ser vazio."
             )
 
-        # O Mock simula uma resposta estruturada
-        # compatível com o contrato esperado pelo AIPlanner.
-        #
-        # Para os testes básicos, extraímos a instrução
-        # diretamente do prompt.
+        marker = "INSTRUÇÃO DO USUÁRIO:"
 
         instruction = ""
 
-        marker = "INSTRUÇÃO DO USUÁRIO:"
-
         if marker in prompt:
-
             instruction = prompt.split(
                 marker,
                 1
@@ -38,11 +31,9 @@ class MockAdapter(AIAdapter):
             )[0].strip()
 
         objective = instruction
-
         changes = []
 
         words = instruction.split()
-
         target = None
 
         for index, word in enumerate(words):
@@ -63,7 +54,7 @@ class MockAdapter(AIAdapter):
                 "\"'`.,;:"
             )
 
-            content = None
+            content = ""
 
             lower = instruction.lower()
 
@@ -79,13 +70,14 @@ class MockAdapter(AIAdapter):
                     lower.index(" com conteúdo ") + 13:
                 ]
 
-            if content:
-                changes.append({
+            changes.append(
+                {
                     "type": "create",
                     "path": target,
                     "content": content,
                     "reason": instruction,
-                })
+                }
+            )
 
         return json.dumps(
             {
