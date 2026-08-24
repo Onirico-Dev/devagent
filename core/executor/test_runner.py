@@ -4,6 +4,9 @@ import sys
 from pathlib import Path
 
 
+__test__ = False
+
+
 class TestRunner:
 
     def __init__(self, root="."):
