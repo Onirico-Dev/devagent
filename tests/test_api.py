@@ -6,7 +6,17 @@ from http.server import HTTPServer
 import api
 
 
-def start_server():
+def start_server(root=None):
+    if root is not None:
+        from agent import DevAgent
+        from core.gateway import DevAgentGateway
+
+        api.agent = DevAgent(str(root))
+        api.gateway = DevAgentGateway(
+            api.agent,
+            str(root),
+        )
+
     server = HTTPServer(
         ("127.0.0.1", 0),
         api.APIHandler,
@@ -104,8 +114,8 @@ def test_unknown_endpoint():
         server.server_close()
 
 
-def test_full_task_flow():
-    server, _ = start_server()
+def test_full_task_flow(isolated_project):
+    server, _ = start_server(isolated_project)
 
     try:
         status, created = request(
@@ -161,14 +171,10 @@ def test_full_task_flow():
         server.shutdown()
         server.server_close()
 
-        import os
-
-        if os.path.exists("api_teste.py"):
-            os.remove("api_teste.py")
 
 
-def test_reject_task():
-    server, _ = start_server()
+def test_reject_task(isolated_project):
+    server, _ = start_server(isolated_project)
 
     try:
         status, created = request(
@@ -216,14 +222,10 @@ def test_reject_task():
         server.shutdown()
         server.server_close()
 
-        import os
-
-        if os.path.exists("rejeitado.py"):
-            os.remove("rejeitado.py")
 
 
-def test_rollback_task():
-    server, _ = start_server()
+def test_rollback_task(isolated_project):
+    server, _ = start_server(isolated_project)
 
     try:
         status, created = request(
@@ -272,8 +274,3 @@ def test_rollback_task():
     finally:
         server.shutdown()
         server.server_close()
-
-        import os
-
-        if os.path.exists("api_falha.py"):
-            os.remove("api_falha.py")
