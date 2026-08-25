@@ -602,3 +602,324 @@ def test_unknown_endpoint():
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_create_failure_rolls_back_before_repair(tmp_path):
+    server, _ = start_server(tmp_path)
+
+    target = tmp_path / "rollback_gateway.py"
+
+    try:
+        status, created = request(
+            server,
+            "POST",
+            "/plan",
+            {
+                "instruction": (
+                    "Crie rollback_gateway.py contendo "
+                    "isto não é Python válido"
+                )
+            },
+        )
+
+        assert status == 200
+        assert created["status"] == "pending"
+
+        approval_id = created["approval_id"]
+
+        status, result = request(
+            server,
+            "POST",
+            f"/approve/{approval_id}",
+        )
+
+        assert status == 200
+        assert result["status"] == "rolled_back"
+        assert result["tests"]["success"] is False
+        assert not target.exists()
+
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_modify_failure_restores_original_file(tmp_path):
+    target = tmp_path / "arquivo.py"
+    target.write_text(
+        'print("ORIGINAL")\n',
+        encoding="utf-8",
+    )
+
+    server, _ = start_server(tmp_path)
+
+    try:
+        status, created = request(
+            server,
+            "POST",
+            "/plan",
+            {
+                "instruction": (
+                    'Modifique arquivo.py '
+                    'isto não é Python válido'
+                )
+            },
+        )
+
+        assert status == 200
+        assert created["status"] == "pending"
+
+        approval_id = created["approval_id"]
+
+        status, result = request(
+            server,
+            "POST",
+            f"/approve/{approval_id}",
+        )
+
+        assert status == 200
+        assert result["status"] == "rolled_back"
+        assert result["tests"]["success"] is False
+
+        assert target.exists()
+        assert target.read_text(
+            encoding="utf-8"
+        ) == 'print("ORIGINAL")\n'
+
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_delete_failure_restores_original_file(tmp_path):
+    target = tmp_path / "arquivo_delete.py"
+    original = 'print("NAO DEVE SER PERDIDO")\n'
+
+    target.write_text(
+        original,
+        encoding="utf-8",
+    )
+
+    server, _ = start_server(tmp_path)
+
+    try:
+        status, created = request(
+            server,
+            "POST",
+            "/plan",
+            {
+                "instruction": (
+                    "Delete arquivo_delete.py"
+                )
+            },
+        )
+
+        assert status == 200
+        assert created["status"] == "pending"
+
+        approval_id = created["approval_id"]
+
+        status, result = request(
+            server,
+            "POST",
+            f"/approve/{approval_id}",
+        )
+
+        assert status == 200
+
+        # O DELETE deve ser executado e, caso a etapa
+        # posterior falhe, o backup deve restaurar o arquivo.
+        assert result["status"] in {
+            "committed",
+            "rolled_back",
+        }
+
+        if result["status"] == "rolled_back":
+            assert target.exists()
+            assert target.read_text(
+                encoding="utf-8"
+            ) == original
+
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_gateway_rolls_back_failed_execution(isolated_project):
+    server, _ = start_server(isolated_project)
+
+    try:
+        status, created = request(
+            server,
+            "POST",
+            "/plan",
+            {
+                "instruction": (
+                    "Crie gateway_falha.py contendo "
+                    "isto não é Python válido"
+                )
+            },
+        )
+
+        assert status == 200
+        assert created["status"] == "pending"
+
+        approval_id = created["approval_id"]
+
+        status, result = request(
+            server,
+            "POST",
+            f"/approve/{approval_id}",
+        )
+
+        assert status == 200
+        assert result["status"] == "rolled_back"
+        assert result["tests"]["success"] is False
+
+        target = isolated_project / "gateway_falha.py"
+
+        assert not target.exists()
+
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_gateway_reports_rollback_failure(tmp_path, monkeypatch):
+    server, _ = start_server(tmp_path)
+
+    try:
+        def failing_rollback(transaction):
+            raise RuntimeError(
+                "ROLLBACK_FAILURE_TEST"
+            )
+
+        monkeypatch.setattr(
+            api.gateway.transactions,
+            "rollback",
+            failing_rollback,
+        )
+
+        def failing_execute(transaction):
+            raise RuntimeError(
+                "EXECUTION_FAILURE_TEST"
+            )
+
+        monkeypatch.setattr(
+            api.gateway.executor,
+            "execute",
+            failing_execute,
+        )
+
+        status, created = request(
+            server,
+            "POST",
+            "/plan",
+            {
+                "instruction": "Crie arquivo.py",
+            },
+        )
+
+        assert status == 200
+        assert created["status"] == "pending"
+
+        approval_id = created["approval_id"]
+
+        status, result = request(
+            server,
+            "POST",
+            f"/approve/{approval_id}",
+        )
+
+        assert status == 500
+        assert "error" in result
+
+        task = api.gateway.get_task(
+            approval_id
+        )
+
+        assert task["status"] == "failed"
+
+        error = task.get(
+            "error",
+            "",
+        )
+
+        assert "EXECUTION_FAILURE_TEST" in error
+
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+
+
+def test_gateway_reports_rollback_failure_separately(
+    tmp_path,
+    monkeypatch,
+):
+    server, _ = start_server(tmp_path)
+
+    try:
+        def failing_rollback(transaction):
+            raise RuntimeError(
+                "ROLLBACK_FAILURE_TEST"
+            )
+
+        monkeypatch.setattr(
+            api.gateway.transactions,
+            "rollback",
+            failing_rollback,
+        )
+
+        def failing_execute(transaction):
+            raise RuntimeError(
+                "EXECUTION_FAILURE_TEST"
+            )
+
+        monkeypatch.setattr(
+            api.gateway.executor,
+            "execute",
+            failing_execute,
+        )
+
+        status, created = request(
+            server,
+            "POST",
+            "/plan",
+            {
+                "instruction": "Crie arquivo.py",
+            },
+        )
+
+        assert status == 200
+
+        approval_id = created["approval_id"]
+
+        status, result = request(
+            server,
+            "POST",
+            f"/approve/{approval_id}",
+        )
+
+        assert status == 500
+        assert "error" in result
+
+        task = api.gateway.get_task(
+            approval_id
+        )
+
+        assert task["status"] == "failed"
+
+        assert (
+            task["error"]
+            == "EXECUTION_FAILURE_TEST"
+        )
+
+        assert (
+            task["rollback_error"]
+            == "ROLLBACK_FAILURE_TEST"
+        )
+
+    finally:
+        server.shutdown()
+        server.server_close()

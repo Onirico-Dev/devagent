@@ -120,10 +120,12 @@ class DevAgentGateway:
                     change.path
                 )
 
-                if (
-                    change.change_type.value
-                    != "create"
-                ):
+                if change.change_type.value == "create":
+                    self.transactions.register_created(
+                        transaction,
+                        change.path
+                    )
+                else:
                     self.transactions.backup_file(
                         transaction,
                         change.path
@@ -132,17 +134,6 @@ class DevAgentGateway:
             self.executor.execute(
                 transaction
             )
-
-            for change in transaction.changes:
-
-                if (
-                    change.change_type.value
-                    == "create"
-                ):
-                    self.transactions.register_created(
-                        transaction,
-                        change.path
-                    )
 
             while True:
 
@@ -378,12 +369,14 @@ class DevAgentGateway:
 
         except Exception as error:
 
+            rollback_error = None
+
             try:
                 self.transactions.rollback(
                     transaction
                 )
-            except Exception:
-                pass
+            except Exception as rollback_exception:
+                rollback_error = rollback_exception
 
             attempts = (
                 self.repair_controller.get_attempts(
@@ -391,13 +384,20 @@ class DevAgentGateway:
                 )
             )
 
+            failure_extra = {
+                "error": str(error),
+                "repair_attempts": attempts,
+            }
+
+            if rollback_error is not None:
+                failure_extra["rollback_error"] = str(
+                    rollback_error
+                )
+
             self.history.update(
                 approval_id,
                 status="failed",
-                extra={
-                    "error": str(error),
-                    "repair_attempts": attempts,
-                },
+                extra=failure_extra,
             )
 
             self.repair_controller.reset(

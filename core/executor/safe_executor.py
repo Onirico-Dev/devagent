@@ -9,12 +9,23 @@ class SafeExecutor:
         self.root = Path(root).resolve()
 
     def _safe_path(self, relative_path: str) -> Path:
-        target = (self.root / relative_path).resolve()
+        relative = Path(relative_path)
 
-        if not str(target).startswith(str(self.root)):
+        if relative.is_absolute():
             raise ValueError(
-                f"Caminho bloqueado: {relative_path}"
+                f"Caminho absoluto não permitido: {relative_path}"
             )
+
+        target = (
+            self.root / relative
+        ).resolve()
+
+        try:
+            target.relative_to(self.root)
+        except ValueError as error:
+            raise ValueError(
+                f"Caminho fora do projeto: {relative_path}"
+            ) from error
 
         return target
 

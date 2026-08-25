@@ -7,16 +7,12 @@ class Planner:
     def create_plan(self, command: Command) -> Plan:
 
         if command.action == "create":
+            content = command.instruction
 
-            content = ""
-
-            instruction_lower = command.instruction.lower()
-
-            if instruction_lower.startswith("contendo "):
-                content = command.instruction[9:]
-
-            elif instruction_lower.startswith("com conteúdo "):
-                content = command.instruction[13:]
+            if not isinstance(content, str) or not content.strip():
+                raise ValueError(
+                    "CREATE exige conteúdo textual."
+                )
 
             change = Change(
                 change_type=ChangeType.CREATE,
@@ -33,7 +29,6 @@ class Planner:
             )
 
         if command.action == "modify":
-
             change = Change(
                 change_type=ChangeType.MODIFY,
                 path=command.target,
@@ -49,7 +44,6 @@ class Planner:
             )
 
         if command.action == "delete":
-
             change = Change(
                 change_type=ChangeType.DELETE,
                 path=command.target,
