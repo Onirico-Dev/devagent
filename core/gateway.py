@@ -155,6 +155,10 @@ class DevAgentGateway:
                         self.git.commit_transaction(
                             transaction.transaction_id,
                             instruction,
+                            paths=[
+                                change.path
+                                for change in transaction.changes
+                            ],
                         )
                     )
 
@@ -338,6 +342,10 @@ class DevAgentGateway:
                         self.git.commit_transaction(
                             transaction.transaction_id,
                             instruction,
+                            paths=[
+                                change.path
+                                for change in transaction.changes
+                            ],
                         )
                     )
 

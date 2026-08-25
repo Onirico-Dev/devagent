@@ -2911,3 +2911,103 @@ def test_transaction_manager_rollback_rejects_backup_symlink_during_restore(tmp_
     assert outside.read_text(
         encoding="utf-8"
     ) == "NAO TOCAR\n"
+
+
+def test_git_manager_commit_transaction_does_not_commit_unrelated_changes(
+    tmp_path,
+):
+    import subprocess
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    subprocess.run(
+        ["git", "config", "user.name", "Test User"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    tracked = tmp_path / "tracked.py"
+    unrelated = tmp_path / "unrelated.py"
+
+    tracked.write_text(
+        "print('transaction')\n",
+        encoding="utf-8",
+    )
+
+    unrelated.write_text(
+        "print('unrelated')\n",
+        encoding="utf-8",
+    )
+
+    subprocess.run(
+        ["git", "add", "tracked.py", "unrelated.py"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    subprocess.run(
+        ["git", "commit", "-m", "initial"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    tracked.write_text(
+        "print('transaction changed')\n",
+        encoding="utf-8",
+    )
+
+    unrelated.write_text(
+        "print('unrelated changed')\n",
+        encoding="utf-8",
+    )
+
+    manager = GitManager(tmp_path)
+
+    result = manager.commit_transaction(
+        "transaction-test",
+        "alterar tracked.py",
+        paths=["tracked.py"],
+    )
+
+    assert result["status"] == "committed"
+
+    committed_files = subprocess.run(
+        [
+            "git",
+            "show",
+            "--format=",
+            "--name-only",
+            "HEAD",
+        ],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+
+    assert "tracked.py" in committed_files
+    assert "unrelated.py" not in committed_files
+
+    status = subprocess.run(
+        ["git", "status", "--short"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    assert "unrelated.py" in status
