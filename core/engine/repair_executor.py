@@ -7,7 +7,6 @@ from core.schemas.models import (
 
 
 class RepairExecutor:
-
     def __init__(
         self,
         security,
@@ -21,11 +20,8 @@ class RepairExecutor:
         self.test_runner = test_runner
 
     def build_change(self, repair):
-
         if not repair:
-            raise ValueError(
-                "Proposta de reparo vazia."
-            )
+            raise ValueError("Proposta de reparo vazia.")
 
         action = repair.get("action")
 
@@ -34,10 +30,7 @@ class RepairExecutor:
                 "RepairEngine não propôs uma correção."
             )
 
-        if action not in {
-            "create",
-            "modify",
-        }:
+        if action not in {"create", "modify"}:
             raise ValueError(
                 f"Ação de reparo inválida: {action}"
             )
@@ -49,10 +42,7 @@ class RepairExecutor:
                 "Reparo não possui caminho."
             )
 
-        content = repair.get(
-            "content",
-            "",
-        )
+        content = repair.get("content", "")
 
         if not isinstance(content, str):
             raise ValueError(
@@ -81,89 +71,73 @@ class RepairExecutor:
         self,
         repair,
         instruction,
+        transaction,
     ):
+        change = self.build_change(repair)
 
-        change = self.build_change(
-            repair
-        )
+        self.security.validate_path(change.path)
 
-        transaction = Transaction(
-            transaction_id="repair",
-            changes=[change],
-            metadata={
-                "repair": True,
-                "diagnosis": repair.get(
-                    "diagnosis",
-                    "",
-                ),
-                "risk": repair.get(
-                    "risk",
-                    "alto",
-                ),
-            },
-        )
+        existing_paths = {
+            existing.path
+            for existing in transaction.changes
+        }
 
-        transaction = (
-            self.transaction_manager.begin(
-                transaction
-            )
-        )
-
-        try:
-
-            if (
-                change.change_type
-                == ChangeType.MODIFY
-            ):
-
+        if change.path not in existing_paths:
+            if change.change_type == ChangeType.MODIFY:
                 self.transaction_manager.backup_file(
                     transaction,
                     change.path,
                 )
 
-            elif (
-                change.change_type
-                == ChangeType.CREATE
-            ):
-
+            elif change.change_type == ChangeType.CREATE:
                 self.transaction_manager.register_created(
                     transaction,
                     change.path,
                 )
 
+        transaction.changes.append(change)
+
+        transaction.metadata.setdefault(
+            "repairs",
+            [],
+        ).append(
+            {
+                "path": change.path,
+                "action": change.change_type.value,
+                "instruction": instruction,
+                "diagnosis": repair.get(
+                    "diagnosis",
+                    "",
+                ),
+                "correction": repair.get(
+                    "correction",
+                    "",
+                ),
+            }
+        )
+
+        try:
             transaction.status = (
                 TransactionStatus.EXECUTING
             )
 
-            transaction = (
-                self.executor.execute(
-                    transaction
-                )
-            )
+            self.executor.execute_change(change)
 
             transaction.status = (
                 TransactionStatus.TESTING
             )
 
-            test_result = (
-                self.test_runner.run(
-                    [change.path]
-                )
+            test_result = self.test_runner.run(
+                [
+                    item.path
+                    for item in transaction.changes
+                ]
             )
 
             if not test_result["success"]:
-
-                transaction = (
-                    self.transaction_manager.rollback(
-                        transaction
-                    )
-                )
-
                 return {
                     "success": False,
-                    "status": (
-                        transaction.status.value
-                    ),
+                    "status": transaction.status.value,
                     "transaction_id": (
                         transaction.transaction_id
                     ),
@@ -171,15 +145,9 @@ class RepairExecutor:
                     "instruction": instruction,
                 }
 
-            transaction.status = (
-                TransactionStatus.COMMITTED
-            )
-
             return {
                 "success": True,
-                "status": (
-                    transaction.status.value
-                ),
+                "status": transaction.status.value,
                 "transaction_id": (
                     transaction.transaction_id
                 ),
@@ -188,40 +156,12 @@ class RepairExecutor:
             }
 
         except Exception as exc:
-
-            try:
-
-                transaction = (
-                    self.transaction_manager.rollback(
-                        transaction
-                    )
-                )
-
-            except Exception as rollback_error:
-
-                transaction.status = (
-                    TransactionStatus.FAILED
-                )
-
-                return {
-                    "success": False,
-                    "status": "failed",
-                    "transaction_id": (
-                        transaction.transaction_id
-                    ),
-                    "error": str(exc),
-                    "rollback_error": str(
-                        rollback_error
-                    ),
-                }
-
             return {
                 "success": False,
-                "status": (
-                    transaction.status.value
-                ),
+                "status": "failed",
                 "transaction_id": (
                     transaction.transaction_id
                 ),
                 "error": str(exc),
+                "instruction": instruction,
             }

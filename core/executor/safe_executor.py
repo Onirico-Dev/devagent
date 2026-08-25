@@ -4,7 +4,6 @@ from core.schemas.models import ChangeType, TransactionStatus
 
 
 class SafeExecutor:
-
     def __init__(self, root: str = "."):
         self.root = Path(root).resolve()
 
@@ -16,9 +15,7 @@ class SafeExecutor:
                 f"Caminho absoluto não permitido: {relative_path}"
             )
 
-        target = (
-            self.root / relative
-        ).resolve()
+        target = (self.root / relative).resolve()
 
         try:
             target.relative_to(self.root)
@@ -29,49 +26,50 @@ class SafeExecutor:
 
         return target
 
-    def execute(self, transaction):
+    def execute_change(self, change):
+        target = self._safe_path(change.path)
 
+        if change.change_type == ChangeType.CREATE:
+            if target.exists():
+                raise FileExistsError(
+                    f"Arquivo já existe: {change.path}"
+                )
+
+            target.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            target.write_text(
+                change.content or "",
+                encoding="utf-8",
+            )
+
+        elif change.change_type == ChangeType.MODIFY:
+            if not target.exists():
+                raise FileNotFoundError(
+                    f"Arquivo não encontrado: {change.path}"
+                )
+
+            target.write_text(
+                change.content or "",
+                encoding="utf-8",
+            )
+
+        elif change.change_type == ChangeType.DELETE:
+            if not target.exists():
+                raise FileNotFoundError(
+                    f"Arquivo não encontrado: {change.path}"
+                )
+
+            target.unlink()
+
+    def execute(self, transaction):
         transaction.status = TransactionStatus.EXECUTING
 
         try:
             for change in transaction.changes:
-
-                target = self._safe_path(change.path)
-
-                if change.change_type == ChangeType.CREATE:
-                    if target.exists():
-                        raise FileExistsError(
-                            f"Arquivo já existe: {change.path}"
-                        )
-
-                    target.parent.mkdir(
-                        parents=True,
-                        exist_ok=True
-                    )
-
-                    target.write_text(
-                        change.content or "",
-                        encoding="utf-8"
-                    )
-
-                elif change.change_type == ChangeType.MODIFY:
-                    if not target.exists():
-                        raise FileNotFoundError(
-                            f"Arquivo não encontrado: {change.path}"
-                        )
-
-                    target.write_text(
-                        change.content or "",
-                        encoding="utf-8"
-                    )
-
-                elif change.change_type == ChangeType.DELETE:
-                    if not target.exists():
-                        raise FileNotFoundError(
-                            f"Arquivo não encontrado: {change.path}"
-                        )
-
-                    target.unlink()
+                self.execute_change(change)
 
             transaction.status = TransactionStatus.COMMITTED
 

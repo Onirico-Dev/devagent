@@ -11,25 +11,20 @@ from core.memory.task_history import TaskHistory
 
 
 class DevAgentGateway:
-
     MAX_REPAIR_ATTEMPTS = 2
 
     def __init__(self, agent, root="."):
-
         self.agent = agent
         self.root = root
 
         self.supervisor = Supervisor()
         self.security = SecurityPolicy(root)
-
         self.executor = SafeExecutor(root)
         self.transactions = TransactionManager(root)
         self.tests = TestRunner(root)
         self.git = GitManager(root)
 
-        self.repair_engine = RepairEngine(
-            agent.ai
-        )
+        self.repair_engine = RepairEngine(agent.ai)
 
         self.repair_executor = RepairExecutor(
             security=self.security,
@@ -51,21 +46,12 @@ class DevAgentGateway:
         )
 
     def create_task(self, instruction):
-
-        result = self.agent.process(
-            instruction
-        )
+        result = self.agent.process(instruction)
 
         for change in result["changes"]:
-            self.security.validate_path(
-                change["path"]
-            )
+            self.security.validate_path(change["path"])
 
-        approval_id = (
-            self.supervisor.request_approval(
-                result
-            )
-        )
+        approval_id = self.supervisor.request_approval(result)
 
         self.history.create(
             approval_id=approval_id,
@@ -80,31 +66,19 @@ class DevAgentGateway:
         }
 
     def approve(self, approval_id):
-
         self.history.update(
             approval_id,
             status="approved",
         )
 
-        request = self.supervisor.approve(
-            approval_id
-        )
+        request = self.supervisor.approve(approval_id)
 
-        instruction = request["plan"][
-            "instruction"
-        ]
+        instruction = request["plan"]["instruction"]
 
-        transaction = self.agent.build_transaction(
-            instruction
-        )
+        transaction = self.agent.build_transaction(instruction)
+        transaction = self.transactions.begin(transaction)
 
-        transaction = self.transactions.begin(
-            transaction
-        )
-
-        self.repair_controller.start(
-            transaction.transaction_id
-        )
+        self.repair_controller.start(transaction.transaction_id)
 
         self.history.update(
             approval_id,
@@ -113,30 +87,23 @@ class DevAgentGateway:
         )
 
         try:
-
             for change in transaction.changes:
-
-                self.security.validate_path(
-                    change.path
-                )
+                self.security.validate_path(change.path)
 
                 if change.change_type.value == "create":
                     self.transactions.register_created(
                         transaction,
-                        change.path
+                        change.path,
                     )
                 else:
                     self.transactions.backup_file(
                         transaction,
-                        change.path
+                        change.path,
                     )
 
-            self.executor.execute(
-                transaction
-            )
+            self.executor.execute(transaction)
 
             while True:
-
                 self.history.update(
                     approval_id,
                     status="testing",
@@ -150,22 +117,17 @@ class DevAgentGateway:
                 )
 
                 if test_result["success"]:
-
-                    git_result = (
-                        self.git.commit_transaction(
-                            transaction.transaction_id,
-                            instruction,
-                            paths=[
-                                change.path
-                                for change in transaction.changes
-                            ],
-                        )
+                    git_result = self.git.commit_transaction(
+                        transaction.transaction_id,
+                        instruction,
+                        paths=[
+                            change.path
+                            for change in transaction.changes
+                        ],
                     )
 
-                    attempts = (
-                        self.repair_controller.get_attempts(
-                            transaction.transaction_id
-                        )
+                    attempts = self.repair_controller.get_attempts(
+                        transaction.transaction_id
                     )
 
                     self.history.update(
@@ -192,82 +154,154 @@ class DevAgentGateway:
                         "repair_attempts": attempts,
                     }
 
+                # =========================================================
+                # LIMITE DE REPAROS:
+                #
+                # A verificação precisa ocorrer ANTES de chamar a IA para
+                # uma nova análise. Isso impede uma terceira análise quando
+                # as duas tentativas permitidas já foram consumidas.
+                # =========================================================
+                if not self.repair_controller.can_repair(
+                    transaction.transaction_id
+                ):
+                    self.transactions.rollback(transaction)
+
+                    attempts = self.repair_controller.get_attempts(
+                        transaction.transaction_id
+                    )
+
+                    limit_repair = {
+                        "diagnosis": (
+                            "Limite máximo de tentativas de reparo "
+                            "atingido."
+                        ),
+                        "correction": (
+                            "Nenhuma nova correção automática será "
+                            "tentada."
+                        ),
+                        "risk": "baixo",
+                        "action": "none",
+                        "path": "",
+                        "content": "",
+                        "status": "limit_reached",
+                    }
+
+                    self.history.update(
+                        approval_id,
+                        status="rolled_back",
+                        extra={
+                            "tests": test_result,
+                            "repair": limit_repair,
+                            "repair_attempts": attempts,
+                        },
+                    )
+
+                    self.repair_controller.reset(
+                        transaction.transaction_id
+                    )
+
+                    return {
+                        "approval_id": approval_id,
+                        "status": "rolled_back",
+                        "transaction_id": transaction.transaction_id,
+                        "tests": test_result,
+                        "repair": limit_repair,
+                        "repair_attempts": attempts,
+                    }
+
+                # =========================================================
+                # A análise só ocorre quando existe uma tentativa
+                # disponível.
+                # =========================================================
+                diagnosis = self.repair_engine.analyze_failure(
+                    instruction=instruction,
+                    error=test_result.get("stderr", ""),
+                    test_output=test_result.get("stdout", ""),
+                )
+
+                # Alto risco não consome tentativa e nunca é aplicado.
+                if diagnosis.get("risk") == "alto":
+                    self.transactions.rollback(transaction)
+
+                    attempts = self.repair_controller.get_attempts(
+                        transaction.transaction_id
+                    )
+
+                    self.history.update(
+                        approval_id,
+                        status="rolled_back",
+                        extra={
+                            "tests": test_result,
+                            "repair": diagnosis,
+                            "repair_attempts": attempts,
+                        },
+                    )
+
+                    self.repair_controller.reset(
+                        transaction.transaction_id
+                    )
+
+                    return {
+                        "approval_id": approval_id,
+                        "status": "rolled_back",
+                        "transaction_id": transaction.transaction_id,
+                        "tests": test_result,
+                        "repair": diagnosis,
+                        "repair_attempts": attempts,
+                    }
+
+                if diagnosis.get("action") == "none":
+                    self.transactions.rollback(transaction)
+
+                    attempts = self.repair_controller.get_attempts(
+                        transaction.transaction_id
+                    )
+
+                    self.history.update(
+                        approval_id,
+                        status="rolled_back",
+                        extra={
+                            "tests": test_result,
+                            "repair": diagnosis,
+                            "repair_attempts": attempts,
+                        },
+                    )
+
+                    self.repair_controller.reset(
+                        transaction.transaction_id
+                    )
+
+                    return {
+                        "approval_id": approval_id,
+                        "status": "rolled_back",
+                        "transaction_id": transaction.transaction_id,
+                        "tests": test_result,
+                        "repair": diagnosis,
+                        "repair_attempts": attempts,
+                    }
+
+                # Registra a tentativa somente depois que a análise
+                # confirmou que existe uma correção aplicável.
                 if not self.repair_controller.register_attempt(
                     transaction.transaction_id
                 ):
+                    self.transactions.rollback(transaction)
 
-                    self.transactions.rollback(
-                        transaction
-                    )
-
-                    attempts = (
-                        self.repair_controller.get_attempts(
-                            transaction.transaction_id
-                        )
-                    )
-
-                    self.history.update(
-                        approval_id,
-                        status="rolled_back",
-                        extra={
-                            "tests": test_result,
-                            "repair_attempts": attempts,
-                            "repair": {
-                                "status": "limit_reached"
-                            },
-                        },
-                    )
-
-                    self.repair_controller.reset(
+                    attempts = self.repair_controller.get_attempts(
                         transaction.transaction_id
                     )
 
-                    return {
-                        "approval_id": approval_id,
-                        "status": "rolled_back",
-                        "transaction_id": transaction.transaction_id,
-                        "tests": test_result,
-                        "repair_attempts": attempts,
-                        "repair": {
-                            "status": "limit_reached"
-                        },
+                    limit_repair = {
+                        **diagnosis,
+                        "status": "limit_reached",
                     }
-
-                diagnosis = (
-                    self.repair_engine.analyze_failure(
-                        instruction=instruction,
-                        error=test_result.get(
-                            "stderr",
-                            ""
-                        ),
-                        test_output=test_result.get(
-                            "stdout",
-                            ""
-                        ),
-                    )
-                )
-
-                if (
-                    diagnosis.get("risk")
-                    == "alto"
-                ):
-
-                    self.transactions.rollback(
-                        transaction
-                    )
-
-                    attempts = (
-                        self.repair_controller.get_attempts(
-                            transaction.transaction_id
-                        )
-                    )
 
                     self.history.update(
                         approval_id,
                         status="rolled_back",
                         extra={
                             "tests": test_result,
-                            "repair": diagnosis,
+                            "repair": limit_repair,
                             "repair_attempts": attempts,
                         },
                     )
@@ -281,72 +315,28 @@ class DevAgentGateway:
                         "status": "rolled_back",
                         "transaction_id": transaction.transaction_id,
                         "tests": test_result,
-                        "repair": diagnosis,
+                        "repair": limit_repair,
                         "repair_attempts": attempts,
                     }
 
-                if (
-                    diagnosis.get("action")
-                    == "none"
-                ):
-
-                    self.transactions.rollback(
-                        transaction
-                    )
-
-                    attempts = (
-                        self.repair_controller.get_attempts(
-                            transaction.transaction_id
-                        )
-                    )
-
-                    self.history.update(
-                        approval_id,
-                        status="rolled_back",
-                        extra={
-                            "tests": test_result,
-                            "repair": diagnosis,
-                            "repair_attempts": attempts,
-                        },
-                    )
-
-                    self.repair_controller.reset(
-                        transaction.transaction_id
-                    )
-
-                    return {
-                        "approval_id": approval_id,
-                        "status": "rolled_back",
-                        "transaction_id": transaction.transaction_id,
-                        "tests": test_result,
-                        "repair": diagnosis,
-                        "repair_attempts": attempts,
-                    }
-
-                repair_result = (
-                    self.repair_executor.execute_repair(
-                        diagnosis,
-                        instruction,
-                    )
+                repair_result = self.repair_executor.execute_repair(
+                    diagnosis,
+                    instruction,
+                    transaction,
                 )
 
                 if repair_result["success"]:
-
-                    attempts = (
-                        self.repair_controller.get_attempts(
-                            transaction.transaction_id
-                        )
+                    attempts = self.repair_controller.get_attempts(
+                        transaction.transaction_id
                     )
 
-                    git_result = (
-                        self.git.commit_transaction(
-                            transaction.transaction_id,
-                            instruction,
-                            paths=[
-                                change.path
-                                for change in transaction.changes
-                            ],
-                        )
+                    git_result = self.git.commit_transaction(
+                        transaction.transaction_id,
+                        instruction,
+                        paths=[
+                            change.path
+                            for change in transaction.changes
+                        ],
                     )
 
                     self.history.update(
@@ -376,20 +366,15 @@ class DevAgentGateway:
                     }
 
         except Exception as error:
-
             rollback_error = None
 
             try:
-                self.transactions.rollback(
-                    transaction
-                )
+                self.transactions.rollback(transaction)
             except Exception as rollback_exception:
                 rollback_error = rollback_exception
 
-            attempts = (
-                self.repair_controller.get_attempts(
-                    transaction.transaction_id
-                )
+            attempts = self.repair_controller.get_attempts(
+                transaction.transaction_id
             )
 
             failure_extra = {
@@ -415,10 +400,7 @@ class DevAgentGateway:
             raise
 
     def reject(self, approval_id):
-
-        result = self.supervisor.reject(
-            approval_id
-        )
+        result = self.supervisor.reject(approval_id)
 
         self.history.update(
             approval_id,
@@ -428,13 +410,10 @@ class DevAgentGateway:
         return result
 
     def list_tasks(self):
-
         return self.history.list_all()
 
     def get_task(self, task_id):
-
         return self.history.get(task_id)
 
     def latest_task(self):
-
         return self.history.latest()

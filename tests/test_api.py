@@ -923,3 +923,433 @@ def test_gateway_reports_rollback_failure_separately(
     finally:
         server.shutdown()
         server.server_close()
+
+def test_gateway_repairs_failed_task_and_commits(isolated_project, monkeypatch):
+    from agent import DevAgent
+    from core.gateway import DevAgentGateway
+
+    agent = DevAgent(str(isolated_project))
+    gateway = DevAgentGateway(
+        agent,
+        str(isolated_project),
+    )
+
+    monkeypatch.setattr(
+        gateway.repair_engine,
+        "analyze_failure",
+        lambda **kwargs: {
+            "diagnosis": "Arquivo contém sintaxe inválida.",
+            "correction": "Substituir pelo conteúdo Python válido.",
+            "risk": "baixo",
+            "action": "modify",
+            "path": "reparado.py",
+            "content": 'print("REPARADO")\n',
+        },
+    )
+
+    original_generate = agent.ai.generate
+
+    def fake_generate(prompt):
+        if "reparado.py" in prompt.lower():
+            return (
+                '{"action":"modify",'
+                '"path":"reparado.py",'
+                '"content":"print(\\"REPARADO\\")\\n",'
+                '"diagnosis":"Arquivo corrigido.",'
+                '"correction":"Conteúdo válido.",'
+                '"risk":"baixo"}'
+            )
+        return original_generate(prompt)
+
+    monkeypatch.setattr(
+        agent.ai,
+        "generate",
+        fake_generate,
+    )
+
+    server = None
+
+    try:
+        from http.server import HTTPServer
+
+        api.agent = agent
+        api.gateway = gateway
+
+        server = HTTPServer(
+            ("127.0.0.1", 0),
+            api.APIHandler,
+        )
+
+        from threading import Thread
+
+        thread = Thread(
+            target=server.serve_forever,
+            daemon=True,
+        )
+        thread.start()
+
+        status, created = request(
+            server,
+            "POST",
+            "/plan",
+            {
+                "instruction": (
+                    "Crie reparado.py contendo "
+                    "isto não é Python válido"
+                ),
+            },
+        )
+
+        assert status == 200
+        assert created["status"] == "pending"
+
+        approval_id = created["approval_id"]
+
+        status, result = request(
+            server,
+            "POST",
+            f"/approve/{approval_id}",
+        )
+
+        assert status == 200
+        assert result["status"] == "committed"
+        assert result["repair_attempts"] == 1
+        assert result["tests"]["success"] is True
+
+        target = isolated_project / "reparado.py"
+
+        assert target.exists()
+        assert target.read_text(
+            encoding="utf-8",
+        ) == 'print("REPARADO")\n'
+
+    finally:
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+
+def test_gateway_repairs_failed_task_and_commits(
+    isolated_project,
+    monkeypatch,
+):
+    server, _ = start_server(isolated_project)
+
+    try:
+        def fake_analyze_failure(
+            instruction,
+            error,
+            test_output,
+        ):
+            return {
+                "diagnosis": "Sintaxe inválida.",
+                "correction": "Substituir pelo conteúdo Python válido.",
+                "risk": "baixo",
+                "action": "modify",
+                "path": "reparado.py",
+                "content": 'print("REPARADO")\n',
+            }
+
+        monkeypatch.setattr(
+            api.gateway.repair_engine,
+            "analyze_failure",
+            fake_analyze_failure,
+        )
+
+        status, created = request(
+            server,
+            "POST",
+            "/plan",
+            {
+                "instruction": (
+                    "Crie reparado.py contendo "
+                    "isto não é Python válido"
+                ),
+            },
+        )
+
+        assert status == 200
+        assert created["status"] == "pending"
+
+        approval_id = created["approval_id"]
+
+        status, result = request(
+            server,
+            "POST",
+            f"/approve/{approval_id}",
+        )
+
+        assert status == 200
+        assert result["status"] == "committed"
+        assert result["repair_attempts"] == 1
+        assert result["tests"]["success"] is True
+
+        target = isolated_project / "reparado.py"
+
+        assert target.exists()
+        assert target.read_text(
+            encoding="utf-8",
+        ) == 'print("REPARADO")\n'
+
+        status, task = request(
+            server,
+            "GET",
+            f"/tasks/{approval_id}",
+        )
+
+        assert status == 200
+        assert task["status"] == "committed"
+        assert task["repair_attempts"] == 1
+        assert task["repair"]["action"] == "modify"
+
+    finally:
+        server.shutdown()
+        server.server_close()
+
+def test_gateway_repair_second_attempt_succeeds(
+    isolated_project,
+    monkeypatch,
+):
+    server, _ = start_server(isolated_project)
+
+    try:
+        calls = []
+
+        def fake_analyze_failure(
+            instruction,
+            error,
+            test_output,
+        ):
+            calls.append(len(calls) + 1)
+
+            if len(calls) == 1:
+                return {
+                    "diagnosis": "Primeira correção insuficiente.",
+                    "correction": "Aplicar uma correção ainda incompleta.",
+                    "risk": "baixo",
+                    "action": "modify",
+                    "path": "reparo_duplo.py",
+                    "content": "print(\n",
+                }
+
+            return {
+                "diagnosis": "Segunda análise identificou a causa correta.",
+                "correction": "Corrigir a sintaxe.",
+                "risk": "baixo",
+                "action": "modify",
+                "path": "reparo_duplo.py",
+                "content": 'print("CORRIGIDO")\n',
+            }
+
+        monkeypatch.setattr(
+            api.gateway.repair_engine,
+            "analyze_failure",
+            fake_analyze_failure,
+        )
+
+        status, created = request(
+            server,
+            "POST",
+            "/plan",
+            {
+                "instruction": (
+                    "Crie reparo_duplo.py contendo "
+                    "código inicialmente inválido"
+                ),
+            },
+        )
+
+        assert status == 200
+        assert created["status"] == "pending"
+
+        approval_id = created["approval_id"]
+
+        status, result = request(
+            server,
+            "POST",
+            f"/approve/{approval_id}",
+        )
+
+        assert status == 200
+        assert result["status"] == "committed"
+        assert result["repair_attempts"] == 2
+        assert result["tests"]["success"] is True
+
+        assert calls == [1, 2]
+
+        target = isolated_project / "reparo_duplo.py"
+
+        assert target.exists()
+        assert target.read_text(
+            encoding="utf-8",
+        ) == 'print("CORRIGIDO")\n'
+
+    finally:
+        server.shutdown()
+        server.server_close()
+
+def test_gateway_repair_limit_triggers_rollback(
+    isolated_project,
+    monkeypatch,
+):
+    server, _ = start_server(isolated_project)
+
+    try:
+        calls = []
+
+        def fake_analyze_failure(
+            instruction,
+            error,
+            test_output,
+        ):
+            calls.append(len(calls) + 1)
+
+            return {
+                "diagnosis": "Correção deliberadamente inválida.",
+                "correction": "A correção continuará falhando.",
+                "risk": "baixo",
+                "action": "modify",
+                "path": "limite_reparo.py",
+                "content": "print(\n",
+            }
+
+        monkeypatch.setattr(
+            api.gateway.repair_engine,
+            "analyze_failure",
+            fake_analyze_failure,
+        )
+
+        status, created = request(
+            server,
+            "POST",
+            "/plan",
+            {
+                "instruction": (
+                    "Crie limite_reparo.py contendo "
+                    "código inválido"
+                ),
+            },
+        )
+
+        assert status == 200
+        assert created["status"] == "pending"
+
+        approval_id = created["approval_id"]
+
+        status, result = request(
+            server,
+            "POST",
+            f"/approve/{approval_id}",
+        )
+
+        assert status == 200
+        assert result["status"] == "rolled_back"
+        assert result["repair_attempts"] == 2
+
+        assert result["repair"]["status"] == "limit_reached"
+
+        # O limite deve impedir uma terceira análise.
+        assert calls == [1, 2]
+
+        target = isolated_project / "limite_reparo.py"
+
+        assert not target.exists()
+
+        status, task = request(
+            server,
+            "GET",
+            f"/tasks/{approval_id}",
+        )
+
+        assert status == 200
+        assert task["status"] == "rolled_back"
+        assert task["repair_attempts"] == 2
+        assert task["repair"]["status"] == "limit_reached"
+
+    finally:
+        server.shutdown()
+        server.server_close()
+
+def test_gateway_high_risk_repair_triggers_immediate_rollback(
+    isolated_project,
+    monkeypatch,
+):
+    server, _ = start_server(isolated_project)
+
+    try:
+        calls = []
+
+        def fake_analyze_failure(
+            instruction,
+            error,
+            test_output,
+        ):
+            calls.append(1)
+
+            return {
+                "diagnosis": "A correção exige alteração potencialmente perigosa.",
+                "correction": "Alteração estrutural de alto risco.",
+                "risk": "alto",
+                "action": "modify",
+                "path": "alto_risco.py",
+                "content": 'print("NAO DEVE SER APLICADO")\n',
+            }
+
+        monkeypatch.setattr(
+            api.gateway.repair_engine,
+            "analyze_failure",
+            fake_analyze_failure,
+        )
+
+        status, created = request(
+            server,
+            "POST",
+            "/plan",
+            {
+                "instruction": (
+                    "Crie alto_risco.py contendo "
+                    "código inválido"
+                ),
+            },
+        )
+
+        assert status == 200
+        assert created["status"] == "pending"
+
+        approval_id = created["approval_id"]
+
+        status, result = request(
+            server,
+            "POST",
+            f"/approve/{approval_id}",
+        )
+
+        assert status == 200
+        assert result["status"] == "rolled_back"
+
+        # Alto risco não deve consumir uma tentativa de reparo.
+        assert result["repair_attempts"] == 0
+
+        assert result["repair"]["risk"] == "alto"
+
+        # A análise aconteceu uma única vez.
+        assert calls == [1]
+
+        target = isolated_project / "alto_risco.py"
+
+        # A correção perigosa nunca deve ser aplicada.
+        assert not target.exists()
+
+        status, task = request(
+            server,
+            "GET",
+            f"/tasks/{approval_id}",
+        )
+
+        assert status == 200
+        assert task["status"] == "rolled_back"
+        assert task["repair_attempts"] == 0
+        assert task["repair"]["risk"] == "alto"
+
+    finally:
+        server.shutdown()
+        server.server_close()
