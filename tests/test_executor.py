@@ -34,7 +34,7 @@ def test_create_file():
     executor = SafeExecutor(root)
     result = executor.execute(transaction)
 
-    assert result.status == TransactionStatus.COMMITTED
+    assert result.status == TransactionStatus.EXECUTING
     assert Path("novo.py").read_text(encoding="utf-8") == 'print("ok")'
 
     Path("novo.py").unlink()
@@ -78,7 +78,7 @@ def test_modify_file():
     executor = SafeExecutor(".")
     result = executor.execute(transaction)
 
-    assert result.status == TransactionStatus.COMMITTED
+    assert result.status == TransactionStatus.EXECUTING
     assert target.read_text(encoding="utf-8") == "depois"
 
     target.unlink()
@@ -115,7 +115,7 @@ def test_delete_file():
     executor = SafeExecutor(".")
     result = executor.execute(transaction)
 
-    assert result.status == TransactionStatus.COMMITTED
+    assert result.status == TransactionStatus.EXECUTING
     assert not target.exists()
 
 

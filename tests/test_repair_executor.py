@@ -148,3 +148,201 @@ class TestRepairExecutor:
         assert "new_file.py" in transaction.metadata["created"]
         assert len(transaction.changes) == 1
         assert transaction.changes[0].path == "new_file.py"
+
+
+def test_repair_executor_rejects_high_risk_content(tmp_path):
+    repair_executor, transactions = (
+        TestRepairExecutor()._make_executor(tmp_path)
+    )
+
+    from core.schemas.models import Transaction
+
+    transaction = Transaction(
+        transaction_id="high-risk-repair",
+        changes=[],
+    )
+
+    repair = {
+        "action": "create",
+        "path": "danger.py",
+        "content": "import os\nos.system('rm -rf /')",
+        "correction": "correção perigosa",
+    }
+
+    import pytest
+
+    with pytest.raises(PermissionError, match="alto risco"):
+        repair_executor.build_change(repair)
+
+
+def test_repair_executor_rejects_high_declared_risk(tmp_path):
+    repair_executor, _ = (
+        TestRepairExecutor()._make_executor(tmp_path)
+    )
+
+    repair = {
+        "action": "create",
+        "path": "danger.py",
+        "content": "print('safe')",
+        "correction": "teste",
+        "risk": "alto",
+    }
+
+    import pytest
+
+    with pytest.raises(
+        PermissionError,
+        match="política de risco",
+    ):
+        repair_executor.build_change(repair)
+
+
+def test_repair_executor_rejects_invalid_declared_risk(tmp_path):
+    repair_executor, _ = (
+        TestRepairExecutor()._make_executor(tmp_path)
+    )
+
+    repair = {
+        "action": "create",
+        "path": "danger.py",
+        "content": "print('safe')",
+        "correction": "teste",
+        "risk": "critico",
+    }
+
+    import pytest
+
+    with pytest.raises(
+        PermissionError,
+        match="política de risco",
+    ):
+        repair_executor.build_change(repair)
+
+
+def test_repair_executor_accepts_low_risk_repair(tmp_path):
+    repair_executor, _ = (
+        TestRepairExecutor()._make_executor(tmp_path)
+    )
+
+    repair = {
+        "action": "create",
+        "path": "safe.py",
+        "content": "print('safe')",
+        "correction": "teste",
+        "risk": "baixo",
+    }
+
+    change = repair_executor.build_change(repair)
+
+    assert change.path == "safe.py"
+
+
+def test_repair_executor_uses_security_policy_for_content(
+    tmp_path,
+):
+    from core.engine.repair_executor import RepairExecutor
+    from core.security import SecurityPolicy
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Transaction
+
+    class FakeExecutor:
+        def execute_change(self, change):
+            raise AssertionError(
+                "Conteúdo perigoso não deveria chegar ao executor."
+            )
+
+    class FakeTests:
+        def run(self, paths):
+            return {"success": True}
+
+    security = SecurityPolicy(tmp_path)
+    transactions = TransactionManager(tmp_path)
+
+    repair_executor = RepairExecutor(
+        security=security,
+        transaction_manager=transactions,
+        executor=FakeExecutor(),
+        test_runner=FakeTests(),
+    )
+
+    transaction = Transaction(
+        transaction_id="security-policy-integration",
+        changes=[],
+        metadata={},
+    )
+
+    transaction = transactions.begin(transaction)
+
+    repair = {
+        "action": "create",
+        "path": "danger.py",
+        "content": "import subprocess\nsubprocess.run(['danger'])",
+        "risk": "baixo",
+        "correction": "teste",
+    }
+
+    import pytest
+
+    with pytest.raises(
+        PermissionError,
+        match="alto risco",
+    ):
+        repair_executor.execute_repair(
+            repair,
+            "Crie danger.py",
+            transaction,
+        )
+
+
+def test_repair_executor_rejects_symlink_path(tmp_path):
+    import pytest
+    from core.engine.repair_executor import RepairExecutor
+    from core.security import SecurityPolicy
+    from core.executor.transaction_manager import TransactionManager
+
+    root = tmp_path / "project"
+    root.mkdir()
+
+    target = root / "real.py"
+    target.write_text("print('real')\n", encoding="utf-8")
+
+    link = root / "link.py"
+    link.symlink_to(target)
+
+    class FakeExecutor:
+        def execute_change(self, change):
+            raise AssertionError("Symlink não deveria ser executado.")
+
+    class FakeTests:
+        def run(self, paths):
+            return {"success": True}
+
+    transactions = TransactionManager(root)
+
+    executor = RepairExecutor(
+        security=SecurityPolicy(root),
+        transaction_manager=transactions,
+        executor=FakeExecutor(),
+        test_runner=FakeTests(),
+    )
+
+    transaction = transactions.begin(
+        __import__("core.schemas.models", fromlist=["Transaction"]).Transaction(
+            transaction_id="symlink-test",
+            changes=[],
+            metadata={},
+        )
+    )
+
+    with pytest.raises(PermissionError):
+        executor.execute_repair(
+            {
+                "action": "modify",
+                "path": "link.py",
+                "content": "print('danger')\n",
+                "risk": "baixo",
+                "correction": "teste",
+            },
+            "Corrija link.py",
+            transaction,
+        )

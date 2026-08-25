@@ -10,7 +10,6 @@ class Command:
 
 
 class CommandParser:
-
     def parse(self, text: str) -> Command:
         text = text.strip()
 
@@ -38,16 +37,20 @@ class CommandParser:
         else:
             action = "analyze"
 
-        words = text.split(maxsplit=1)
-
-        if len(words) == 1:
-            instruction = ""
-        else:
-            instruction = words[1]
-
         target = ""
 
         if action in {"create", "modify", "delete"}:
+            words = text.split(maxsplit=1)
+
+            if len(words) == 1:
+                return Command(
+                    raw=text,
+                    action="analyze",
+                    target="",
+                    instruction="",
+                )
+
+            instruction = words[1]
             parts = instruction.split(maxsplit=1)
 
             if parts:
@@ -57,6 +60,23 @@ class CommandParser:
                     instruction = parts[1]
                 else:
                     instruction = ""
+
+        else:
+            if lowered in {
+                "analise",
+                "análise",
+                "crie",
+                "criar",
+                "modifique",
+                "modificar",
+                "altere",
+                "delete",
+                "apague",
+                "remova",
+            }:
+                instruction = ""
+            else:
+                instruction = text
 
         return Command(
             raw=text,

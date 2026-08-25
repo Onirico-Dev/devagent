@@ -2,6 +2,7 @@ import json
 from http.client import HTTPConnection
 from threading import Thread
 from http.server import HTTPServer
+import pytest
 
 import api
 
@@ -1353,3 +1354,311 @@ def test_gateway_high_risk_repair_triggers_immediate_rollback(
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_gateway_does_not_commit_when_git_returns_no_changes(tmp_path, monkeypatch):
+    from core.gateway import DevAgentGateway
+
+    class FakeAgent:
+        ai = None
+        def process(self, instruction):
+            return {
+                "instruction": instruction,
+                "changes": [
+                    {
+                        "path": "app.py",
+                        "action": "create",
+                        "content": "print('hello')",
+                    }
+                ],
+            }
+
+        def build_transaction(self, instruction):
+            from core.schemas.models import Change, ChangeType, Transaction
+
+            return Transaction(
+                transaction_id="",
+                changes=[
+                    Change(
+                        change_type=ChangeType.CREATE,
+                        path="app.py",
+                        content="print('hello')",
+                    )
+                ],
+            )
+
+    agent = FakeAgent()
+    gateway = DevAgentGateway(agent, root=str(tmp_path))
+
+    monkeypatch.setattr(
+        gateway.supervisor,
+        "approve",
+        lambda approval_id: {
+            "plan": {
+                "instruction": "Crie app.py contendo print('hello')"
+            }
+        },
+    )
+
+    monkeypatch.setattr(
+        gateway.tests,
+        "run",
+        lambda paths: {
+            "success": True,
+            "stdout": "",
+            "stderr": "",
+        },
+    )
+
+    monkeypatch.setattr(
+        gateway.git,
+        "commit_transaction",
+        lambda *args, **kwargs: {
+            "status": "no_changes",
+            "transaction_id": args[0],
+        },
+    )
+
+    approval_id = gateway.supervisor.request_approval(
+        {
+            "instruction": "Crie app.py contendo print('hello')",
+            "changes": [],
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="Commit Git não foi concluído"):
+        gateway.approve(approval_id)
+
+    assert (tmp_path / "app.py").exists() is False
+
+
+def test_gateway_does_not_commit_when_git_returns_error(tmp_path, monkeypatch):
+    from core.gateway import DevAgentGateway
+
+    class FakeAgent:
+        ai = None
+        def process(self, instruction):
+            return {
+                "instruction": instruction,
+                "changes": [
+                    {
+                        "path": "app.py",
+                        "action": "create",
+                        "content": "print('hello')",
+                    }
+                ],
+            }
+
+        def build_transaction(self, instruction):
+            from core.schemas.models import Change, ChangeType, Transaction
+
+            return Transaction(
+                transaction_id="",
+                changes=[
+                    Change(
+                        change_type=ChangeType.CREATE,
+                        path="app.py",
+                        content="print('hello')",
+                    )
+                ],
+            )
+
+    agent = FakeAgent()
+    gateway = DevAgentGateway(agent, root=str(tmp_path))
+
+    monkeypatch.setattr(
+        gateway.supervisor,
+        "approve",
+        lambda approval_id: {
+            "plan": {
+                "instruction": "Crie app.py contendo print('hello')"
+            }
+        },
+    )
+
+    monkeypatch.setattr(
+        gateway.tests,
+        "run",
+        lambda paths: {
+            "success": True,
+            "stdout": "",
+            "stderr": "",
+        },
+    )
+
+    monkeypatch.setattr(
+        gateway.git,
+        "commit_transaction",
+        lambda *args, **kwargs: {
+            "status": "error",
+            "transaction_id": args[0],
+            "message": "simulated git failure",
+        },
+    )
+
+    approval_id = gateway.supervisor.request_approval(
+        {
+            "instruction": "Crie app.py contendo print('hello')",
+            "changes": [],
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="Commit Git não foi concluído"):
+        gateway.approve(approval_id)
+
+    assert (tmp_path / "app.py").exists() is False
+
+def test_gateway_rolls_back_when_git_commit_fails(tmp_path, monkeypatch):
+    from core.gateway import DevAgentGateway
+
+    class FakeAgent:
+        ai = None
+
+        def process(self, instruction):
+            return {
+                "instruction": instruction,
+                "changes": [
+                    {
+                        "path": "commit_failure.py",
+                        "action": "create",
+                        "content": "print('should be removed')",
+                    }
+                ],
+            }
+
+        def build_transaction(self, instruction):
+            from core.schemas.models import Change, ChangeType, Transaction
+
+            return Transaction(
+                transaction_id="",
+                changes=[
+                    Change(
+                        change_type=ChangeType.CREATE,
+                        path="commit_failure.py",
+                        content="print('should be removed')",
+                    )
+                ],
+            )
+
+    gateway = DevAgentGateway(
+        FakeAgent(),
+        root=str(tmp_path),
+    )
+
+    monkeypatch.setattr(
+        gateway.supervisor,
+        "approve",
+        lambda approval_id: {
+            "plan": {
+                "instruction": "Crie commit_failure.py"
+            }
+        },
+    )
+
+    monkeypatch.setattr(
+        gateway.tests,
+        "run",
+        lambda paths: {
+            "success": True,
+            "stdout": "",
+            "stderr": "",
+        },
+    )
+
+    monkeypatch.setattr(
+        gateway.git,
+        "commit_transaction",
+        lambda *args, **kwargs: {
+            "status": "error",
+            "transaction_id": args[0],
+            "message": "simulated git failure",
+        },
+    )
+
+    approval_id = gateway.supervisor.request_approval(
+        {
+            "instruction": "Crie commit_failure.py",
+            "changes": [],
+        }
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Commit Git não foi concluído",
+    ):
+        gateway.approve(approval_id)
+
+    # O arquivo foi criado durante a execução,
+    # mas deve desaparecer após a falha do commit.
+    assert not (
+        tmp_path / "commit_failure.py"
+    ).exists()
+
+
+def test_gateway_evaluate_execution_commits_when_verified(isolated_project):
+    from core.gateway import DevAgentGateway
+
+    class FakeAI:
+        pass
+
+    class FakeAgent:
+        ai = FakeAI()
+
+    gateway = DevAgentGateway(
+        agent=FakeAgent(),
+        root=isolated_project,
+    )
+
+    result = gateway._evaluate_execution({
+        "success": True,
+        "tests": {"success": True},
+        "verification": {"success": True},
+    })
+
+    assert result == "commit"
+
+
+def test_gateway_evaluate_execution_repairs_failed_tests(isolated_project):
+    from core.gateway import DevAgentGateway
+
+    class FakeAI:
+        pass
+
+    class FakeAgent:
+        ai = FakeAI()
+
+    gateway = DevAgentGateway(
+        agent=FakeAgent(),
+        root=isolated_project,
+    )
+
+    result = gateway._evaluate_execution({
+        "success": False,
+        "tests": {"success": False},
+        "verification": None,
+    })
+
+    assert result == "repair"
+
+
+def test_gateway_evaluate_execution_repairs_failed_verification(isolated_project):
+    from core.gateway import DevAgentGateway
+
+    class FakeAI:
+        pass
+
+    class FakeAgent:
+        ai = FakeAI()
+
+    gateway = DevAgentGateway(
+        agent=FakeAgent(),
+        root=isolated_project,
+    )
+
+    result = gateway._evaluate_execution({
+        "success": True,
+        "tests": {"success": True},
+        "verification": {"success": False},
+    })
+
+    assert result == "repair"

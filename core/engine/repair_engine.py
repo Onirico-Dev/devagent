@@ -74,6 +74,16 @@ Regras:
             "content",
         }
 
+        if not isinstance(data, dict):
+            return {
+                "diagnosis": "Resposta do modelo não é um objeto JSON.",
+                "correction": "",
+                "risk": "alto",
+                "action": "none",
+                "path": "",
+                "content": "",
+            }
+
         if not required.issubset(data):
             return {
                 "diagnosis": "Resposta incompleta do modelo.",
@@ -84,6 +94,9 @@ Regras:
                 "content": "",
             }
 
+        if not isinstance(data["risk"], str):
+            data["risk"] = "alto"
+
         if data["risk"] not in {
             "baixo",
             "medio",
@@ -91,11 +104,32 @@ Regras:
         }:
             data["risk"] = "alto"
 
+        if not isinstance(data["action"], str):
+            data["action"] = "none"
+
         if data["action"] not in {
             "create",
             "modify",
             "none",
         }:
             data["action"] = "none"
+
+        if not isinstance(data["path"], str):
+            data["path"] = ""
+
+        if not isinstance(data["content"], str):
+            data["content"] = ""
+
+        MAX_REPAIR_CONTENT = 1_000_000
+
+        if len(data["content"]) > MAX_REPAIR_CONTENT:
+            return {
+                "diagnosis": "Conteúdo de reparo excede o limite permitido.",
+                "correction": "",
+                "risk": "alto",
+                "action": "none",
+                "path": "",
+                "content": "",
+            }
 
         return data

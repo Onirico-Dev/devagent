@@ -50,3 +50,4 @@ class Transaction:
     status: TransactionStatus = TransactionStatus.PENDING
     changes: list[Change] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    repair_state: dict[str, Any] = field(default_factory=dict)

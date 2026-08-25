@@ -19,6 +19,47 @@ class RepairExecutor:
         self.executor = executor
         self.test_runner = test_runner
 
+    def _validate_risk(self, repair):
+        declared_risk = repair.get("risk", "baixo")
+
+        if declared_risk not in {"baixo", "medio", "alto"}:
+            raise PermissionError(
+                "Reparo não autorizado pela política de risco: "
+                f"risco inválido ({declared_risk})."
+            )
+
+        if declared_risk == "alto":
+            raise PermissionError(
+                "Reparo de alto risco não autorizado "
+                "pela política de risco."
+            )
+
+        content = repair.get("content", "")
+
+        if not isinstance(content, str):
+            raise PermissionError(
+                "Conteúdo do reparo deve ser texto."
+            )
+
+        self.security.validate_content(content)
+
+        assessed_risk = self.security.assess_content_risk(
+            content
+        )
+
+        if assessed_risk == "alto":
+            raise PermissionError(
+                "Reparo de alto risco não autorizado "
+                "pela política de risco."
+            )
+
+        if declared_risk == "medio" and assessed_risk != "baixo":
+            raise PermissionError(
+                "Reparo não autorizado pela política de risco."
+            )
+
+        return declared_risk
+
     def build_change(self, repair):
         if not repair:
             raise ValueError("Proposta de reparo vazia.")
@@ -49,7 +90,16 @@ class RepairExecutor:
                 "Conteúdo do reparo deve ser texto."
             )
 
+        self._validate_risk(repair)
+
         self.security.validate_path(path)
+
+        target = self.security.root / path
+
+        if target.exists() and not target.is_file():
+            raise PermissionError(
+                f"Caminho não é um arquivo: {path}"
+            )
 
         change_type = (
             ChangeType.CREATE
@@ -67,6 +117,23 @@ class RepairExecutor:
             ),
         )
 
+    def execution_result(self, result):
+        if result is None:
+            return {
+                "status": "failed",
+                "success": False,
+                "error": "Resultado de execução ausente.",
+            }
+
+        if isinstance(result, dict):
+            output = dict(result)
+        else:
+            output = {"result": result}
+
+        output.setdefault("status", "success")
+        output["success"] = output["status"] == "success"
+        return output
+
     def execute_repair(
         self,
         repair,
@@ -77,10 +144,26 @@ class RepairExecutor:
 
         self.security.validate_path(change.path)
 
+        target = self.security.root / change.path
+
+        if target.exists() and target.is_symlink():
+            raise PermissionError(
+                f"Reparo recusado em caminho simbólico: {change.path}"
+            )
+
         existing_paths = {
             existing.path
             for existing in transaction.changes
         }
+
+        if (
+            change.path in existing_paths
+            and change.change_type == ChangeType.CREATE
+        ):
+            raise PermissionError(
+                "Arquivo já está registrado na transação: "
+                f"{change.path}"
+            )
 
         if change.path not in existing_paths:
             if change.change_type == ChangeType.MODIFY:
@@ -88,14 +171,13 @@ class RepairExecutor:
                     transaction,
                     change.path,
                 )
-
             elif change.change_type == ChangeType.CREATE:
                 self.transaction_manager.register_created(
                     transaction,
                     change.path,
                 )
 
-        transaction.changes.append(change)
+            transaction.changes.append(change)
 
         transaction.metadata.setdefault(
             "repairs",
@@ -112,6 +194,10 @@ class RepairExecutor:
                 "correction": repair.get(
                     "correction",
                     "",
+                ),
+                "risk": repair.get(
+                    "risk",
+                    "baixo",
                 ),
             }
         )

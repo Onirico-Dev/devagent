@@ -121,7 +121,7 @@ class Supervisor:
 
         if request is None:
             raise KeyError(
-                "Solicitação não encontrada."
+                "Tarefa não encontrada."
             )
 
         if request["status"] != (
