@@ -2,41 +2,41 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from core.memory.persistent_store import PersistentStore
+
 
 class TaskHistory:
-
     def __init__(
         self,
         storage_path="transactions/tasks.json",
     ):
-
         self.storage_path = Path(
             storage_path
         ).resolve()
 
         self.storage_path.parent.mkdir(
             parents=True,
-            exist_ok=True
+            exist_ok=True,
+        )
+
+        self.store = PersistentStore(
+            self.storage_path
         )
 
         self.tasks = {}
-
         self._load()
 
     def _now(self):
-
         return datetime.now(
             timezone.utc
         ).isoformat()
 
     def _load(self):
-
         if not self.storage_path.exists():
             self.tasks = {}
             return
 
         try:
-
             data = json.loads(
                 self.storage_path.read_text(
                     encoding="utf-8"
@@ -53,27 +53,10 @@ class TaskHistory:
             OSError,
             json.JSONDecodeError,
         ):
-
             self.tasks = {}
 
     def _save(self):
-
-        temporary = self.storage_path.with_suffix(
-            ".tmp"
-        )
-
-        temporary.write_text(
-            json.dumps(
-                self.tasks,
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-
-        temporary.replace(
-            self.storage_path
-        )
+        self.store.save(self.tasks)
 
     def create(
         self,
@@ -81,10 +64,11 @@ class TaskHistory:
         instruction,
         plan,
     ):
-
         task_id = str(
             approval_id
         )
+
+        now = self._now()
 
         self.tasks[task_id] = {
             "task_id": task_id,
@@ -93,8 +77,8 @@ class TaskHistory:
             "plan": plan,
             "status": "pending",
             "transaction_id": None,
-            "created_at": self._now(),
-            "updated_at": self._now(),
+            "created_at": now,
+            "updated_at": now,
         }
 
         self._save()
@@ -108,7 +92,6 @@ class TaskHistory:
         transaction_id=None,
         extra=None,
     ):
-
         task = self.tasks.get(
             str(task_id)
         )
@@ -136,19 +119,16 @@ class TaskHistory:
         return task
 
     def get(self, task_id):
-
         return self.tasks.get(
             str(task_id)
         )
 
     def list_all(self):
-
         return list(
             self.tasks.values()
         )
 
     def list_pending(self):
-
         return [
             task
             for task in self.tasks.values()
@@ -156,7 +136,6 @@ class TaskHistory:
         ]
 
     def latest(self):
-
         tasks = self.list_all()
 
         if not tasks:
@@ -166,6 +145,6 @@ class TaskHistory:
             tasks,
             key=lambda task: task.get(
                 "updated_at",
-                ""
+                "",
             ),
         )
