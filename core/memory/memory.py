@@ -1,39 +1,63 @@
-import json
+from datetime import datetime, timezone
 from pathlib import Path
-from datetime import datetime
+
+from core.memory.persistent_store import PersistentStore
 
 
 class Memory:
-
     def __init__(self, path: str = "logs/memory.json"):
-        self.path = Path(path)
+        self.path = Path(path).resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
+        self.store = PersistentStore(self.path)
+
         if not self.path.exists():
-            self._save([])
+            self.store.save([])
 
     def _load(self):
-        with self.path.open("r", encoding="utf-8") as file:
-            return json.load(file)
+        data = self.store.load(default=[])
+
+        if not isinstance(data, list):
+            return []
+
+        return data
 
     def _save(self, data):
-        with self.path.open("w", encoding="utf-8") as file:
-            json.dump(data, file, indent=2, ensure_ascii=False)
+        if not isinstance(data, list):
+            raise ValueError("A memória deve ser uma lista.")
+
+        self.store.save(data)
 
     def add(self, event: str, data=None):
-        memory = self._load()
+        if not isinstance(event, str) or not event.strip():
+            raise ValueError("O evento da memória não pode ser vazio.")
 
-        memory.append({
-            "timestamp": datetime.now().isoformat(),
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "event": event,
             "data": data,
-        })
+        }
 
-        self._save(memory)
+        def append_event(memory):
+            if not isinstance(memory, list):
+                memory = []
+
+            memory.append(entry)
+            return memory
+
+        self.store.update(
+            append_event,
+            default=[],
+        )
 
     def all(self):
         return self._load()
 
     def last(self, amount: int = 10):
-        return self._load()[-amount:]
+        if not isinstance(amount, int):
+            raise TypeError("amount deve ser um inteiro.")
 
+        if amount < 0:
+            raise ValueError("amount não pode ser negativo.")
+
+        return self._load()[-amount:] if amount else []
