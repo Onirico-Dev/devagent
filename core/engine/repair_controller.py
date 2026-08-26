@@ -1,4 +1,12 @@
 class RepairController:
+    """
+    Controlador de compatibilidade do ciclo de reparo.
+
+    O estado autoritativo pertence ao RepairCycleState persistido
+    na Transaction. Este objeto mantém apenas a interface de
+    controle utilizada pelo Gateway.
+    """
+
     def __init__(self, max_attempts=3):
         if max_attempts < 1:
             raise ValueError(
@@ -20,7 +28,7 @@ class RepairController:
 
     def can_repair(self, transaction_id):
         return (
-            self.attempts.get(transaction_id, 0)
+            self.get_attempts(transaction_id)
             < self.max_attempts
         )
 

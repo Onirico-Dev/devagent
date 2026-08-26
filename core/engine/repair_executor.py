@@ -1,7 +1,6 @@
 from core.schemas.models import (
     Change,
     ChangeType,
-    Transaction,
     TransactionStatus,
 )
 
@@ -12,7 +11,7 @@ class RepairExecutor:
         security,
         transaction_manager,
         executor,
-        test_runner,
+        test_runner=None,
     ):
         self.security = security
         self.transaction_manager = transaction_manager
@@ -43,9 +42,7 @@ class RepairExecutor:
 
         self.security.validate_content(content)
 
-        assessed_risk = self.security.assess_content_risk(
-            content
-        )
+        assessed_risk = self.security.assess_content_risk(content)
 
         if assessed_risk == "alto":
             raise PermissionError(
@@ -91,7 +88,6 @@ class RepairExecutor:
             )
 
         self._validate_risk(repair)
-
         self.security.validate_path(path)
 
         target = self.security.root / path
@@ -117,23 +113,6 @@ class RepairExecutor:
             ),
         )
 
-    def execution_result(self, result):
-        if result is None:
-            return {
-                "status": "failed",
-                "success": False,
-                "error": "Resultado de execução ausente.",
-            }
-
-        if isinstance(result, dict):
-            output = dict(result)
-        else:
-            output = {"result": result}
-
-        output.setdefault("status", "success")
-        output["success"] = output["status"] == "success"
-        return output
-
     def execute_repair(
         self,
         repair,
@@ -148,7 +127,8 @@ class RepairExecutor:
 
         if target.exists() and target.is_symlink():
             raise PermissionError(
-                f"Reparo recusado em caminho simbólico: {change.path}"
+                "Reparo recusado em caminho simbólico: "
+                f"{change.path}"
             )
 
         existing_paths = {
@@ -177,7 +157,7 @@ class RepairExecutor:
                     change.path,
                 )
 
-            transaction.changes.append(change)
+        transaction.changes.append(change)
 
         transaction.metadata.setdefault(
             "repairs",
@@ -187,67 +167,58 @@ class RepairExecutor:
                 "path": change.path,
                 "action": change.change_type.value,
                 "instruction": instruction,
-                "diagnosis": repair.get(
-                    "diagnosis",
-                    "",
-                ),
-                "correction": repair.get(
-                    "correction",
-                    "",
-                ),
-                "risk": repair.get(
-                    "risk",
-                    "baixo",
-                ),
+                "diagnosis": repair.get("diagnosis", ""),
+                "correction": repair.get("correction", ""),
+                "risk": repair.get("risk", "baixo"),
             }
         )
 
         try:
-            transaction.status = (
-                TransactionStatus.EXECUTING
-            )
-
             self.executor.execute_change(change)
-
-            transaction.status = (
-                TransactionStatus.TESTING
-            )
-
-            test_result = self.test_runner.run(
-                [
-                    item.path
-                    for item in transaction.changes
-                ]
-            )
-
-            if not test_result["success"]:
-                return {
-                    "success": False,
-                    "status": transaction.status.value,
-                    "transaction_id": (
-                        transaction.transaction_id
-                    ),
-                    "tests": test_result,
-                    "instruction": instruction,
-                }
-
-            return {
-                "success": True,
-                "status": transaction.status.value,
-                "transaction_id": (
-                    transaction.transaction_id
-                ),
-                "tests": test_result,
-                "instruction": instruction,
-            }
-
         except Exception as exc:
+            transaction.status = TransactionStatus.FAILED
+
             return {
                 "success": False,
                 "status": "failed",
-                "transaction_id": (
-                    transaction.transaction_id
-                ),
+                "transaction_id": transaction.transaction_id,
                 "error": str(exc),
                 "instruction": instruction,
+                "repair": repair,
             }
+
+        transaction.status = TransactionStatus.TESTING
+
+        if self.test_runner is None:
+            return {
+                "success": True,
+                "status": "repair_applied",
+                "transaction_id": transaction.transaction_id,
+                "instruction": instruction,
+                "repair": repair,
+            }
+
+        test_result = self.test_runner.run(
+            [change.path]
+        )
+
+        if not isinstance(test_result, dict):
+            test_result = {
+                "success": False,
+                "status": "invalid_test_result",
+                "stderr": "Resultado de testes inválido.",
+                "stdout": "",
+            }
+
+        return {
+            "success": bool(test_result.get("success", False)),
+            "status": (
+                "repair_verified"
+                if test_result.get("success", False)
+                else "repair_failed"
+            ),
+            "transaction_id": transaction.transaction_id,
+            "instruction": instruction,
+            "repair": repair,
+            "tests": test_result,
+        }

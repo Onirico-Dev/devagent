@@ -1,0 +1,1419 @@
+diff --git a/core/engine/repair_controller.py b/core/engine/repair_controller.py
+index 936c8e4..35de02c 100644
+--- a/core/engine/repair_controller.py
++++ b/core/engine/repair_controller.py
+@@ -1,4 +1,12 @@
+ class RepairController:
++    """
++    Controlador de compatibilidade do ciclo de reparo.
++
++    O estado autoritativo pertence ao RepairCycleState persistido
++    na Transaction. Este objeto mantém apenas a interface de
++    controle utilizada pelo Gateway.
++    """
++
+     def __init__(self, max_attempts=3):
+         if max_attempts < 1:
+             raise ValueError(
+@@ -20,7 +28,7 @@ class RepairController:
+ 
+     def can_repair(self, transaction_id):
+         return (
+-            self.attempts.get(transaction_id, 0)
++            self.get_attempts(transaction_id)
+             < self.max_attempts
+         )
+ 
+diff --git a/core/engine/repair_executor.py b/core/engine/repair_executor.py
+index e36392b..a36352e 100644
+--- a/core/engine/repair_executor.py
++++ b/core/engine/repair_executor.py
+@@ -1,8 +1,6 @@
+ from core.schemas.models import (
+     Change,
+     ChangeType,
+-    Transaction,
+-    TransactionStatus,
+ )
+ 
+ 
+@@ -12,7 +10,7 @@ class RepairExecutor:
+         security,
+         transaction_manager,
+         executor,
+-        test_runner,
++        test_runner=None,
+     ):
+         self.security = security
+         self.transaction_manager = transaction_manager
+@@ -53,7 +51,10 @@ class RepairExecutor:
+                 "pela política de risco."
+             )
+ 
+-        if declared_risk == "medio" and assessed_risk != "baixo":
++        if (
++            declared_risk == "medio"
++            and assessed_risk != "baixo"
++        ):
+             raise PermissionError(
+                 "Reparo não autorizado pela política de risco."
+             )
+@@ -91,7 +92,6 @@ class RepairExecutor:
+             )
+ 
+         self._validate_risk(repair)
+-
+         self.security.validate_path(path)
+ 
+         target = self.security.root / path
+@@ -117,23 +117,6 @@ class RepairExecutor:
+             ),
+         )
+ 
+-    def execution_result(self, result):
+-        if result is None:
+-            return {
+-                "status": "failed",
+-                "success": False,
+-                "error": "Resultado de execução ausente.",
+-            }
+-
+-        if isinstance(result, dict):
+-            output = dict(result)
+-        else:
+-            output = {"result": result}
+-
+-        output.setdefault("status", "success")
+-        output["success"] = output["status"] == "success"
+-        return output
+-
+     def execute_repair(
+         self,
+         repair,
+@@ -148,7 +131,8 @@ class RepairExecutor:
+ 
+         if target.exists() and target.is_symlink():
+             raise PermissionError(
+-                f"Reparo recusado em caminho simbólico: {change.path}"
++                "Reparo recusado em caminho simbólico: "
++                f"{change.path}"
+             )
+ 
+         existing_paths = {
+@@ -171,6 +155,7 @@ class RepairExecutor:
+                     transaction,
+                     change.path,
+                 )
++
+             elif change.change_type == ChangeType.CREATE:
+                 self.transaction_manager.register_created(
+                     transaction,
+@@ -203,42 +188,16 @@ class RepairExecutor:
+         )
+ 
+         try:
+-            transaction.status = (
+-                TransactionStatus.EXECUTING
+-            )
+-
+             self.executor.execute_change(change)
+ 
+-            transaction.status = (
+-                TransactionStatus.TESTING
+-            )
+-
+-            test_result = self.test_runner.run(
+-                [
+-                    item.path
+-                    for item in transaction.changes
+-                ]
+-            )
+-
+-            if not test_result["success"]:
+-                return {
+-                    "success": False,
+-                    "status": transaction.status.value,
+-                    "transaction_id": (
+-                        transaction.transaction_id
+-                    ),
+-                    "tests": test_result,
+-                    "instruction": instruction,
+-                }
+-
+             return {
+                 "success": True,
+-                "status": transaction.status.value,
++                "status": "repair_applied",
+                 "transaction_id": (
+                     transaction.transaction_id
+                 ),
+-                "tests": test_result,
+                 "instruction": instruction,
++                "repair": repair,
+             }
+ 
+         except Exception as exc:
+@@ -250,4 +209,5 @@ class RepairExecutor:
+                 ),
+                 "error": str(exc),
+                 "instruction": instruction,
++                "repair": repair,
+             }
+diff --git a/core/gateway.py b/core/gateway.py
+index ba853fc..f38d7ff 100644
+--- a/core/gateway.py
++++ b/core/gateway.py
+@@ -7,10 +7,10 @@ from core.executor.git_manager import GitManager
+ from core.engine.repair_engine import RepairEngine
+ from core.engine.repair_executor import RepairExecutor
+ from core.engine.repair_controller import RepairController
++from core.engine.repair_cycle_state import RepairCycleState
+ from core.memory.task_history import TaskHistory
+ 
+ 
+-from core.engine.repair_cycle_state import RepairCycleState
+ class DevAgentGateway:
+     MAX_REPAIR_ATTEMPTS = 2
+ 
+@@ -46,6 +46,10 @@ class DevAgentGateway:
+             )
+         )
+ 
++    # ------------------------------------------------------------------
++    # HISTORY
++    # ------------------------------------------------------------------
++
+     def _update_history_safe(
+         self,
+         approval_id,
+@@ -53,13 +57,6 @@ class DevAgentGateway:
+         transaction_id=None,
+         extra=None,
+     ):
+-        """
+-        Atualiza o histórico quando a tarefa existe.
+-
+-        O Gateway também pode ser exercitado diretamente em testes
+-        através do Supervisor. Nesse caso, a aprovação pode não ter
+-        sido registrada no TaskHistory previamente.
+-        """
+         try:
+             return self.history.update(
+                 approval_id,
+@@ -72,6 +69,10 @@ class DevAgentGateway:
+                 raise
+             return None
+ 
++    # ------------------------------------------------------------------
++    # TASK CREATION
++    # ------------------------------------------------------------------
++
+     def create_task(self, instruction):
+         if not isinstance(instruction, str) or not instruction.strip():
+             raise ValueError("Instrução inválida.")
+@@ -79,20 +80,29 @@ class DevAgentGateway:
+         result = self.agent.process(instruction)
+ 
+         if not isinstance(result, dict):
+-            raise ValueError("Plano inválido retornado pelo agente.")
++            raise ValueError(
++                "Plano inválido retornado pelo agente."
++            )
+ 
+         changes = result.get("changes")
+ 
+         if not isinstance(changes, list):
+-            raise ValueError("Plano não possui lista de alterações.")
++            raise ValueError(
++                "Plano não possui lista de alterações."
++            )
+ 
+         for change in changes:
+             if not isinstance(change, dict):
+-                raise ValueError("Alteração inválida no plano.")
++                raise ValueError(
++                    "Alteração inválida no plano."
++                )
+ 
+             path = change.get("path")
++
+             if not path:
+-                raise ValueError("Alteração sem caminho.")
++                raise ValueError(
++                    "Alteração sem caminho."
++                )
+ 
+             self.security.validate_path(path)
+ 
+@@ -120,6 +130,10 @@ class DevAgentGateway:
+             "plan": result,
+         }
+ 
++    # ------------------------------------------------------------------
++    # EXECUTION DECISION
++    # ------------------------------------------------------------------
++
+     def execute_approved(self, approval_id):
+         request = self.supervisor.get(approval_id)
+ 
+@@ -127,7 +141,9 @@ class DevAgentGateway:
+             raise KeyError("Tarefa não encontrada.")
+ 
+         if request.get("status") != "approved":
+-            raise ValueError("Tarefa não está aprovada.")
++            raise ValueError(
++                "Tarefa não está aprovada."
++            )
+ 
+         return self.approve(approval_id)
+ 
+@@ -140,31 +156,122 @@ class DevAgentGateway:
+ 
+         verification = result.get("verification")
+ 
+-        if verification is not None and not verification.get("success"):
++        if (
++            verification is not None
++            and not verification.get("success")
++        ):
+             return "repair"
+ 
+         tests = result.get("tests")
+ 
+-        if isinstance(tests, dict) and not tests.get("success", False):
++        if (
++            isinstance(tests, dict)
++            and not tests.get("success", False)
++        ):
+             return "repair"
+ 
+         return "commit"
+ 
+-    def _attempt_repair(self, instruction, transaction, test_result):
+-        if not self.repair_controller.can_repair(
+-            transaction.transaction_id
+-        ):
++    # ------------------------------------------------------------------
++    # REPAIR STATE
++    # ------------------------------------------------------------------
++
++    def _restore_repair_state(self, transaction):
++        state = RepairCycleState.restore(transaction)
++
++        state.max_attempts = self.MAX_REPAIR_ATTEMPTS
++
++        self.repair_controller.max_attempts = (
++            state.max_attempts
++        )
++
++        self.repair_controller.restore_state(
++            transaction.transaction_id,
++            state.attempts,
++        )
++
++        return state
++
++    def _sync_repair_controller(
++        self,
++        transaction,
++        state,
++    ):
++        self.repair_controller.max_attempts = (
++            state.max_attempts
++        )
++
++        self.repair_controller.restore_state(
++            transaction.transaction_id,
++            state.attempts,
++        )
++
++    # ------------------------------------------------------------------
++    # SINGLE REPAIR ATTEMPT
++    # ------------------------------------------------------------------
++
++    def _attempt_repair(
++        self,
++        instruction,
++        transaction,
++        test_result,
++        repair_state,
++    ):
++        """
++        Executa exatamente uma tentativa de reparo.
++
++        A análise ocorre antes do consumo da tentativa.
++        Somente uma correção realmente aplicável consome
++        uma tentativa.
++        """
++
++        self._sync_repair_controller(
++            transaction,
++            repair_state,
++        )
++
++        if not repair_state.can_continue():
+             return {
+                 "status": "limit_reached",
+                 "success": False,
++                "repair": {
++                    "status": "limit_reached",
++                    "action": "none",
++                    "risk": "baixo",
++                    "path": "",
++                    "content": "",
++                    "diagnosis": (
++                        "Limite máximo de tentativas "
++                        "de reparo atingido."
++                    ),
++                    "correction": (
++                        "Nenhuma nova correção automática "
++                        "será tentada."
++                    ),
++                },
+             }
+ 
++        repair_state.mark_analyzing()
++        repair_state.persist(transaction)
++
+         diagnosis = self.repair_engine.analyze_failure(
+             instruction=instruction,
+             error=test_result.get("stderr", ""),
+             test_output=test_result.get("stdout", ""),
+         )
+ 
++        if not isinstance(diagnosis, dict):
++            diagnosis = {
++                "action": "none",
++                "risk": "baixo",
++                "path": "",
++                "content": "",
++                "diagnosis": (
++                    "Diagnóstico de reparo inválido."
++                ),
++                "correction": "",
++            }
++
+         if diagnosis.get("risk") == "alto":
+             return {
+                 "status": "high_risk",
+@@ -179,46 +286,154 @@ class DevAgentGateway:
+                 "repair": diagnosis,
+             }
+ 
+-        if not self.repair_controller.register_attempt(
+-            transaction.transaction_id
+-        ):
++        if not repair_state.can_continue():
+             return {
+                 "status": "limit_reached",
+                 "success": False,
++                "repair": diagnosis,
+             }
+ 
+-        result = self.repair_executor.execute_repair(
++        repair_state.mark_repairing()
++
++        repair_state.record(
++            action=diagnosis.get(
++                "action",
++                "unknown",
++            ),
++            status="repairing",
++        )
++
++        repair_state.persist(transaction)
++
++        self._sync_repair_controller(
++            transaction,
++            repair_state,
++        )
++
++        repair_result = self.repair_executor.execute_repair(
+             diagnosis,
+             instruction,
+             transaction,
+         )
+ 
+-        result["repair"] = diagnosis
+-        result["transaction_id"] = transaction.transaction_id
+-        result["repair_attempts"] = (
+-            self.repair_controller.get_attempts(
+-                transaction.transaction_id
++        if not isinstance(repair_result, dict):
++            repair_result = {
++                "success": False,
++                "status": "failed",
++                "error": (
++                    "Resultado de reparo inválido."
++                ),
++            }
++
++        repair_result["repair"] = diagnosis
++        repair_result["transaction_id"] = (
++            transaction.transaction_id
++        )
++        repair_result["repair_attempts"] = (
++            repair_state.attempts
++        )
++
++        if not repair_result.get("success"):
++            error = repair_result.get(
++                "error",
++                "",
+             )
++
++            repair_state.mark_failed(
++                error=error,
++            )
++
++            repair_state.persist(transaction)
++
++            return repair_result
++
++        repair_state.mark_testing()
++        repair_state.persist(transaction)
++
++        test_result = self.tests.run(
++            [
++                change.path
++                for change in transaction.changes
++            ]
+         )
+ 
+-        return result
++        repair_result["tests"] = test_result
++
++        if test_result.get("success"):
++            repair_state.mark_verified()
++            repair_state.persist(transaction)
++        else:
++            repair_state.mark_failed(
++                error=test_result.get(
++                    "stderr",
++                    "",
++                )
++            )
++            repair_state.persist(transaction)
++
++        return repair_result
++
++    # ------------------------------------------------------------------
++    # COMPLETE REPAIR CYCLE
++    # ------------------------------------------------------------------
+ 
+     def _run_repair_cycle(
+         self,
+         instruction,
+         transaction,
+         test_result,
++        repair_state,
+     ):
+-        while (
+-            not test_result.get("success", False)
+-            and self.repair_controller.can_repair(
+-                transaction.transaction_id
++        """
++        Único ciclo de reparo do Gateway.
++
++        Cada iteração:
++        1. verifica limite;
++        2. analisa falha;
++        3. aplica uma correção;
++        4. executa testes;
++        5. repete enquanto houver tentativa disponível.
++
++        O método não faz commit nem rollback.
++        """
++
++        while not test_result.get("success", False):
++
++            self._sync_repair_controller(
++                transaction,
++                repair_state,
+             )
+-        ):
++
++            if not repair_state.can_continue():
++                return {
++                    "success": False,
++                    "status": "limit_reached",
++                    "tests": test_result,
++                    "repair_attempts": (
++                        repair_state.attempts
++                    ),
++                    "repair": {
++                        "action": "none",
++                        "risk": "baixo",
++                        "path": "",
++                        "content": "",
++                        "status": "limit_reached",
++                        "diagnosis": (
++                            "Limite máximo de tentativas "
++                            "de reparo atingido."
++                        ),
++                        "correction": (
++                            "Nenhuma nova correção automática "
++                            "será tentada."
++                        ),
++                    },
++                }
++
+             repair_result = self._attempt_repair(
+-                instruction,
+-                transaction,
+-                test_result,
++                instruction=instruction,
++                transaction=transaction,
++                test_result=test_result,
++                repair_state=repair_state,
+             )
+ 
+             if not repair_result.get("success"):
+@@ -226,437 +441,389 @@ class DevAgentGateway:
+                     "success": False,
+                     "status": repair_result.get(
+                         "status",
+-                        "rollback",
++                        "repair_failed",
+                     ),
+                     "tests": test_result,
+-                    "repair": repair_result.get("repair"),
+-                    "repair_attempts": repair_result.get(
+-                        "repair_attempts",
+-                        self.repair_controller.get_attempts(
+-                            transaction.transaction_id
+-                        ),
++                    "repair": repair_result.get(
++                        "repair"
++                    ),
++                    "repair_attempts": (
++                        repair_state.attempts
+                     ),
+                 }
+ 
+             test_result = repair_result.get(
+                 "tests",
+-                test_result,
++                {},
+             )
+ 
+-        repair_state = RepairCycleState(
+-            transaction.transaction_id,
+-            status="verified",
+-            attempts=self.repair_controller.get_attempts(
+-                transaction.transaction_id
+-            ),
+-        )
+-
+-        transaction.repair_state = repair_state.to_dict()
++            if not isinstance(test_result, dict):
++                test_result = {
++                    "success": False,
++                    "status": "invalid_test_result",
++                    "stderr": (
++                        "Resultado de testes inválido."
++                    ),
++                    "stdout": "",
++                }
+ 
+-        transaction.metadata["repair_cycle"] = {
+-            "status": repair_state.status,
+-            "attempts": repair_state.attempts,
+-        }
++            if test_result.get("success"):
++                repair_state.mark_verified()
++                repair_state.persist(transaction)
++                break
+ 
+         return {
+-            "success": True,
+-            "status": "verified",
+-            "tests": test_result,
+-            "repair_attempts": self.repair_controller.get_attempts(
+-                transaction.transaction_id
++            "success": bool(
++                test_result.get("success", False)
+             ),
++            "status": (
++                "verified"
++                if test_result.get("success", False)
++                else "repair_failed"
++            ),
++            "tests": test_result,
++            "repair_attempts": repair_state.attempts,
+         }
+ 
+-    def approve(self, approval_id):
+-        self._update_history_safe(
+-            approval_id,
+-            status="approved",
+-        )
+-
+-        request = self.supervisor.approve(approval_id)
+-
+-        instruction = request["plan"]["instruction"]
++    # ------------------------------------------------------------------
++    # COMMIT
++    # ------------------------------------------------------------------
+ 
+-        transaction = self.agent.build_transaction(instruction)
+-        transaction = self.transactions.begin(transaction)
++    def _commit_transaction(
++        self,
++        approval_id,
++        instruction,
++        transaction,
++        test_result,
++        repair_state,
++        repair=None,
++    ):
++        git_result = self.git.commit_transaction(
++            transaction.transaction_id,
++            instruction,
++            paths=[
++                change.path
++                for change in transaction.changes
++            ],
++        )
+ 
+-        repair_state = RepairCycleState.restore(transaction)
++        if git_result.get("status") != "committed":
++            raise RuntimeError(
++                "Commit Git não foi concluído: "
++                f"{git_result.get('status', 'desconhecido')}"
++                + (
++                    f" — {git_result.get('message')}"
++                    if git_result.get("message")
++                    else ""
++                )
++            )
+ 
+-        self.repair_controller.max_attempts = repair_state.max_attempts
++        from core.schemas.models import TransactionStatus
+ 
+-        self.repair_controller.restore_state(
+-            transaction.transaction_id,
+-            repair_state.attempts,
++        transaction.status = (
++            TransactionStatus.COMMITTED
+         )
+ 
++        repair_state.mark_committed()
+         repair_state.persist(transaction)
+ 
+-        if not repair_state.can_continue():
+-            return {
+-                "success": False,
+-                "status": repair_state.status,
+-                "transaction_id": transaction.transaction_id,
+-                "repair_state": repair_state.to_dict(),
+-            }
++        attempts = repair_state.attempts
++
++        extra = {
++            "tests": test_result,
++            "git": git_result,
++            "repair_attempts": attempts,
++        }
+ 
+-        self.repair_controller.start(transaction.transaction_id)
++        if repair is not None:
++            extra["repair"] = repair
+ 
+         self._update_history_safe(
+             approval_id,
+-            status="executing",
++            status="committed",
+             transaction_id=transaction.transaction_id,
++            extra=extra,
+         )
+ 
+-        try:
+-            for change in transaction.changes:
+-                self.security.validate_path(change.path)
++        self.repair_controller.reset(
++            transaction.transaction_id
++        )
+ 
+-                if change.change_type.value == "create":
+-                    self.transactions.register_created(
+-                        transaction,
+-                        change.path,
+-                    )
+-                else:
+-                    self.transactions.backup_file(
+-                        transaction,
+-                        change.path,
+-                    )
++        return {
++            "approval_id": approval_id,
++            "status": "committed",
++            "transaction_id": transaction.transaction_id,
++            "tests": test_result,
++            "git": git_result,
++            "repair_attempts": attempts,
++            **(
++                {"repair": repair}
++                if repair is not None
++                else {}
++            ),
++        }
+ 
+-            self.executor.execute(transaction)
++    # ------------------------------------------------------------------
++    # ROLLBACK
++    # ------------------------------------------------------------------
+ 
+-            repair_state.mark_testing()
+-            repair_state.persist(transaction)
++    def _rollback_transaction(
++        self,
++        approval_id,
++        transaction,
++        repair_state,
++        test_result=None,
++        repair=None,
++        status="rolled_back",
++        error=None,
++    ):
++        rollback_error = None
+ 
+-            while True:
+-                self._update_history_safe(
+-                    approval_id,
+-                    status="testing",
+-                )
++        try:
++            self.transactions.rollback(
++                transaction
++            )
++        except Exception as exc:
++            rollback_error = exc
+ 
+-                test_result = self.tests.run(
+-                    [
+-                        change.path
+-                        for change in transaction.changes
+-                    ]
+-                )
++        if rollback_error is not None:
++            repair_state.mark_failed(
++                str(rollback_error)
++            )
++        else:
++            repair_state.mark_rolled_back(
++                error or ""
++            )
+ 
+-                if test_result["success"]:
+-                    git_result = self.git.commit_transaction(
+-                        transaction.transaction_id,
+-                        instruction,
+-                        paths=[
+-                            change.path
+-                            for change in transaction.changes
+-                        ],
+-                    )
++        repair_state.persist(transaction)
+ 
+-                    if git_result.get("status") != "committed":
+-                        raise RuntimeError(
+-                            "Commit Git não foi concluído: "
+-                            f"{git_result.get('status', 'desconhecido')}"
+-                        )
++        attempts = repair_state.attempts
+ 
+-                    from core.schemas.models import TransactionStatus
+-                    transaction.status = TransactionStatus.COMMITTED
++        extra = {
++            "repair_attempts": attempts,
++        }
+ 
+-                    attempts = self.repair_controller.get_attempts(
+-                        transaction.transaction_id
+-                    )
++        if test_result is not None:
++            extra["tests"] = test_result
+ 
+-                    self._update_history_safe(
+-                        approval_id,
+-                        status="committed",
+-                        transaction_id=transaction.transaction_id,
+-                        extra={
+-                            "tests": test_result,
+-                            "git": git_result,
+-                            "repair_attempts": attempts,
+-                        },
+-                    )
++        if repair is not None:
++            extra["repair"] = repair
+ 
+-                    self.repair_controller.reset(
+-                        transaction.transaction_id
+-                    )
++        if error is not None:
++            extra["error"] = str(error)
+ 
+-                    return {
+-                        "approval_id": approval_id,
+-                        "status": "committed",
+-                        "transaction_id": transaction.transaction_id,
+-                        "tests": test_result,
+-                        "git": git_result,
+-                        "repair_attempts": attempts,
+-                    }
+-
+-                # =========================================================
+-                # LIMITE DE REPAROS:
+-                #
+-                # A verificação precisa ocorrer ANTES de chamar a IA para
+-                # uma nova análise. Isso impede uma terceira análise quando
+-                # as duas tentativas permitidas já foram consumidas.
+-                # =========================================================
+-                if not self.repair_controller.can_repair(
+-                    transaction.transaction_id
+-                ):
+-                    self.transactions.rollback(transaction)
++        if rollback_error is not None:
++            extra["rollback_error"] = str(
++                rollback_error
++            )
+ 
+-                    repair_state.mark_rolled_back()
+-                    repair_state.persist(transaction)
++        final_status = (
++            "failed"
++            if rollback_error is not None
++            else status
++        )
+ 
+-                    attempts = self.repair_controller.get_attempts(
+-                        transaction.transaction_id
+-                    )
++        self._update_history_safe(
++            approval_id,
++            status=final_status,
++            transaction_id=transaction.transaction_id,
++            extra=extra,
++        )
+ 
+-                    limit_repair = {
+-                        "diagnosis": (
+-                            "Limite máximo de tentativas de reparo "
+-                            "atingido."
+-                        ),
+-                        "correction": (
+-                            "Nenhuma nova correção automática será "
+-                            "tentada."
+-                        ),
+-                        "risk": "baixo",
+-                        "action": "none",
+-                        "path": "",
+-                        "content": "",
+-                        "status": "limit_reached",
+-                    }
+-
+-                    self._update_history_safe(
+-                        approval_id,
+-                        status="rolled_back",
+-                        extra={
+-                            "tests": test_result,
+-                            "repair": limit_repair,
+-                            "repair_attempts": attempts,
+-                        },
+-                    )
++        self.repair_controller.reset(
++            transaction.transaction_id
++        )
+ 
+-                    self.repair_controller.reset(
+-                        transaction.transaction_id
++        return {
++            "approval_id": approval_id,
++            "status": final_status,
++            "transaction_id": transaction.transaction_id,
++            "tests": test_result,
++            "repair": repair,
++            "repair_attempts": attempts,
++            **(
++                {"error": str(error)}
++                if error is not None
++                else {}
++            ),
++            **(
++                {
++                    "rollback_error": str(
++                        rollback_error
+                     )
++                }
++                if rollback_error is not None
++                else {}
++            ),
++        }
+ 
+-                    return {
+-                        "approval_id": approval_id,
+-                        "status": "rolled_back",
+-                        "transaction_id": transaction.transaction_id,
+-                        "tests": test_result,
+-                        "repair": limit_repair,
+-                        "repair_attempts": attempts,
+-                    }
+-
+-                # =========================================================
+-                # A análise só ocorre quando existe uma tentativa
+-                # disponível.
+-                # =========================================================
+-                diagnosis = self.repair_engine.analyze_failure(
+-                    instruction=instruction,
+-                    error=test_result.get("stderr", ""),
+-                    test_output=test_result.get("stdout", ""),
+-                )
+-
+-                # Alto risco não consome tentativa e nunca é aplicado.
+-                if diagnosis.get("risk") == "alto":
+-                    self.transactions.rollback(transaction)
++    # ------------------------------------------------------------------
++    # APPROVAL / MAIN TRANSACTION FLOW
++    # ------------------------------------------------------------------
+ 
+-                    repair_state.mark_rolled_back()
+-                    repair_state.persist(transaction)
++    def approve(self, approval_id):
++        request = self.supervisor.approve(
++            approval_id
++        )
+ 
+-                    attempts = self.repair_controller.get_attempts(
+-                        transaction.transaction_id
+-                    )
++        instruction = request["plan"]["instruction"]
+ 
+-                    self._update_history_safe(
+-                        approval_id,
+-                        status="rolled_back",
+-                        extra={
+-                            "tests": test_result,
+-                            "repair": diagnosis,
+-                            "repair_attempts": attempts,
+-                        },
+-                    )
++        transaction = self.agent.build_transaction(
++            instruction
++        )
+ 
+-                    self.repair_controller.reset(
+-                        transaction.transaction_id
+-                    )
++        transaction = self.transactions.begin(
++            transaction
++        )
+ 
+-                    return {
+-                        "approval_id": approval_id,
+-                        "status": "rolled_back",
+-                        "transaction_id": transaction.transaction_id,
+-                        "tests": test_result,
+-                        "repair": diagnosis,
+-                        "repair_attempts": attempts,
+-                    }
++        repair_state = self._restore_repair_state(
++            transaction
++        )
+ 
+-                if diagnosis.get("action") == "none":
+-                    self.transactions.rollback(transaction)
++        repair_state.persist(transaction)
+ 
+-                    repair_state.mark_rolled_back()
+-                    repair_state.persist(transaction)
++        self.repair_controller.start(
++            transaction.transaction_id
++        )
+ 
+-                    attempts = self.repair_controller.get_attempts(
+-                        transaction.transaction_id
+-                    )
++        self._update_history_safe(
++            approval_id,
++            status="executing",
++            transaction_id=transaction.transaction_id,
++        )
+ 
+-                    self._update_history_safe(
+-                        approval_id,
+-                        status="rolled_back",
+-                        extra={
+-                            "tests": test_result,
+-                            "repair": diagnosis,
+-                            "repair_attempts": attempts,
+-                        },
+-                    )
++        try:
++            # ----------------------------------------------------------
++            # PREPARAÇÃO TRANSACIONAL
++            # ----------------------------------------------------------
+ 
+-                    self.repair_controller.reset(
+-                        transaction.transaction_id
+-                    )
++            for change in transaction.changes:
++                self.security.validate_path(
++                    change.path
++                )
+ 
+-                    return {
+-                        "approval_id": approval_id,
+-                        "status": "rolled_back",
+-                        "transaction_id": transaction.transaction_id,
+-                        "tests": test_result,
+-                        "repair": diagnosis,
+-                        "repair_attempts": attempts,
+-                    }
+-
+-                # Registra a tentativa somente depois que a análise
+-                # confirmou que existe uma correção aplicável.
+-                if not self.repair_controller.register_attempt(
+-                    transaction.transaction_id
++                if (
++                    change.change_type.value
++                    == "create"
+                 ):
+-                    self.transactions.rollback(transaction)
+-
+-                    repair_state.mark_rolled_back()
+-                    repair_state.persist(transaction)
+-
+-                    attempts = self.repair_controller.get_attempts(
+-                        transaction.transaction_id
++                    self.transactions.register_created(
++                        transaction,
++                        change.path,
+                     )
+-
+-                    limit_repair = {
+-                        **diagnosis,
+-                        "status": "limit_reached",
+-                    }
+-
+-                    self._update_history_safe(
+-                        approval_id,
+-                        status="rolled_back",
+-                        extra={
+-                            "tests": test_result,
+-                            "repair": limit_repair,
+-                            "repair_attempts": attempts,
+-                        },
++                else:
++                    self.transactions.backup_file(
++                        transaction,
++                        change.path,
+                     )
+ 
+-                    self.repair_controller.reset(
+-                        transaction.transaction_id
+-                    )
++            # ----------------------------------------------------------
++            # EXECUÇÃO INICIAL
++            # ----------------------------------------------------------
+ 
+-                    return {
+-                        "approval_id": approval_id,
+-                        "status": "rolled_back",
+-                        "transaction_id": transaction.transaction_id,
+-                        "tests": test_result,
+-                        "repair": limit_repair,
+-                        "repair_attempts": attempts,
+-                    }
+-
+-                repair_result = self.repair_executor.execute_repair(
+-                    diagnosis,
+-                    instruction,
+-                    transaction,
+-                )
++            self.executor.execute(
++                transaction
++            )
+ 
+-                if repair_result["success"]:
+-                    attempts = self.repair_controller.get_attempts(
+-                        transaction.transaction_id
+-                    )
++            repair_state.mark_testing()
++            repair_state.persist(transaction)
+ 
+-                    git_result = self.git.commit_transaction(
+-                        transaction.transaction_id,
+-                        instruction,
+-                        paths=[
+-                            change.path
+-                            for change in transaction.changes
+-                        ],
+-                    )
++            # ----------------------------------------------------------
++            # TESTE INICIAL
++            # ----------------------------------------------------------
+ 
+-                    if git_result.get("status") != "committed":
+-                        raise RuntimeError(
+-                            "Commit Git não foi concluído: "
+-                            f"{git_result.get('status', 'unknown')}"
+-                            + (
+-                                f" — {git_result.get('message')}"
+-                                if git_result.get("message")
+-                                else ""
+-                            )
+-                        )
+-
+-                    self._update_history_safe(
+-                        approval_id,
+-                        status="committed",
+-                        transaction_id=transaction.transaction_id,
+-                        extra={
+-                            "tests": repair_result["tests"],
+-                            "git": git_result,
+-                            "repair": diagnosis,
+-                            "repair_attempts": attempts,
+-                        },
+-                    )
++            self._update_history_safe(
++                approval_id,
++                status="testing",
++                transaction_id=transaction.transaction_id,
++            )
+ 
+-                    self.repair_controller.reset(
+-                        transaction.transaction_id
+-                    )
++            test_result = self.tests.run(
++                [
++                    change.path
++                    for change in transaction.changes
++                ]
++            )
+ 
+-                    return {
+-                        "approval_id": approval_id,
+-                        "status": "committed",
+-                        "transaction_id": transaction.transaction_id,
+-                        "tests": repair_result["tests"],
+-                        "git": git_result,
+-                        "repair": diagnosis,
+-                        "repair_attempts": attempts,
+-                    }
++            # ----------------------------------------------------------
++            # SUCESSO INICIAL
++            # ----------------------------------------------------------
+ 
+-        except Exception as error:
+-            rollback_error = None
++            if test_result.get("success"):
++                return self._commit_transaction(
++                    approval_id=approval_id,
++                    instruction=instruction,
++                    transaction=transaction,
++                    test_result=test_result,
++                    repair_state=repair_state,
++                )
+ 
+-            try:
+-                self.transactions.rollback(transaction)
+-            except Exception as rollback_exception:
+-                rollback_error = rollback_exception
++            # ----------------------------------------------------------
++            # REPARO
++            # ----------------------------------------------------------
+ 
+-            attempts = self.repair_controller.get_attempts(
+-                transaction.transaction_id
++            repair_cycle = self._run_repair_cycle(
++                instruction=instruction,
++                transaction=transaction,
++                test_result=test_result,
++                repair_state=repair_state,
+             )
+ 
+-            failure_extra = {
+-                "error": str(error),
+-                "repair_attempts": attempts,
+-            }
+-
+-            if rollback_error is not None:
+-                failure_extra["rollback_error"] = str(
+-                    rollback_error
++            if repair_cycle.get("success"):
++                return self._commit_transaction(
++                    approval_id=approval_id,
++                    instruction=instruction,
++                    transaction=transaction,
++                    test_result=repair_cycle["tests"],
++                    repair_state=repair_state,
++                    repair=repair_cycle.get(
++                        "repair"
++                    ),
+                 )
+ 
+-            self._update_history_safe(
+-                approval_id,
+-                status="failed",
+-                extra=failure_extra,
++            # ----------------------------------------------------------
++            # FALHA DEFINITIVA → ROLLBACK
++            # ----------------------------------------------------------
++
++            return self._rollback_transaction(
++                approval_id=approval_id,
++                transaction=transaction,
++                repair_state=repair_state,
++                test_result=repair_cycle.get(
++                    "tests",
++                    test_result,
++                ),
++                repair=repair_cycle.get(
++                    "repair"
++                ),
++                status=repair_cycle.get(
++                    "status",
++                    "rolled_back",
++                ),
+             )
+ 
+-            self.repair_controller.reset(
+-                transaction.transaction_id
++        except Exception as error:
++            # ----------------------------------------------------------
++            # EXCEÇÃO NÃO TRATADA → ROLLBACK
++            # ----------------------------------------------------------
++
++            result = self._rollback_transaction(
++                approval_id=approval_id,
++                transaction=transaction,
++                repair_state=repair_state,
++                error=error,
++                status="failed",
+             )
+ 
+             raise
+ 
++    # ------------------------------------------------------------------
++    # REJECT
++    # ------------------------------------------------------------------
++
+     def reject(self, approval_id):
+-        result = self.supervisor.reject(approval_id)
++        result = self.supervisor.reject(
++            approval_id
++        )
+ 
+         self.history.update(
+             approval_id,
+@@ -665,6 +832,10 @@ class DevAgentGateway:
+ 
+         return result
+ 
++    # ------------------------------------------------------------------
++    # HISTORY API
++    # ------------------------------------------------------------------
++
+     def list_tasks(self):
+         return self.history.list_all()
+ 
+diff --git a/tests/test_scanner_diagnostic_planner_validator.py b/tests/test_scanner_diagnostic_planner_validator.py
+index d2d6129..4ee32e8 100644
+--- a/tests/test_scanner_diagnostic_planner_validator.py
++++ b/tests/test_scanner_diagnostic_planner_validator.py
+@@ -388,3 +388,94 @@ def test_plan_validator_rejects_modify_without_string_content(tmp_path):
+ 
+     with pytest.raises(ValueError, match="MODIFY exige conteúdo textual"):
+         PlanValidator(tmp_path).validate(plan)
++
++def test_command_parser_recognizes_create_variants():
++    from core.parser.command_parser import CommandParser
++
++    parser = CommandParser()
++
++    cases = [
++        "Crie app.py",
++        "Crie um arquivo chamado app.py",
++        "Crie arquivo app.py",
++        "Criar arquivo app.py",
++    ]
++
++    for text in cases:
++        command = parser.parse(text)
++
++        assert command.action == "create"
++        assert command.target == "app.py"
++
++
++def test_command_parser_recognizes_modify_variants():
++    from core.parser.command_parser import CommandParser
++
++    parser = CommandParser()
++
++    cases = [
++        "Modifique app.py",
++        "Modificar app.py",
++        "Altere app.py",
++        "Alterar arquivo app.py",
++    ]
++
++    for text in cases:
++        command = parser.parse(text)
++
++        assert command.action == "modify"
++        assert command.target == "app.py"
++
++
++def test_command_parser_recognizes_delete_variants():
++    from core.parser.command_parser import CommandParser
++
++    parser = CommandParser()
++
++    cases = [
++        "Delete app.py",
++        "Apague app.py",
++        "Remova app.py",
++        "Remover arquivo app.py",
++    ]
++
++    for text in cases:
++        command = parser.parse(text)
++
++        assert command.action == "delete"
++        assert command.target == "app.py"
++        assert command.instruction == ""
++
++
++def test_command_parser_recognizes_analysis():
++    from core.parser.command_parser import CommandParser
++
++    parser = CommandParser()
++
++    for text in [
++        "Analise o projeto",
++        "Análise o projeto",
++    ]:
++        command = parser.parse(text)
++
++        assert command.action == "analyze"
++        assert command.target == ""
++        assert command.instruction == text
++
++
++def test_command_parser_does_not_execute_operation_without_target():
++    from core.parser.command_parser import CommandParser
++
++    parser = CommandParser()
++
++    for text in [
++        "Crie",
++        "Modifique",
++        "Delete",
++        "Apague",
++        "Remova",
++    ]:
++        command = parser.parse(text)
++
++        assert command.action == "analyze"
++        assert command.target == ""

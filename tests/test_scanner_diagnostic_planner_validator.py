@@ -388,3 +388,94 @@ def test_plan_validator_rejects_modify_without_string_content(tmp_path):
 
     with pytest.raises(ValueError, match="MODIFY exige conteúdo textual"):
         PlanValidator(tmp_path).validate(plan)
+
+def test_command_parser_recognizes_create_variants():
+    from core.parser.command_parser import CommandParser
+
+    parser = CommandParser()
+
+    cases = [
+        "Crie app.py",
+        "Crie um arquivo chamado app.py",
+        "Crie arquivo app.py",
+        "Criar arquivo app.py",
+    ]
+
+    for text in cases:
+        command = parser.parse(text)
+
+        assert command.action == "create"
+        assert command.target == "app.py"
+
+
+def test_command_parser_recognizes_modify_variants():
+    from core.parser.command_parser import CommandParser
+
+    parser = CommandParser()
+
+    cases = [
+        "Modifique app.py",
+        "Modificar app.py",
+        "Altere app.py",
+        "Alterar arquivo app.py",
+    ]
+
+    for text in cases:
+        command = parser.parse(text)
+
+        assert command.action == "modify"
+        assert command.target == "app.py"
+
+
+def test_command_parser_recognizes_delete_variants():
+    from core.parser.command_parser import CommandParser
+
+    parser = CommandParser()
+
+    cases = [
+        "Delete app.py",
+        "Apague app.py",
+        "Remova app.py",
+        "Remover arquivo app.py",
+    ]
+
+    for text in cases:
+        command = parser.parse(text)
+
+        assert command.action == "delete"
+        assert command.target == "app.py"
+        assert command.instruction == ""
+
+
+def test_command_parser_recognizes_analysis():
+    from core.parser.command_parser import CommandParser
+
+    parser = CommandParser()
+
+    for text in [
+        "Analise o projeto",
+        "Análise o projeto",
+    ]:
+        command = parser.parse(text)
+
+        assert command.action == "analyze"
+        assert command.target == ""
+        assert command.instruction == text
+
+
+def test_command_parser_does_not_execute_operation_without_target():
+    from core.parser.command_parser import CommandParser
+
+    parser = CommandParser()
+
+    for text in [
+        "Crie",
+        "Modifique",
+        "Delete",
+        "Apague",
+        "Remova",
+    ]:
+        command = parser.parse(text)
+
+        assert command.action == "analyze"
+        assert command.target == ""
