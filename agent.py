@@ -54,12 +54,16 @@ class DevAgent:
 
         for change in plan.changes:
 
-            result["changes"].append({
-                "type": change.change_type.value,
-                "path": change.path,
-                "content": change.content,
-                "reason": change.reason,
-            })
+            result["changes"].append(
+                {
+                    "change_type": (
+                        change.change_type.value
+                    ),
+                    "path": change.path,
+                    "content": change.content,
+                    "reason": change.reason,
+                }
+            )
 
         self.session.add_plan(
             result
@@ -75,6 +79,12 @@ class DevAgent:
         plan = self.pipeline.process(
             instruction
         )
+
+        if not plan.changes:
+            raise ValueError(
+                "Não é possível criar uma transação "
+                "sem alterações."
+            )
 
         transaction = Transaction(
             transaction_id="",

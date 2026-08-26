@@ -64,6 +64,8 @@ Regras:
 8. Não altere o projeto.
 9. Não inclua markdown.
 10. Retorne somente o JSON.
+11. Se a solicitação exigir uma alteração no projeto,
+    "changes" NÃO pode ser uma lista vazia.
 """
 
         response = self.ai.generate(prompt)
@@ -75,10 +77,16 @@ Regras:
                 "A IA retornou um plano que não é JSON válido."
             ) from error
 
-        return self._build_plan(data)
+        return self._build_plan(
+            data,
+            instruction,
+        )
 
-    def _build_plan(self, data):
-
+    def _build_plan(
+        self,
+        data,
+        instruction="",
+    ):
         if not isinstance(data, dict):
             raise ValueError(
                 "Plano da IA deve ser um objeto JSON."
@@ -109,6 +117,16 @@ Regras:
                 "Campo 'changes' deve ser uma lista."
             )
 
+        if not isinstance(tests, list):
+            raise ValueError(
+                "Campo 'tests' deve ser uma lista."
+            )
+
+        if not isinstance(risks, list):
+            raise ValueError(
+                "Campo 'risks' deve ser uma lista."
+            )
+
         changes = []
 
         for item in changes_data:
@@ -135,7 +153,7 @@ Regras:
                     f"Tipo de alteração inválido: {change_type}"
                 ) from error
 
-            if not isinstance(path, str):
+            if not isinstance(path, str) or not path.strip():
                 raise ValueError(
                     "Caminho da alteração inválido."
                 )
@@ -149,9 +167,41 @@ Regras:
                 )
             )
 
+        # Uma solicitação operacional não pode virar
+        # silenciosamente uma transação vazia.
+        if (
+            isinstance(instruction, str)
+            and instruction.strip()
+            and self._requires_change(instruction)
+            and not changes
+        ):
+            raise ValueError(
+                "A IA retornou um plano sem alterações "
+                "para uma solicitação que exige alteração."
+            )
+
         return Plan(
             objective=objective,
             changes=changes,
             tests=tests,
             risks=risks,
         )
+
+    @staticmethod
+    def _requires_change(instruction: str) -> bool:
+        lowered = instruction.strip().lower()
+
+        prefixes = (
+            "crie ",
+            "criar ",
+            "modifique ",
+            "modificar ",
+            "altere ",
+            "alterar ",
+            "delete ",
+            "apague ",
+            "remova ",
+            "remover ",
+        )
+
+        return lowered.startswith(prefixes)

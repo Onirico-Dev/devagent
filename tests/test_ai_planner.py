@@ -192,9 +192,9 @@ def test_ai_planner_sends_instruction_and_context_to_adapter():
     adapter = FixedAdapter(response)
 
     AIPlanner(adapter).create_plan(
-        instruction="Crie sistema.py",
+        instruction="Analise o projeto",
         context="Python 3.14",
     )
 
-    assert "Crie sistema.py" in adapter.last_prompt
+    assert "Analise o projeto" in adapter.last_prompt
     assert "Python 3.14" in adapter.last_prompt

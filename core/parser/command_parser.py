@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import re
 
 
 @dataclass
@@ -10,38 +11,38 @@ class Command:
 
 
 class CommandParser:
+
+    ACTIONS = {
+        "crie": "create",
+        "criar": "create",
+        "modifique": "modify",
+        "modificar": "modify",
+        "altere": "modify",
+        "alterar": "modify",
+        "delete": "delete",
+        "apague": "delete",
+        "remova": "delete",
+        "remover": "delete",
+    }
+
+    ANALYZE_WORDS = {
+        "analise",
+        "análise",
+    }
+
     def parse(self, text: str) -> Command:
         text = text.strip()
 
         if not text:
             raise ValueError("Comando vazio.")
 
-        lowered = text.lower()
+        words = text.split(maxsplit=1)
+        first = words[0].lower()
 
-        if lowered.startswith("crie "):
-            action = "create"
-        elif lowered.startswith("criar "):
-            action = "create"
-        elif lowered.startswith("modifique "):
-            action = "modify"
-        elif lowered.startswith("modificar "):
-            action = "modify"
-        elif lowered.startswith("altere "):
-            action = "modify"
-        elif lowered.startswith("delete "):
-            action = "delete"
-        elif lowered.startswith("apague "):
-            action = "delete"
-        elif lowered.startswith("remova "):
-            action = "delete"
-        else:
-            action = "analyze"
-
-        target = ""
-
-        if action in {"create", "modify", "delete"}:
-            words = text.split(maxsplit=1)
-
+        # ---------------------------------------------------------
+        # ANÁLISE
+        # ---------------------------------------------------------
+        if first in self.ANALYZE_WORDS:
             if len(words) == 1:
                 return Command(
                     raw=text,
@@ -50,33 +51,59 @@ class CommandParser:
                     instruction="",
                 )
 
-            instruction = words[1]
-            parts = instruction.split(maxsplit=1)
+            return Command(
+                raw=text,
+                action="analyze",
+                target="",
+                instruction=text,
+            )
 
-            if parts:
-                target = parts[0]
+        # ---------------------------------------------------------
+        # OPERAÇÃO
+        # ---------------------------------------------------------
+        action = self.ACTIONS.get(first)
 
-                if len(parts) > 1:
-                    instruction = parts[1]
-                else:
-                    instruction = ""
+        if action is None:
+            return Command(
+                raw=text,
+                action="analyze",
+                target="",
+                instruction=text,
+            )
 
-        else:
-            if lowered in {
-                "analise",
-                "análise",
-                "crie",
-                "criar",
-                "modifique",
-                "modificar",
-                "altere",
-                "delete",
-                "apague",
-                "remova",
-            }:
-                instruction = ""
-            else:
-                instruction = text
+        # "Crie", "Modifique", "Delete", etc., sem alvo:
+        # não constituem uma operação executável.
+        if len(words) == 1:
+            return Command(
+                raw=text,
+                action="analyze",
+                target="",
+                instruction="",
+            )
+
+        remainder = words[1].strip()
+
+        if not remainder:
+            return Command(
+                raw=text,
+                action="analyze",
+                target="",
+                instruction=text,
+            )
+
+        target, instruction = self._extract_target_and_instruction(
+            remainder,
+            action,
+        )
+
+        # Operação sem alvo também não é executável.
+        if not target:
+            return Command(
+                raw=text,
+                action="analyze",
+                target="",
+                instruction=text,
+            )
 
         return Command(
             raw=text,
@@ -84,3 +111,71 @@ class CommandParser:
             target=target,
             instruction=instruction,
         )
+
+    @classmethod
+    def _extract_target_and_instruction(
+        cls,
+        remainder: str,
+        action: str,
+    ) -> tuple[str, str]:
+
+        patterns = [
+            r"^um\s+arquivo\s+chamado\s+([^\s\"'`]+)(?:\s+(.*))?$",
+            r"^um\s+arquivo\s+de\s+nome\s+([^\s\"'`]+)(?:\s+(.*))?$",
+            r"^arquivo\s+chamado\s+([^\s\"'`]+)(?:\s+(.*))?$",
+            r"^arquivo\s+de\s+nome\s+([^\s\"'`]+)(?:\s+(.*))?$",
+            r"^arquivo\s+([^\s\"'`]+)(?:\s+(.*))?$",
+        ]
+
+        for pattern in patterns:
+            match = re.match(
+                pattern,
+                remainder,
+                flags=re.IGNORECASE,
+            )
+
+            if match:
+                target = cls._clean(match.group(1))
+
+                if target.lower() in {
+                    "de",
+                    "do",
+                    "da",
+                    "dos",
+                    "das",
+                    "para",
+                    "por",
+                    "com",
+                    "contendo",
+                }:
+                    continue
+
+                instruction = cls._clean_instruction(
+                    match.group(2) or ""
+                )
+
+                if action == "delete":
+                    instruction = ""
+
+                return target, instruction
+
+        words = remainder.split(maxsplit=1)
+
+        target = cls._clean(words[0])
+
+        instruction = ""
+        if len(words) > 1:
+            instruction = cls._clean_instruction(words[1])
+
+        if action == "delete":
+            instruction = ""
+
+        return target, instruction
+
+    @staticmethod
+    def _clean(value: str) -> str:
+        return value.strip("\"'`.,;:")
+
+    @staticmethod
+    def _clean_instruction(value: str) -> str:
+        return value.strip()

@@ -147,3 +147,47 @@ def test_pipeline_records_ai_planner_usage(tmp_path):
 
     assert event["event"] == "plan_created"
     assert event["data"]["ai_planner"] is True
+
+
+def test_ai_planner_rejects_empty_changes_for_create_request(tmp_path):
+    class EmptyAdapter:
+        def generate(self, prompt):
+            return json.dumps({
+                "objective": "Criar arquivo",
+                "changes": [],
+                "tests": [],
+                "risks": [],
+            })
+
+    pipeline = DevAgentPipeline(
+        root=str(tmp_path),
+        ai_adapter=EmptyAdapter(),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="sem alterações",
+    ):
+        pipeline.process(
+            "Crie operacao_teste.txt contendo DevAgent OK"
+        )
+
+
+def test_devagent_uses_change_type_contract(tmp_path):
+    from agent import DevAgent
+
+    agent = DevAgent(
+        root=str(tmp_path)
+    )
+
+    result = agent.process(
+        'Crie um arquivo chamado operacao_teste.txt contendo "DevAgent OK"'
+    )
+
+    assert len(result["changes"]) == 1
+
+    change = result["changes"][0]
+
+    assert change["change_type"] == "create"
+    assert change["path"] == "operacao_teste.txt"
+    assert change["content"] == '"DevAgent OK"'
