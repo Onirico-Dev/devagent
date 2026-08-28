@@ -93,8 +93,14 @@ class APIHandler(BaseHTTPRequestHandler):
             self.send_json(200, task)
             return
 
-        if self.path.startswith("/tasks/"):
-            task_id = self.path.split("/")[-1]
+        task_route = self.path.split("/")
+
+        if (
+            len(task_route) == 3
+            and task_route[1] == "tasks"
+            and task_route[2]
+        ):
+            task_id = task_route[2]
             task = gateway.get_task(task_id)
 
             if task is None:
@@ -179,8 +185,14 @@ class APIHandler(BaseHTTPRequestHandler):
 
             return
 
-        if self.path.startswith("/approve/"):
-            approval_id = self.path.split("/")[-1]
+        approval_route = self.path.split("/")
+
+        if (
+            len(approval_route) == 3
+            and approval_route[1] == "approve"
+            and approval_route[2]
+        ):
+            approval_id = approval_route[2]
 
             try:
                 result = gateway.approve(approval_id)
@@ -195,8 +207,14 @@ class APIHandler(BaseHTTPRequestHandler):
 
             return
 
-        if self.path.startswith("/reject/"):
-            approval_id = self.path.split("/")[-1]
+        reject_route = self.path.split("/")
+
+        if (
+            len(reject_route) == 3
+            and reject_route[1] == "reject"
+            and reject_route[2]
+        ):
+            approval_id = reject_route[2]
 
             try:
                 result = gateway.reject(approval_id)

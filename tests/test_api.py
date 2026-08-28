@@ -486,6 +486,40 @@ def test_method_not_allowed():
         server.shutdown()
         server.server_close()
 
+def test_malformed_task_routes():
+    server, _ = start_server()
+
+    try:
+        for path in (
+            "/tasks/",
+            "/tasks/a/b",
+        ):
+            status, data = request(server, "GET", path)
+            assert status == 404
+            assert data["error"] == "Endpoint não encontrado"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_malformed_approval_routes():
+    server, _ = start_server()
+
+    try:
+        for path in (
+            "/approve/",
+            "/approve/a/b",
+            "/reject/",
+            "/reject/a/b",
+        ):
+            status, data = request(server, "POST", path)
+            assert status == 404
+            assert data["error"] == "Endpoint não encontrado"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_health_endpoint():
     server, _ = start_server()
 
