@@ -690,6 +690,7 @@ class DevAgentGateway:
             "tests": test_result,
             "git": git_result,
             "repair_attempts": attempts,
+            "metadata": dict(transaction.metadata),
         }
 
         if repair is not None:
@@ -758,6 +759,7 @@ class DevAgentGateway:
 
         extra = {
             "repair_attempts": attempts,
+            "metadata": dict(transaction.metadata),
         }
 
         if test_result is not None:
@@ -961,6 +963,40 @@ class DevAgentGateway:
                 ),
             )
 
+        except CommitTransactionError as error:
+            # ----------------------------------------------------------
+            # FALHA DE COMMIT → ROLLBACK CONTROLADO
+            # ----------------------------------------------------------
+
+            rollback_result = self._rollback_transaction(
+                approval_id=approval_id,
+                transaction=transaction,
+                repair_state=repair_state,
+                error=str(error),
+                status="rolled_back",
+            )
+
+            # Se o rollback também falhou, a falha de rollback deve
+            # prevalecer como erro operacional não recuperado.
+            if rollback_result.get("rollback_error"):
+                raise RuntimeError(
+                    rollback_result["rollback_error"]
+                ) from error
+
+            # Preserva o contrato do Gateway: falha de commit continua
+            # sendo uma exceção para chamadas diretas.
+            # A camada HTTP decide como serializá-la.
+            error.result = {
+                **(
+                    error.result
+                    if isinstance(error.result, dict)
+                    else {}
+                ),
+                "rollback": rollback_result,
+            }
+
+            raise
+
         except Exception as error:
             # ----------------------------------------------------------
             # EXCEÇÃO NÃO TRATADA → ROLLBACK
@@ -974,7 +1010,15 @@ class DevAgentGateway:
                 status="failed",
             )
 
-            raise
+            # Se o rollback também falhou, não retornar como sucesso HTTP.
+            # A falha operacional de rollback deve ser propagada para a
+            # camada HTTP, preservando a exceção original como causa.
+            if result.get("rollback_error"):
+                raise RuntimeError(
+                    result["rollback_error"]
+                ) from error
+
+            return result
 
     # ------------------------------------------------------------------
     # REJECT

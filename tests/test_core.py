@@ -557,3 +557,74 @@ def test_groq_adapter_strips_response_content(monkeypatch):
     adapter = GroqAdapter(api_key="test-key")
 
     assert adapter.generate("Olá") == "resposta válida"
+
+
+def test_build_transaction_from_approved_plan_preserves_plan_metadata():
+    from agent import DevAgent
+    from core.adapters.mock import MockAdapter
+
+    agent = DevAgent(ai_adapter=MockAdapter())
+
+    plan = {
+        "instruction": "Crie app.py",
+        "objective": "Criar aplicação principal",
+        "changes": [
+            {
+                "change_type": "create",
+                "path": "app.py",
+                "content": "print('OK')",
+                "reason": "Arquivo principal",
+            }
+        ],
+        "tests": ["pytest -q"],
+        "risks": ["baixo"],
+    }
+
+    transaction = agent.build_transaction_from_approved_plan(plan)
+
+    assert transaction.metadata == {
+        "instruction": "Crie app.py",
+        "objective": "Criar aplicação principal",
+        "tests": ["pytest -q"],
+        "risks": ["baixo"],
+    }
+
+def test_task_history_persists_transaction_metadata(tmp_path):
+    from core.memory.task_history import TaskHistory
+
+    history = TaskHistory(
+        storage_path=tmp_path / "tasks.json"
+    )
+
+    approval_id = "approval-metadata-1"
+
+    history.create(
+        approval_id=approval_id,
+        instruction="Crie app.py",
+        plan={
+            "instruction": "Crie app.py",
+            "changes": [],
+        },
+    )
+
+    metadata = {
+        "instruction": "Crie app.py",
+        "objective": "Criar aplicação principal",
+        "tests": ["pytest -q"],
+        "risks": ["baixo"],
+    }
+
+    history.update(
+        approval_id,
+        extra={
+            "metadata": metadata,
+        },
+    )
+
+    reloaded = TaskHistory(
+        storage_path=tmp_path / "tasks.json"
+    )
+
+    task = reloaded.get(approval_id)
+
+    assert task["metadata"] == metadata

@@ -2028,3 +2028,61 @@ def test_plan_endpoint_propagates_ai_provider_http_error():
         api.gateway = original_gateway
         server.shutdown()
         server.server_close()
+
+
+def test_approved_task_history_preserves_transaction_metadata(tmp_path):
+    from core.memory.task_history import TaskHistory
+
+    history_path = tmp_path / "tasks.json"
+
+    history = TaskHistory(
+        storage_path=history_path
+    )
+
+    approval_id = "approval-metadata-integration"
+
+    history.create(
+        approval_id=approval_id,
+        instruction="Crie app.py",
+        plan={
+            "instruction": "Crie app.py",
+            "objective": "Criar aplicação principal",
+            "changes": [
+                {
+                    "change_type": "create",
+                    "path": "app.py",
+                    "content": "print('OK')",
+                    "reason": "Arquivo principal",
+                }
+            ],
+            "tests": ["pytest -q"],
+            "risks": ["baixo"],
+        },
+    )
+
+    metadata = {
+        "instruction": "Crie app.py",
+        "objective": "Criar aplicação principal",
+        "tests": ["pytest -q"],
+        "risks": ["baixo"],
+    }
+
+    history.update(
+        approval_id,
+        extra={
+            "metadata": metadata,
+        },
+    )
+
+    reloaded = TaskHistory(
+        storage_path=history_path
+    )
+
+    task = reloaded.get(approval_id)
+
+    assert task is not None
+    assert task["metadata"] == metadata
+    assert task["plan"]["instruction"] == "Crie app.py"
+    assert task["plan"]["objective"] == "Criar aplicação principal"
+    assert task["plan"]["tests"] == ["pytest -q"]
+    assert task["plan"]["risks"] == ["baixo"]

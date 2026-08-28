@@ -141,6 +141,12 @@ class DevAgent:
         transaction = Transaction(
             transaction_id="",
             changes=converted_changes,
+            metadata={
+                "instruction": plan["instruction"],
+                "objective": plan.get("objective"),
+                "tests": plan.get("tests", []),
+                "risks": plan.get("risks", []),
+            },
         )
 
         return transaction
