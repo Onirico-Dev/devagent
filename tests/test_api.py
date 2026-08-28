@@ -1,3 +1,4 @@
+from agent import DevAgent
 import json
 from http.client import HTTPConnection
 from threading import Thread
@@ -1971,3 +1972,59 @@ def test_gateway_commit_failure_rolls_back_transaction(
         if server is not None:
             server.shutdown()
             server.server_close()
+
+
+def test_plan_endpoint_propagates_ai_provider_runtime_error():
+    class FailingAdapter:
+        def generate(self, prompt):
+            raise RuntimeError("falha no provedor de IA")
+
+    server, _ = start_server()
+    original_agent = api.agent
+    original_gateway = api.gateway
+
+    try:
+        api.agent = DevAgent(ai_adapter=FailingAdapter())
+
+        response = request(
+            server,
+            "POST",
+            "/plan",
+            {"instruction": "Crie app.py"},
+        )
+
+        assert response[0] == 500
+        assert "falha no provedor de IA" in response[1]["error"]
+    finally:
+        api.agent = original_agent
+        api.gateway = original_gateway
+        server.shutdown()
+        server.server_close()
+
+
+def test_plan_endpoint_propagates_ai_provider_http_error():
+    class FailingAdapter:
+        def generate(self, prompt):
+            raise RuntimeError("HTTP 429")
+
+    server, _ = start_server()
+    original_agent = api.agent
+    original_gateway = api.gateway
+
+    try:
+        api.agent = DevAgent(ai_adapter=FailingAdapter())
+
+        response = request(
+            server,
+            "POST",
+            "/plan",
+            {"instruction": "Crie app.py"},
+        )
+
+        assert response[0] == 500
+        assert "HTTP 429" in response[1]["error"]
+    finally:
+        api.agent = original_agent
+        api.gateway = original_gateway
+        server.shutdown()
+        server.server_close()

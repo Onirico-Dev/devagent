@@ -191,6 +191,7 @@ class APIHandler(BaseHTTPRequestHandler):
                     )
                     return
 
+                gateway.agent = agent
                 result = gateway.create_task(instruction)
 
                 self.send_json(

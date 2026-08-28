@@ -8,6 +8,7 @@ from core.executor.git_manager import GitManager
 from core.schemas.models import (
     Change,
     ChangeType,
+    Plan,
     Transaction,
     TransactionStatus,
 )
@@ -3042,3 +3043,196 @@ def test_backup_file_is_idempotent_for_same_file(tmp_path):
     assert target.exists()
     assert target.read_text(encoding="utf-8") == original
     assert transaction.status == TransactionStatus.ROLLED_BACK
+
+def test_change_engine_accepts_create_inside_project(tmp_path):
+    from core.engine.change_engine import ChangeEngine
+
+    engine = ChangeEngine(tmp_path)
+
+    change = Change(
+        change_type=ChangeType.CREATE,
+        path="created.py",
+        content="print('OK')\n",
+    )
+
+    assert engine.validate_change(change) is None
+
+
+def test_change_engine_accepts_modify_inside_project(tmp_path):
+    from core.engine.change_engine import ChangeEngine
+
+    target = tmp_path / "app.py"
+    target.write_text("ORIGINAL\n", encoding="utf-8")
+
+    engine = ChangeEngine(tmp_path)
+
+    change = Change(
+        change_type=ChangeType.MODIFY,
+        path="app.py",
+        content="MODIFIED\n",
+    )
+
+    assert engine.validate_change(change) is None
+
+
+def test_change_engine_accepts_delete_existing_file(tmp_path):
+    from core.engine.change_engine import ChangeEngine
+
+    target = tmp_path / "delete.py"
+    target.write_text("DELETE\n", encoding="utf-8")
+
+    engine = ChangeEngine(tmp_path)
+
+    change = Change(
+        change_type=ChangeType.DELETE,
+        path="delete.py",
+    )
+
+    assert engine.validate_change(change) is None
+
+
+def test_change_engine_rejects_path_outside_project(tmp_path):
+    from core.engine.change_engine import ChangeEngine
+
+    outside = tmp_path.parent / "outside.py"
+    outside.write_text("OUTSIDE\n", encoding="utf-8")
+
+    engine = ChangeEngine(tmp_path)
+
+    change = Change(
+        change_type=ChangeType.CREATE,
+        path="../outside.py",
+        content="MALICIOUS\n",
+    )
+
+    try:
+        engine.validate_change(change)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(
+            "ChangeEngine aceitou caminho fora do projeto."
+        )
+
+
+def test_change_engine_rejects_sibling_prefix_path(tmp_path):
+    from core.engine.change_engine import ChangeEngine
+
+    sibling = tmp_path.parent / f"{tmp_path.name}_backup"
+    sibling.mkdir()
+
+    engine = ChangeEngine(tmp_path)
+
+    change = Change(
+        change_type=ChangeType.CREATE,
+        path=f"../{sibling.name}/outside.py",
+        content="OUTSIDE\n",
+    )
+
+    try:
+        engine.validate_change(change)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(
+            "ChangeEngine aceitou caminho com prefixo do projeto."
+        )
+
+
+def test_change_engine_rejects_symlink_resolving_outside_project(tmp_path):
+    import os
+    from core.engine.change_engine import ChangeEngine
+
+    outside = tmp_path.parent / "outside_target.py"
+    outside.write_text("OUTSIDE\n", encoding="utf-8")
+
+    link = tmp_path / "link.py"
+    os.symlink(outside, link)
+
+    engine = ChangeEngine(tmp_path)
+
+    change = Change(
+        change_type=ChangeType.MODIFY,
+        path="link.py",
+        content="MALICIOUS\n",
+    )
+
+    try:
+        engine.validate_change(change)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(
+            "ChangeEngine aceitou symlink para fora do projeto."
+        )
+
+
+def test_change_engine_rejects_delete_nonexistent_file(tmp_path):
+    from core.engine.change_engine import ChangeEngine
+
+    engine = ChangeEngine(tmp_path)
+
+    change = Change(
+        change_type=ChangeType.DELETE,
+        path="missing.py",
+    )
+
+    try:
+        engine.validate_change(change)
+    except FileNotFoundError:
+        pass
+    else:
+        raise AssertionError(
+            "ChangeEngine aceitou DELETE de arquivo inexistente."
+        )
+
+
+def test_change_engine_prepare_validates_all_changes(tmp_path):
+    from core.engine.change_engine import ChangeEngine
+
+    target = tmp_path / "valid.py"
+    target.write_text("VALID\n", encoding="utf-8")
+
+    engine = ChangeEngine(tmp_path)
+
+    plan = Plan(
+        objective="Teste de preparação",
+        changes=[
+            Change(
+                change_type=ChangeType.MODIFY,
+                path="valid.py",
+                content="CHANGED\n",
+            ),
+        ],
+    )
+
+    result = engine.prepare(plan)
+
+    assert result is plan.changes
+    assert result[0].path == "valid.py"
+
+
+def test_change_engine_prepare_rejects_invalid_change(tmp_path):
+    from core.engine.change_engine import ChangeEngine
+
+    engine = ChangeEngine(tmp_path)
+
+    plan = Plan(
+        objective="Teste inválido",
+        changes=[
+            Change(
+                change_type=ChangeType.CREATE,
+                path="../outside.py",
+                content="OUTSIDE\n",
+            ),
+        ],
+    )
+
+    try:
+        engine.prepare(plan)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(
+            "ChangeEngine.prepare aceitou alteração inválida."
+        )

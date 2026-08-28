@@ -18,9 +18,18 @@ class DevAgent:
         )
 
     def _create_ai_adapter(self):
-        api_key = os.getenv("GROQ_API_KEY")
+        provider = os.getenv(
+            "DEVAGENT_AI",
+            "mock",
+        ).strip().lower()
 
-        if api_key:
+        if provider == "groq":
+            api_key = os.getenv("GROQ_API_KEY")
+            if not api_key:
+                raise RuntimeError(
+                    "DEVAGENT_AI=groq exige GROQ_API_KEY configurada."
+                )
+
             return GroqAdapter(
                 api_key=api_key
             )

@@ -224,3 +224,336 @@ def test_git_commit_transaction_does_not_commit_unrelated_changes(
     ).stdout
 
     assert "nao_relacionado.txt" in status
+
+def test_devagent_defaults_to_mock_adapter(monkeypatch):
+    from agent import DevAgent
+    from core.adapters.mock import MockAdapter
+
+    monkeypatch.delenv("DEVAGENT_AI", raising=False)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+
+    agent = DevAgent()
+
+    assert isinstance(agent.ai, MockAdapter)
+
+
+def test_devagent_explicit_mock_adapter(monkeypatch):
+    from agent import DevAgent
+    from core.adapters.mock import MockAdapter
+
+    monkeypatch.setenv("DEVAGENT_AI", "mock")
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+
+    agent = DevAgent()
+
+    assert isinstance(agent.ai, MockAdapter)
+
+
+def test_devagent_groq_requires_api_key(monkeypatch):
+    from agent import DevAgent
+
+    monkeypatch.setenv("DEVAGENT_AI", "groq")
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+
+    try:
+        DevAgent()
+    except RuntimeError as error:
+        assert str(error) == (
+            "DEVAGENT_AI=groq exige GROQ_API_KEY configurada."
+        )
+    else:
+        raise AssertionError(
+            "DEVAGENT_AI=groq deveria exigir GROQ_API_KEY."
+        )
+
+
+def test_devagent_selects_groq_adapter(monkeypatch):
+    from agent import DevAgent
+    from core.adapters.groq import GroqAdapter
+
+    monkeypatch.setenv("DEVAGENT_AI", "groq")
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+
+    agent = DevAgent()
+
+    assert isinstance(agent.ai, GroqAdapter)
+    assert agent.ai.api_key == "test-key"
+
+
+def test_devagent_unknown_provider_falls_back_to_mock(monkeypatch):
+    from agent import DevAgent
+    from core.adapters.mock import MockAdapter
+
+    monkeypatch.setenv("DEVAGENT_AI", "provider-inexistente")
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+
+    agent = DevAgent()
+
+    assert isinstance(agent.ai, MockAdapter)
+
+
+def test_groq_adapter_requires_api_key(monkeypatch):
+    from core.adapters.groq import GroqAdapter
+
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+
+    try:
+        GroqAdapter()
+    except RuntimeError as error:
+        assert str(error) == "GROQ_API_KEY não configurada."
+    else:
+        raise AssertionError(
+            "GroqAdapter deveria exigir GROQ_API_KEY."
+        )
+
+
+def test_groq_adapter_reads_model_from_environment(monkeypatch):
+    from core.adapters.groq import GroqAdapter
+
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.setenv("GROQ_MODEL", "test-model")
+
+    adapter = GroqAdapter()
+
+    assert adapter.api_key == "test-key"
+    assert adapter.model == "test-model"
+
+
+def test_groq_adapter_rejects_invalid_prompt(monkeypatch):
+    from core.adapters.groq import GroqAdapter
+
+    adapter = GroqAdapter(api_key="test-key")
+
+    try:
+        adapter.generate(None)
+    except TypeError as error:
+        assert str(error) == "O prompt deve ser uma string."
+    else:
+        raise AssertionError(
+            "GroqAdapter deveria rejeitar prompt que não seja string."
+        )
+
+
+def test_groq_adapter_rejects_empty_prompt():
+    from core.adapters.groq import GroqAdapter
+
+    adapter = GroqAdapter(api_key="test-key")
+
+    try:
+        adapter.generate("   ")
+    except ValueError as error:
+        assert str(error) == "O prompt não pode ser vazio."
+    else:
+        raise AssertionError(
+            "GroqAdapter deveria rejeitar prompt vazio."
+        )
+
+
+def test_groq_adapter_sends_expected_request(monkeypatch):
+    from core.adapters.groq import GroqAdapter
+
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": " resposta "
+                        }
+                    }
+                ]
+            }
+
+    def fake_post(url, **kwargs):
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return FakeResponse()
+
+    monkeypatch.setattr(
+        "core.adapters.groq.requests.post",
+        fake_post,
+    )
+
+    adapter = GroqAdapter(
+        api_key="test-key",
+        model="test-model",
+        timeout=17,
+    )
+
+    result = adapter.generate("Olá")
+
+    assert result == "resposta"
+    assert captured["url"] == adapter.API_URL
+    assert captured["kwargs"]["headers"] == {
+        "Authorization": "Bearer test-key",
+        "Content-Type": "application/json",
+    }
+    assert captured["kwargs"]["json"] == {
+        "model": "test-model",
+        "messages": [
+            {
+                "role": "user",
+                "content": "Olá",
+            }
+        ],
+        "temperature": 0.2,
+    }
+    assert captured["kwargs"]["timeout"] == 17
+
+
+def test_groq_adapter_rejects_invalid_response(monkeypatch):
+    from core.adapters.groq import GroqAdapter
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {
+                "choices": []
+            }
+
+    monkeypatch.setattr(
+        "core.adapters.groq.requests.post",
+        lambda *args, **kwargs: FakeResponse(),
+    )
+
+    adapter = GroqAdapter(api_key="test-key")
+
+    try:
+        adapter.generate("Olá")
+    except RuntimeError as error:
+        assert str(error) == "Resposta inválida da API Groq."
+    else:
+        raise AssertionError(
+            "GroqAdapter deveria rejeitar resposta sem conteúdo válido."
+        )
+
+
+def test_groq_adapter_rejects_non_string_response(monkeypatch):
+    from core.adapters.groq import GroqAdapter
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": 123
+                        }
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(
+        "core.adapters.groq.requests.post",
+        lambda *args, **kwargs: FakeResponse(),
+    )
+
+    adapter = GroqAdapter(api_key="test-key")
+
+    try:
+        adapter.generate("Olá")
+    except RuntimeError as error:
+        assert str(error) == (
+            "A resposta da Groq não contém texto válido."
+        )
+    else:
+        raise AssertionError(
+            "GroqAdapter deveria rejeitar conteúdo de resposta não textual."
+        )
+
+
+def test_groq_adapter_propagates_http_error(monkeypatch):
+    from core.adapters.groq import GroqAdapter
+
+    class FakeResponse:
+        def raise_for_status(self):
+            raise RuntimeError("HTTP 401")
+
+        def json(self):
+            return {}
+
+    monkeypatch.setattr(
+        "core.adapters.groq.requests.post",
+        lambda *args, **kwargs: FakeResponse(),
+    )
+
+    adapter = GroqAdapter(api_key="test-key")
+
+    with pytest.raises(RuntimeError, match="HTTP 401"):
+        adapter.generate("Olá")
+
+
+def test_groq_adapter_propagates_request_exception(monkeypatch):
+    from core.adapters.groq import GroqAdapter
+
+    def fake_post(*args, **kwargs):
+        raise RuntimeError("falha de conexão")
+
+    monkeypatch.setattr(
+        "core.adapters.groq.requests.post",
+        fake_post,
+    )
+
+    adapter = GroqAdapter(api_key="test-key")
+
+    with pytest.raises(RuntimeError, match="falha de conexão"):
+        adapter.generate("Olá")
+
+
+def test_groq_adapter_rejects_invalid_json_response(monkeypatch):
+    from core.adapters.groq import GroqAdapter
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            raise ValueError("JSON inválido")
+
+    monkeypatch.setattr(
+        "core.adapters.groq.requests.post",
+        lambda *args, **kwargs: FakeResponse(),
+    )
+
+    adapter = GroqAdapter(api_key="test-key")
+
+    with pytest.raises(ValueError, match="JSON inválido"):
+        adapter.generate("Olá")
+
+
+def test_groq_adapter_strips_response_content(monkeypatch):
+    from core.adapters.groq import GroqAdapter
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "  resposta válida  ",
+                        }
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(
+        "core.adapters.groq.requests.post",
+        lambda *args, **kwargs: FakeResponse(),
+    )
+
+    adapter = GroqAdapter(api_key="test-key")
+
+    assert adapter.generate("Olá") == "resposta válida"

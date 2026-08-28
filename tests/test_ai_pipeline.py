@@ -3,6 +3,7 @@ import json
 import pytest
 
 from core.adapters.mock import MockAdapter
+from core.planner.ai_planner import AIPlanner
 from core.pipeline import DevAgentPipeline
 
 
@@ -192,3 +193,65 @@ def test_devagent_uses_change_type_contract(tmp_path):
     assert change["change_type"] == "create"
     assert change["path"] == "operacao_teste.txt"
     assert change["content"] == '"DevAgent OK"'
+
+
+def test_ai_planner_propagates_adapter_runtime_error():
+    class FailingAdapter:
+        def generate(self, prompt):
+            raise RuntimeError("falha no provedor de IA")
+
+    planner = AIPlanner(FailingAdapter())
+
+    with pytest.raises(RuntimeError, match="falha no provedor de IA"):
+        planner.create_plan("Crie app.py")
+
+
+def test_ai_planner_does_not_convert_adapter_error_to_json_error():
+    class FailingAdapter:
+        def generate(self, prompt):
+            raise RuntimeError("falha no provedor de IA")
+
+    planner = AIPlanner(FailingAdapter())
+
+    with pytest.raises(RuntimeError, match="falha no provedor de IA"):
+        planner.create_plan("Crie app.py")
+    class FailingAdapter:
+        def generate(self, prompt):
+            raise RuntimeError("HTTP 429")
+
+    planner = AIPlanner(FailingAdapter())
+
+    with pytest.raises(RuntimeError, match="HTTP 429"):
+        planner.create_plan("Crie app.py")
+
+
+def test_devagent_propagates_ai_adapter_runtime_error(tmp_path):
+    from agent import DevAgent
+
+    class FailingAdapter:
+        def generate(self, prompt):
+            raise RuntimeError("falha no provedor de IA")
+
+    agent = DevAgent(
+        root=str(tmp_path),
+        ai_adapter=FailingAdapter(),
+    )
+
+    with pytest.raises(RuntimeError, match="falha no provedor de IA"):
+        agent.process("Crie app.py")
+
+
+def test_devagent_propagates_ai_adapter_http_error(tmp_path):
+    from agent import DevAgent
+
+    class FailingAdapter:
+        def generate(self, prompt):
+            raise RuntimeError("HTTP 429")
+
+    agent = DevAgent(
+        root=str(tmp_path),
+        ai_adapter=FailingAdapter(),
+    )
+
+    with pytest.raises(RuntimeError, match="HTTP 429"):
+        agent.process("Crie app.py")

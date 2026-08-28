@@ -11,7 +11,7 @@ class ChangeEngine:
     def validate_change(self, change: Change) -> None:
         target = (self.root / change.path).resolve()
 
-        if not str(target).startswith(str(self.root)):
+        if not target.is_relative_to(self.root):
             raise ValueError(
                 f"Caminho fora do projeto: {change.path}"
             )
