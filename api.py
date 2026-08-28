@@ -2,7 +2,10 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 
 from agent import DevAgent
-from core.gateway import DevAgentGateway
+from core.gateway import (
+    CommitTransactionError,
+    DevAgentGateway,
+)
 
 
 agent = DevAgent(".")
@@ -33,6 +36,21 @@ class APIHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def handle_error(self, error):
+        if isinstance(error, CommitTransactionError):
+            self.send_json(
+                200,
+                {
+                    "status": "failed",
+                    "error": str(error),
+                    **(
+                        error.result
+                        if isinstance(error.result, dict)
+                        else {}
+                    ),
+                },
+            )
+            return
+
         if isinstance(error, KeyError):
             self.send_json(
                 404,

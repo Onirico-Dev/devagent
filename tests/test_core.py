@@ -162,3 +162,65 @@ def test_parser_analyze_preserves_complete_instruction():
     assert command.instruction == (
         "Verifique todos os arquivos Python do projeto"
     )
+
+def test_git_commit_transaction_does_not_commit_unrelated_changes(
+    isolated_project,
+):
+    from core.executor.git_manager import GitManager
+
+    unrelated = isolated_project / "nao_relacionado.txt"
+    unrelated.write_text(
+        "ALTERACAO EXTERNA\n",
+        encoding="utf-8",
+    )
+
+    tracked = isolated_project / "transacao.txt"
+    tracked.write_text(
+        "ALTERACAO DA TRANSACAO\n",
+        encoding="utf-8",
+    )
+
+    manager = GitManager(str(isolated_project))
+
+    result = manager.commit_transaction(
+        "transaction-isolation-test",
+        "Teste de isolamento Git",
+        paths=["transacao.txt"],
+    )
+
+    assert result["status"] == "committed"
+
+    import subprocess
+
+    committed = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(isolated_project),
+            "show",
+            "--format=",
+            "--name-only",
+            "HEAD",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.splitlines()
+
+    assert "transacao.txt" in committed
+    assert "nao_relacionado.txt" not in committed
+
+    status = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(isolated_project),
+            "status",
+            "--short",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+    assert "nao_relacionado.txt" in status

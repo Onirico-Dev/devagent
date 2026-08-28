@@ -13,6 +13,14 @@ from core.memory.task_history import TaskHistory
 from core.schemas.models import TransactionStatus
 
 
+class CommitTransactionError(RuntimeError):
+    """Falha esperada durante o commit Git de uma transação."""
+
+    def __init__(self, message, result=None):
+        super().__init__(message)
+        self.result = result or {}
+
+
 class DevAgentGateway:
     MAX_REPAIR_ATTEMPTS = 2
 
@@ -658,14 +666,15 @@ class DevAgentGateway:
         )
 
         if git_result.get("status") != "committed":
-            raise RuntimeError(
+            raise CommitTransactionError(
                 "Commit Git não foi concluído: "
                 f"{git_result.get('status', 'desconhecido')}"
                 + (
                     f" — {git_result.get('message')}"
                     if git_result.get("message")
                     else ""
-                )
+                ),
+                result=git_result,
             )
 
         transaction.status = (

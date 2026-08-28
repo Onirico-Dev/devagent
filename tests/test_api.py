@@ -1877,3 +1877,97 @@ def test_gateway_keeps_approval_pending_when_transaction_begin_fails(
     request = gateway.supervisor.get(approval_id)
 
     assert request["status"] == "pending"
+
+def test_gateway_commit_failure_rolls_back_transaction(
+    isolated_project,
+    monkeypatch,
+):
+    from agent import DevAgent
+    from core.gateway import DevAgentGateway
+
+    agent = DevAgent(str(isolated_project))
+    gateway = DevAgentGateway(
+        agent,
+        str(isolated_project),
+    )
+
+    def fake_commit_transaction(*args, **kwargs):
+        return {
+            "status": "failed",
+            "message": "Falha simulada no commit Git.",
+        }
+
+    monkeypatch.setattr(
+        gateway.git,
+        "commit_transaction",
+        fake_commit_transaction,
+    )
+
+    server = None
+    try:
+        from http.server import HTTPServer
+        from threading import Thread
+
+        api.agent = agent
+        api.gateway = gateway
+
+        server = HTTPServer(
+            ("127.0.0.1", 0),
+            api.APIHandler,
+        )
+
+        thread = Thread(
+            target=server.serve_forever,
+            daemon=True,
+        )
+        thread.start()
+
+        status, created = request(
+            server,
+            "POST",
+            "/plan",
+            {
+                "instruction": (
+                    'Crie commit_falha.py contendo '
+                    'print("COMMIT TEST")'
+                ),
+            },
+        )
+
+        assert status == 200
+        assert created["status"] == "pending"
+
+        approval_id = created["approval_id"]
+
+        status, result = request(
+            server,
+            "POST",
+            f"/approve/{approval_id}",
+        )
+
+        assert status == 200
+        assert result["status"] in {
+            "failed",
+            "rolled_back",
+        }
+
+        target = isolated_project / "commit_falha.py"
+
+        assert not target.exists()
+
+        status, task = request(
+            server,
+            "GET",
+            f"/tasks/{approval_id}",
+        )
+
+        assert status == 200
+        assert task["status"] in {
+            "failed",
+            "rolled_back",
+        }
+
+    finally:
+        if server is not None:
+            server.shutdown()
+            server.server_close()
