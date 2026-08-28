@@ -127,26 +127,37 @@ class ProjectContext:
             )
 
     def build(self):
-
         files = self.list_files()
+
+        MAX_CONTEXT_CHARS = 50000
 
         sections = [
             "=== CONTEXTO DO PROJETO ===",
             f"ROOT: {self.root}",
-            f"ARQUIVOS: {len(files)}",
+            f"ARQUIVOS DISPONÍVEIS: {len(files)}",
             "",
         ]
 
+        total = sum(len(x) for x in sections)
+        included = 0
+
         for relative in files:
-
-            sections.append(
-                f"=== ARQUIVO: {relative} ==="
+            content = self.read_file(relative)
+            section = (
+                f"=== ARQUIVO: {relative} ===\n"
+                f"{content}\n"
             )
 
-            sections.append(
-                self.read_file(relative)
-            )
+            if total + len(section) > MAX_CONTEXT_CHARS:
+                continue
 
-            sections.append("")
+            sections.append(section)
+            total += len(section)
+            included += 1
+
+        sections.insert(
+            3,
+            f"ARQUIVOS INCLUÍDOS NO CONTEXTO: {included}",
+        )
 
         return "\n".join(sections)

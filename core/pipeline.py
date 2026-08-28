@@ -8,13 +8,11 @@ from core.memory.memory import Memory
 
 
 class DevAgentPipeline:
-
     def __init__(
         self,
         root: str = ".",
         ai_adapter=None,
     ):
-
         self.root = root
 
         self.parser = CommandParser()
@@ -32,20 +30,16 @@ class DevAgentPipeline:
         self.memory = Memory()
 
     def process(self, text: str):
-
         command = self.parser.parse(text)
 
         context = self.context.build()
 
         if self.ai_planner is not None:
-
             plan = self.ai_planner.create_plan(
                 instruction=text,
                 context=context,
             )
-
         else:
-
             plan = self.planner.create_plan(
                 command
             )

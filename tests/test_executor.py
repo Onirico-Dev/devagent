@@ -3011,3 +3011,34 @@ def test_git_manager_commit_transaction_does_not_commit_unrelated_changes(
     ).stdout
 
     assert "unrelated.py" in status
+
+def test_backup_file_is_idempotent_for_same_file(tmp_path):
+    manager = TransactionManager(tmp_path)
+
+    target = tmp_path / "app.py"
+    original = "ORIGINAL\n"
+    altered = "ALTERADO\n"
+
+    target.write_text(original, encoding="utf-8")
+
+    transaction = make_transaction(
+        Change(
+            change_type=ChangeType.MODIFY,
+            path="app.py",
+            content=altered,
+        ),
+    )
+
+    manager.begin(transaction)
+
+    manager.backup_file(transaction, "app.py")
+
+    # Simula uma segunda chamada de backup depois da alteração.
+    target.write_text(altered, encoding="utf-8")
+    manager.backup_file(transaction, "app.py")
+
+    manager.rollback(transaction)
+
+    assert target.exists()
+    assert target.read_text(encoding="utf-8") == original
+    assert transaction.status == TransactionStatus.ROLLED_BACK

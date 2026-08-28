@@ -1,3 +1,4 @@
+from pathlib import Path
 from core.security import SecurityPolicy
 from core.supervisor import Supervisor
 from core.executor.safe_executor import SafeExecutor
@@ -19,7 +20,13 @@ class DevAgentGateway:
         self.agent = agent
         self.root = root
 
-        self.supervisor = Supervisor()
+        self.supervisor = Supervisor(
+            storage_path=(
+                Path(root).resolve()
+                / "transactions"
+                / "approvals.json"
+            )
+        )
         self.security = SecurityPolicy(root)
         self.executor = SafeExecutor(root)
         self.transactions = TransactionManager(root)
@@ -301,9 +308,8 @@ class DevAgentGateway:
             }
 
         # A correção é aplicável.
-        # Aqui a tentativa é consumida.
-        repair_state.mark_repairing()
-
+        # Uma tentativa é consumida exatamente uma vez,
+        # antes da execução física da correção.
         repair_state.record(
             action=diagnosis.get(
                 "action",
@@ -311,9 +317,10 @@ class DevAgentGateway:
             ),
             status="repairing",
         )
-
         repair_state.persist(transaction)
 
+        # O RepairCycleState é a fonte autoritativa.
+        # O controller recebe apenas uma cópia compatível.
         self._sync_repair_controller(
             transaction,
             repair_state,
@@ -394,7 +401,7 @@ class DevAgentGateway:
 
         # A correção foi aplicada, mas ainda falhou.
         # Isso NÃO encerra o ciclo.
-        repair_state.mark_failed(
+        repair_state.mark_repair_failed(
             error=test_result.get(
                 "stderr",
                 "",
@@ -803,18 +810,22 @@ class DevAgentGateway:
     # ------------------------------------------------------------------
 
     def approve(self, approval_id):
-        request = self.supervisor.approve(
+        request = self.supervisor.prepare_approval(
             approval_id
         )
 
         instruction = request["plan"]["instruction"]
 
-        transaction = self.agent.build_transaction(
-            instruction
+        transaction = self.agent.build_transaction_from_approved_plan(
+            request["plan"]
         )
 
         transaction = self.transactions.begin(
             transaction
+        )
+
+        self.supervisor.approve(
+            approval_id
         )
 
         repair_state = self._restore_repair_state(

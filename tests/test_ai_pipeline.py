@@ -177,7 +177,8 @@ def test_devagent_uses_change_type_contract(tmp_path):
     from agent import DevAgent
 
     agent = DevAgent(
-        root=str(tmp_path)
+        root=str(tmp_path),
+        ai_adapter=MockAdapter(),
     )
 
     result = agent.process(

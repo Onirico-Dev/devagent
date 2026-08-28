@@ -181,3 +181,50 @@ def test_repair_engine_accepts_none_action():
 
     assert result["action"] == "none"
     assert result["risk"] == "alto"
+
+def test_repair_engine_rejects_empty_content_for_modify():
+    response = json.dumps({
+        "diagnosis": "causa",
+        "correction": "corrigir arquivo",
+        "risk": "medio",
+        "action": "modify",
+        "path": "app.py",
+        "content": "",
+    })
+
+    result = RepairEngine(FakeAI(response)).analyze_failure(
+        instruction="corrigir app.py",
+        error="SyntaxError",
+        test_output="falhou",
+    )
+
+    assert result == {
+        "diagnosis": "Resposta do modelo não contém conteúdo de reparo.",
+        "correction": "",
+        "risk": "alto",
+        "action": "none",
+        "path": "",
+        "content": "",
+    }
+
+
+def test_repair_engine_rejects_whitespace_content_for_create():
+    response = json.dumps({
+        "diagnosis": "arquivo ausente",
+        "correction": "criar arquivo",
+        "risk": "baixo",
+        "action": "create",
+        "path": "novo.py",
+        "content": "   \n\t  ",
+    })
+
+    result = RepairEngine(FakeAI(response)).analyze_failure(
+        instruction="criar novo.py",
+        error="FileNotFoundError",
+        test_output="arquivo ausente",
+    )
+
+    assert result["action"] == "none"
+    assert result["risk"] == "alto"
+    assert result["path"] == ""
+    assert result["content"] == ""

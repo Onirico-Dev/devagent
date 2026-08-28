@@ -75,6 +75,10 @@ class RepairCycleState:
         self.status = "failed"
         self.last_error = error
 
+    def mark_repair_failed(self, error=""):
+        self.status = "repair_failed"
+        self.last_error = error
+
     def mark_rolled_back(self, error=""):
         self.status = "rolled_back"
         if error:

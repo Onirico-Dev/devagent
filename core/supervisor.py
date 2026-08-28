@@ -1,51 +1,44 @@
+import copy
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-
 from enum import Enum
 
 
 class ApprovalStatus(str, Enum):
-
     PENDING = "pending"
     APPROVED = "approved"
     REJECTED = "rejected"
 
 
 class Supervisor:
-
     def __init__(
         self,
         storage_path="transactions/approvals.json",
     ):
-
         self.storage_path = Path(
             storage_path
         ).resolve()
 
         self.storage_path.parent.mkdir(
             parents=True,
-            exist_ok=True
+            exist_ok=True,
         )
 
         self.pending = {}
-
         self._load()
 
     def _now(self):
-
         return datetime.now(
             timezone.utc
         ).isoformat()
 
     def _load(self):
-
         if not self.storage_path.exists():
             self.pending = {}
             return
 
         try:
-
             data = json.loads(
                 self.storage_path.read_text(
                     encoding="utf-8"
@@ -61,11 +54,9 @@ class Supervisor:
             OSError,
             json.JSONDecodeError,
         ):
-
             self.pending = {}
 
     def _save(self):
-
         temporary = self.storage_path.with_suffix(
             ".tmp"
         )
@@ -84,11 +75,14 @@ class Supervisor:
         )
 
     def request_approval(self, plan):
+        if not isinstance(plan, dict):
+            raise ValueError(
+                "Plano de aprovação inválido."
+            )
 
         numeric_ids = []
 
         for approval_id in self.pending:
-
             try:
                 numeric_ids.append(
                     int(approval_id)
@@ -102,19 +96,41 @@ class Supervisor:
 
         approval_id = str(next_id)
 
+        snapshot = copy.deepcopy(plan)
+
+        now = self._now()
+
         self.pending[approval_id] = {
             "status": ApprovalStatus.PENDING.value,
-            "plan": plan,
-            "created_at": self._now(),
-            "updated_at": self._now(),
+            "plan": snapshot,
+            "created_at": now,
+            "updated_at": now,
         }
 
         self._save()
 
         return approval_id
 
-    def approve(self, approval_id):
+    def prepare_approval(self, approval_id):
+        request = self.pending.get(
+            approval_id
+        )
 
+        if request is None:
+            raise KeyError(
+                "Tarefa não encontrada."
+            )
+
+        if request["status"] != (
+            ApprovalStatus.PENDING.value
+        ):
+            raise ValueError(
+                "Solicitação não está pendente."
+            )
+
+        return copy.deepcopy(request)
+
+    def approve(self, approval_id):
         request = self.pending.get(
             approval_id
         )
@@ -139,10 +155,9 @@ class Supervisor:
 
         self._save()
 
-        return request
+        return copy.deepcopy(request)
 
     def reject(self, approval_id):
-
         request = self.pending.get(
             approval_id
         )
@@ -167,22 +182,26 @@ class Supervisor:
 
         self._save()
 
-        return request
+        return copy.deepcopy(request)
 
     def get(self, approval_id):
-
-        return self.pending.get(
+        request = self.pending.get(
             approval_id
         )
 
-    def list_all(self):
+        if request is None:
+            return None
 
-        return self.pending.copy()
+        return copy.deepcopy(request)
+
+    def list_all(self):
+        return copy.deepcopy(
+            self.pending
+        )
 
     def list_pending(self):
-
         return {
-            approval_id: request
+            approval_id: copy.deepcopy(request)
             for approval_id, request
             in self.pending.items()
             if request["status"]

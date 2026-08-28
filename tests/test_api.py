@@ -5,6 +5,7 @@ from http.server import HTTPServer
 import pytest
 
 import api
+from core.adapters.mock import MockAdapter
 
 
 def start_server(root=None):
@@ -12,7 +13,7 @@ def start_server(root=None):
         from agent import DevAgent
         from core.gateway import DevAgentGateway
 
-        api.agent = DevAgent(str(root))
+        api.agent = DevAgent(str(root), ai_adapter=MockAdapter())
         api.gateway = DevAgentGateway(
             api.agent,
             str(root),
@@ -1373,7 +1374,7 @@ def test_gateway_does_not_commit_when_git_returns_no_changes(tmp_path, monkeypat
                 ],
             }
 
-        def build_transaction(self, instruction):
+        def build_transaction_from_approved_plan(self, plan):
             from core.schemas.models import Change, ChangeType, Transaction
 
             return Transaction(
@@ -1449,7 +1450,7 @@ def test_gateway_does_not_commit_when_git_returns_error(tmp_path, monkeypatch):
                 ],
             }
 
-        def build_transaction(self, instruction):
+        def build_transaction_from_approved_plan(self, plan):
             from core.schemas.models import Change, ChangeType, Transaction
 
             return Transaction(
@@ -1526,7 +1527,7 @@ def test_gateway_rolls_back_when_git_commit_fails(tmp_path, monkeypatch):
                 ],
             }
 
-        def build_transaction(self, instruction):
+        def build_transaction_from_approved_plan(self, plan):
             from core.schemas.models import Change, ChangeType, Transaction
 
             return Transaction(
@@ -1662,3 +1663,183 @@ def test_gateway_evaluate_execution_repairs_failed_verification(isolated_project
     })
 
     assert result == "repair"
+
+
+def test_supervisor_preserves_approved_plan_snapshot(tmp_path):
+    from core.supervisor import Supervisor
+
+    supervisor = Supervisor(
+        storage_path=str(
+            tmp_path / "approvals.json"
+        )
+    )
+
+    plan = {
+        "instruction": "Crie app.py",
+        "changes": [
+            {
+                "change_type": "create",
+                "path": "app.py",
+                "content": "print('hello')",
+            }
+        ],
+    }
+
+    approval_id = supervisor.request_approval(
+        plan
+    )
+
+    plan["instruction"] = "ALTERADO"
+    plan["changes"][0]["content"] = "MALICIOSO"
+
+    request = supervisor.get(
+        approval_id
+    )
+
+    assert request["plan"]["instruction"] == (
+        "Crie app.py"
+    )
+
+    assert request["plan"]["changes"][0][
+        "content"
+    ] == "print('hello')"
+
+
+def test_supervisor_returns_isolated_approval_data(tmp_path):
+    from core.supervisor import Supervisor
+
+    supervisor = Supervisor(
+        storage_path=str(
+            tmp_path / "approvals.json"
+        )
+    )
+
+    plan = {
+        "instruction": "Crie app.py",
+        "changes": [],
+    }
+
+    approval_id = supervisor.request_approval(
+        plan
+    )
+
+    request = supervisor.get(
+        approval_id
+    )
+
+    request["plan"]["instruction"] = (
+        "MUTADO"
+    )
+
+    fresh = supervisor.get(
+        approval_id
+    )
+
+    assert fresh["plan"]["instruction"] == (
+        "Crie app.py"
+    )
+
+
+def test_gateway_keeps_approval_pending_when_transaction_build_fails(
+    tmp_path,
+):
+    from core.gateway import DevAgentGateway
+
+    class FakeAgent:
+        ai = None
+
+        def build_transaction_from_approved_plan(self, plan):
+            raise RuntimeError(
+                "simulated transaction build failure"
+            )
+
+    gateway = DevAgentGateway(
+        FakeAgent(),
+        root=str(tmp_path),
+    )
+
+    approval_id = gateway.supervisor.request_approval(
+        {
+            "instruction": "Criar app.py",
+            "changes": [
+                {
+                    "path": "app.py",
+                    "action": "create",
+                    "content": "print('hello')",
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="simulated transaction build failure",
+    ):
+        gateway.approve(approval_id)
+
+    request = gateway.supervisor.get(approval_id)
+
+    assert request["status"] == "pending"
+
+
+def test_gateway_keeps_approval_pending_when_transaction_begin_fails(
+    tmp_path,
+    monkeypatch,
+):
+    from core.gateway import DevAgentGateway
+    from core.schemas.models import (
+        Change,
+        ChangeType,
+        Transaction,
+    )
+
+    class FakeAgent:
+        ai = None
+
+        def build_transaction_from_approved_plan(self, plan):
+            return Transaction(
+                transaction_id="",
+                changes=[
+                    Change(
+                        change_type=ChangeType.CREATE,
+                        path="app.py",
+                        content="print('hello')",
+                    )
+                ],
+            )
+
+    gateway = DevAgentGateway(
+        FakeAgent(),
+        root=str(tmp_path),
+    )
+
+    approval_id = gateway.supervisor.request_approval(
+        {
+            "instruction": "Criar app.py",
+            "changes": [
+                {
+                    "path": "app.py",
+                    "action": "create",
+                    "content": "print('hello')",
+                }
+            ],
+        }
+    )
+
+    monkeypatch.setattr(
+        gateway.transactions,
+        "begin",
+        lambda transaction: (_ for _ in ()).throw(
+            RuntimeError("simulated transaction begin failure")
+        ),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="simulated transaction begin failure",
+    ):
+        gateway.approve(approval_id)
+
+    request = gateway.supervisor.get(approval_id)
+
+    assert request["status"] == "pending"

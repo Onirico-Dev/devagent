@@ -211,7 +211,9 @@ class RepairExecutor:
             }
 
         return {
-            "success": bool(test_result.get("success", False)),
+            "success": bool(
+                test_result.get("success", False)
+            ),
             "status": (
                 "repair_verified"
                 if test_result.get("success", False)

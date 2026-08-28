@@ -1,10 +1,10 @@
 class RepairController:
     """
-    Controlador de compatibilidade do ciclo de reparo.
+    Interface de controle do ciclo de reparo.
 
-    O estado autoritativo pertence ao RepairCycleState persistido
-    na Transaction. Este objeto mantém apenas a interface de
-    controle utilizada pelo Gateway.
+    O estado autoritativo das tentativas pertence ao RepairCycleState
+    persistido na Transaction. Este controlador mantém apenas a política
+    de limite e compatibilidade com o Gateway.
     """
 
     def __init__(self, max_attempts=3):
@@ -17,14 +17,19 @@ class RepairController:
         self.attempts = {}
 
     def start(self, transaction_id):
-        if transaction_id not in self.attempts:
-            self.attempts[transaction_id] = 0
+        self.attempts.setdefault(transaction_id, 0)
 
     def restore_state(self, transaction_id, attempts):
-        self.attempts[transaction_id] = max(
-            0,
-            int(attempts),
-        )
+        self.attempts[transaction_id] = max(0, int(attempts))
+
+    def reset(self, transaction_id):
+        """
+        Remove o estado transitório de tentativas da transação.
+
+        O estado persistente continua pertencendo ao RepairCycleState.
+        O reset aqui apenas limpa o contador mantido pelo controlador.
+        """
+        self.attempts.pop(transaction_id, None)
 
     def can_repair(self, transaction_id):
         return (
@@ -48,10 +53,7 @@ class RepairController:
         return True
 
     def get_attempts(self, transaction_id):
-        return self.attempts.get(
-            transaction_id,
-            0,
-        )
+        return self.attempts.get(transaction_id, 0)
 
     def remaining(self, transaction_id):
         return max(
@@ -61,10 +63,7 @@ class RepairController:
         )
 
     def exhausted(self, transaction_id):
-        return not self.can_repair(transaction_id)
-
-    def reset(self, transaction_id):
-        self.attempts.pop(
-            transaction_id,
-            None,
+        return (
+            self.get_attempts(transaction_id)
+            >= self.max_attempts
         )

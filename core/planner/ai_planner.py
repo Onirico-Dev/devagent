@@ -8,6 +8,7 @@ from core.schemas.models import (
 
 
 class AIPlanner:
+    MAX_CONTEXT_CHARS = 12000
 
     def __init__(self, ai_adapter):
         self.ai = ai_adapter
@@ -18,11 +19,20 @@ class AIPlanner:
         context: str = "",
     ) -> Plan:
 
+        if not isinstance(context, str):
+            context = ""
+
+        if len(context) > self.MAX_CONTEXT_CHARS:
+            context = (
+                context[:self.MAX_CONTEXT_CHARS]
+                + "\n\n=== CONTEXTO TRUNCADO ==="
+            )
+
         prompt = f"""
 Você é o planejador de um agente autônomo de programação.
 
-Sua função é transformar a solicitação do usuário em um plano
-estruturado de alterações no projeto.
+Sua função é transformar a solicitação do usuário em um plano estruturado
+de alterações no projeto.
 
 INSTRUÇÃO DO USUÁRIO:
 {instruction}
@@ -60,11 +70,15 @@ Regras:
 4. Para MODIFY, forneça o conteúdo completo do arquivo.
 5. Para CREATE, forneça o conteúdo completo.
 6. Para DELETE, não forneça conteúdo.
-7. Não execute comandos.
-8. Não altere o projeto.
-9. Não inclua markdown.
-10. Retorne somente o JSON.
-11. Se a solicitação exigir uma alteração no projeto,
+7. Quando a instrução do usuário especificar conteúdo entre aspas,
+   preserve as aspas como parte literal do conteúdo.
+8. Não remova, interprete ou normalize aspas, acentos, pontuação ou
+   delimitadores fornecidos pelo usuário quando fizerem parte do conteúdo.
+9. Não execute comandos.
+10. Não altere o projeto.
+11. Não inclua markdown.
+12. Retorne somente o JSON.
+13. Se a solicitação exigir uma alteração no projeto,
     "changes" NÃO pode ser uma lista vazia.
 """
 
@@ -130,7 +144,6 @@ Regras:
         changes = []
 
         for item in changes_data:
-
             if not isinstance(item, dict):
                 raise ValueError(
                     "Cada alteração deve ser um objeto."
@@ -145,9 +158,7 @@ Regras:
             )
 
             try:
-                change_type = ChangeType(
-                    change_type
-                )
+                change_type = ChangeType(change_type)
             except ValueError as error:
                 raise ValueError(
                     f"Tipo de alteração inválido: {change_type}"
@@ -167,8 +178,6 @@ Regras:
                 )
             )
 
-        # Uma solicitação operacional não pode virar
-        # silenciosamente uma transação vazia.
         if (
             isinstance(instruction, str)
             and instruction.strip()
@@ -176,8 +185,8 @@ Regras:
             and not changes
         ):
             raise ValueError(
-                "A IA retornou um plano sem alterações "
-                "para uma solicitação que exige alteração."
+                "A solicitação exige alteração no projeto, "
+                "mas a IA retornou um plano sem alterações."
             )
 
         return Plan(
@@ -187,21 +196,30 @@ Regras:
             risks=risks,
         )
 
-    @staticmethod
-    def _requires_change(instruction: str) -> bool:
-        lowered = instruction.strip().lower()
-
-        prefixes = (
-            "crie ",
-            "criar ",
-            "modifique ",
-            "modificar ",
-            "altere ",
-            "alterar ",
-            "delete ",
-            "apague ",
-            "remova ",
-            "remover ",
+    def _requires_change(self, instruction: str) -> bool:
+        operational_terms = (
+            "criar",
+            "crie",
+            "create",
+            "adicionar",
+            "adicione",
+            "alterar",
+            "altere",
+            "modificar",
+            "modifique",
+            "editar",
+            "edite",
+            "corrigir",
+            "corrija",
+            "remover",
+            "remova",
+            "deletar",
+            "delete",
         )
 
-        return lowered.startswith(prefixes)
+        text = instruction.lower()
+
+        return any(
+            term in text
+            for term in operational_terms
+        )

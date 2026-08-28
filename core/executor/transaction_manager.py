@@ -65,7 +65,6 @@ class TransactionManager:
         transaction,
         relative_path
     ):
-
         relative = Path(relative_path)
 
         if relative.is_absolute():
@@ -104,7 +103,7 @@ class TransactionManager:
             ) from error
 
         destination = (
-            backup_root / relative_path
+            backup_root / relative
         ).resolve()
 
         try:
@@ -113,6 +112,11 @@ class TransactionManager:
             raise ValueError(
                 f"Caminho de backup inválido: {relative_path}"
             ) from error
+
+        # Um arquivo só pode ter um backup por transação.
+        # Nunca sobrescrever o primeiro estado original.
+        if destination.exists():
+            return
 
         destination.parent.mkdir(
             parents=True,

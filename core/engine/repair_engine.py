@@ -120,6 +120,18 @@ Regras:
         if not isinstance(data["content"], str):
             data["content"] = ""
 
+        # create/modify sem conteúdo executável é uma proposta inválida.
+        # O RepairExecutor precisa receber o conteúdo completo do arquivo.
+        if data["action"] in {"create", "modify"} and not data["content"].strip():
+            return {
+                "diagnosis": "Resposta do modelo não contém conteúdo de reparo.",
+                "correction": "",
+                "risk": "alto",
+                "action": "none",
+                "path": "",
+                "content": "",
+            }
+
         MAX_REPAIR_CONTENT = 1_000_000
 
         if len(data["content"]) > MAX_REPAIR_CONTENT:
