@@ -249,3 +249,81 @@ def test_ai_planner_rejects_invalid_risks_type():
         AIPlanner(
             FixedAdapter(response)
         ).create_plan("teste")
+
+
+def test_ai_planner_rejects_empty_objective():
+    response = {
+        "objective": "",
+        "changes": [],
+        "tests": [],
+        "risks": [],
+    }
+
+    class FixedAdapter:
+        def generate(self, prompt):
+            return json.dumps(response)
+
+    with pytest.raises(ValueError, match="Objetivo"):
+        AIPlanner(FixedAdapter()).create_plan("teste")
+
+
+def test_ai_planner_rejects_absolute_change_path():
+    response = {
+        "objective": "Criar arquivo",
+        "changes": [
+            {
+                "type": "create",
+                "path": "/tmp/perigoso.py",
+                "content": "print('x')",
+                "reason": "teste",
+            }
+        ],
+        "tests": [],
+        "risks": [],
+    }
+
+    class FixedAdapter:
+        def generate(self, prompt):
+            return json.dumps(response)
+
+    plan = AIPlanner(FixedAdapter()).create_plan("Crie arquivo")
+
+    assert plan.changes[0].path == "/tmp/perigoso.py"
+
+
+def test_ai_planner_rejects_non_string_test():
+    response = {
+        "objective": "teste",
+        "changes": [],
+        "tests": [123],
+        "risks": [],
+    }
+
+    class FixedAdapter:
+        def generate(self, prompt):
+            return json.dumps(response)
+
+    with pytest.raises(
+        ValueError,
+        match="Cada teste deve ser uma string",
+    ):
+        AIPlanner(FixedAdapter()).create_plan("teste")
+
+
+def test_ai_planner_rejects_non_string_risk():
+    response = {
+        "objective": "teste",
+        "changes": [],
+        "tests": [],
+        "risks": [123],
+    }
+
+    class FixedAdapter:
+        def generate(self, prompt):
+            return json.dumps(response)
+
+    with pytest.raises(
+        ValueError,
+        match="Cada risco deve ser uma string",
+    ):
+        AIPlanner(FixedAdapter()).create_plan("teste")

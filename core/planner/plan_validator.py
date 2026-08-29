@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from core.schemas.models import (
+    Change,
     ChangeType,
     Plan,
 )
@@ -21,25 +22,70 @@ class PlanValidator:
                 "Objetivo inválido."
             )
 
-        if not isinstance(plan.changes, list):
+        if not plan.objective.strip():
             raise ValueError(
-                "Changes deve ser uma lista."
+                "Objetivo não pode ser vazio."
             )
 
+        if not isinstance(plan.changes, list):
+            raise ValueError(
+                "Changes deve ser uma lista"
+            )
+
+        if not isinstance(plan.tests, list):
+            raise ValueError(
+                "Tests deve ser uma lista."
+            )
+
+        if not isinstance(plan.risks, list):
+            raise ValueError(
+                "Risks deve ser uma lista."
+            )
+
+        for test in plan.tests:
+            if not isinstance(test, str):
+                raise ValueError(
+                    "Cada teste deve ser uma string."
+                )
+
+        for risk in plan.risks:
+            if not isinstance(risk, str):
+                raise ValueError(
+                    "Cada risco deve ser uma string."
+                )
+
         for change in plan.changes:
-            if not change.path:
+            if not isinstance(change, Change):
+                raise TypeError(
+                    "Cada alteração deve ser uma instância de Change."
+                )
+
+            if not isinstance(change.change_type, ChangeType):
+                raise ValueError(
+                    "Tipo de alteração inválido."
+                )
+
+            if not isinstance(change.path, str):
+                raise ValueError(
+                    "Caminho da alteração deve ser uma string."
+                )
+
+            if not change.path.strip():
                 raise ValueError(
                     "Alteração sem caminho."
                 )
 
-            target = (
-                self.root / change.path
-            ).resolve()
+            relative_path = Path(change.path)
+
+            if relative_path.is_absolute():
+                raise ValueError(
+                    f"Caminho absoluto não permitido: {change.path}"
+                )
+
+            target = (self.root / relative_path).resolve()
 
             try:
-                target.relative_to(
-                    self.root
-                )
+                target.relative_to(self.root)
             except ValueError as error:
                 raise ValueError(
                     "Caminho fora do projeto: "
@@ -56,10 +102,7 @@ class PlanValidator:
                 ChangeType.CREATE,
                 ChangeType.MODIFY,
             ):
-                if not isinstance(
-                    change.content,
-                    str,
-                ):
+                if not isinstance(change.content, str):
                     raise ValueError(
                         f"{change.change_type.value.upper()} "
                         "exige conteúdo textual."

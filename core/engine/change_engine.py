@@ -4,7 +4,6 @@ from core.schemas.models import Change, ChangeType, Plan
 
 
 class ChangeEngine:
-
     def __init__(self, root: str):
         self.root = Path(root).resolve()
 
@@ -16,11 +15,38 @@ class ChangeEngine:
                 f"Caminho fora do projeto: {change.path}"
             )
 
+        if change.change_type == ChangeType.CREATE:
+            if target.exists():
+                raise FileExistsError(
+                    f"Arquivo já existe: {change.path}"
+                )
+            return
+
+        if change.change_type == ChangeType.MODIFY:
+            if not target.exists():
+                raise FileNotFoundError(
+                    f"Arquivo não encontrado: {change.path}"
+                )
+
+            if not target.is_file():
+                raise IsADirectoryError(
+                    f"Caminho não é um arquivo: {change.path}"
+                )
+
+            return
+
         if change.change_type == ChangeType.DELETE:
             if not target.exists():
                 raise FileNotFoundError(
                     f"Arquivo não encontrado: {change.path}"
                 )
+
+            if not target.is_file():
+                raise IsADirectoryError(
+                    f"Caminho não é um arquivo: {change.path}"
+                )
+
+            return
 
     def prepare(self, plan: Plan) -> list[Change]:
         for change in plan.changes:

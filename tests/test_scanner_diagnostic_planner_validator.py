@@ -503,3 +503,195 @@ def test_plan_validator_validates_all_changes(tmp_path):
         match="CREATE exige conteúdo textual",
     ):
         PlanValidator(tmp_path).validate(plan)
+
+
+def test_plan_validator_rejects_empty_objective(tmp_path):
+    plan = Plan(
+        objective="",
+        changes=[],
+    )
+
+    with pytest.raises(ValueError, match="Objetivo não pode ser vazio"):
+        PlanValidator(tmp_path).validate(plan)
+
+
+def test_plan_validator_rejects_non_change_item(tmp_path):
+    plan = Plan(
+        objective="teste",
+        changes=[{"path": "arquivo.py"}],
+    )
+
+    with pytest.raises(
+        TypeError,
+        match="instância de Change",
+    ):
+        PlanValidator(tmp_path).validate(plan)
+
+
+def test_plan_validator_rejects_non_string_path(tmp_path):
+    plan = Plan(
+        objective="teste",
+        changes=[
+            Change(
+                change_type=ChangeType.CREATE,
+                path=123,
+                content="x",
+            )
+        ],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="deve ser uma string",
+    ):
+        PlanValidator(tmp_path).validate(plan)
+
+
+def test_plan_validator_rejects_absolute_path(tmp_path):
+    plan = Plan(
+        objective="teste",
+        changes=[
+            Change(
+                change_type=ChangeType.CREATE,
+                path=str(tmp_path / "arquivo.py"),
+                content="x",
+            )
+        ],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Caminho absoluto não permitido",
+    ):
+        PlanValidator(tmp_path).validate(plan)
+
+
+def test_plan_validator_rejects_non_string_test(tmp_path):
+    plan = Plan(
+        objective="teste",
+        changes=[],
+        tests=["pytest", 123],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Cada teste deve ser uma string",
+    ):
+        PlanValidator(tmp_path).validate(plan)
+
+
+def test_plan_validator_rejects_non_string_risk(tmp_path):
+    plan = Plan(
+        objective="teste",
+        changes=[],
+        risks=["risco", 123],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Cada risco deve ser uma string",
+    ):
+        PlanValidator(tmp_path).validate(plan)
+
+
+def test_plan_validator_validates_all_change_types(tmp_path):
+    plan = Plan(
+        objective="alterar projeto",
+        changes=[
+            Change(
+                change_type=ChangeType.CREATE,
+                path="novo.py",
+                content="print('novo')",
+            ),
+            Change(
+                change_type=ChangeType.MODIFY,
+                path="existente.py",
+                content="print('alterado')",
+            ),
+            Change(
+                change_type=ChangeType.DELETE,
+                path="antigo.py",
+                content=None,
+            ),
+        ],
+    )
+
+    assert PlanValidator(tmp_path).validate(plan) is True
+
+def test_change_engine_accepts_create_for_nonexistent_file(tmp_path):
+    from core.engine.change_engine import ChangeEngine
+
+    change = Change(
+        change_type=ChangeType.CREATE,
+        path="novo.py",
+        content="print('ok')",
+    )
+
+    ChangeEngine(tmp_path).validate_change(change)
+
+
+def test_change_engine_rejects_create_for_existing_file(tmp_path):
+    from core.engine.change_engine import ChangeEngine
+
+    target = tmp_path / "existente.py"
+    target.write_text("print('old')")
+
+    change = Change(
+        change_type=ChangeType.CREATE,
+        path="existente.py",
+        content="print('new')",
+    )
+
+    with pytest.raises(
+        FileExistsError,
+        match="Arquivo já existe",
+    ):
+        ChangeEngine(tmp_path).validate_change(change)
+
+
+def test_change_engine_accepts_modify_for_existing_file(tmp_path):
+    from core.engine.change_engine import ChangeEngine
+
+    target = tmp_path / "existente.py"
+    target.write_text("print('old')")
+
+    change = Change(
+        change_type=ChangeType.MODIFY,
+        path="existente.py",
+        content="print('new')",
+    )
+
+    ChangeEngine(tmp_path).validate_change(change)
+
+
+def test_change_engine_rejects_modify_for_nonexistent_file(tmp_path):
+    from core.engine.change_engine import ChangeEngine
+
+    change = Change(
+        change_type=ChangeType.MODIFY,
+        path="inexistente.py",
+        content="print('new')",
+    )
+
+    with pytest.raises(
+        FileNotFoundError,
+        match="Arquivo não encontrado",
+    ):
+        ChangeEngine(tmp_path).validate_change(change)
+
+
+def test_change_engine_rejects_delete_for_directory(tmp_path):
+    from core.engine.change_engine import ChangeEngine
+
+    (tmp_path / "diretorio").mkdir()
+
+    change = Change(
+        change_type=ChangeType.DELETE,
+        path="diretorio",
+    )
+
+    with pytest.raises(
+        IsADirectoryError,
+        match="não é um arquivo",
+    ):
+        ChangeEngine(tmp_path).validate_change(change)

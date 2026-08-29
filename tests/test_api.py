@@ -2086,3 +2086,136 @@ def test_approved_task_history_preserves_transaction_metadata(tmp_path):
     assert task["plan"]["objective"] == "Criar aplicação principal"
     assert task["plan"]["tests"] == ["pytest -q"]
     assert task["plan"]["risks"] == ["baixo"]
+
+def test_gateway_preparation_failure_register_created_rolls_back(
+    tmp_path,
+    monkeypatch,
+):
+    from core.gateway import DevAgentGateway
+    from core.schemas.models import Change, ChangeType, Transaction
+
+    class FakeAgent:
+        ai = None
+
+        def build_transaction_from_approved_plan(self, plan):
+            return Transaction(
+                transaction_id="",
+                changes=[
+                    Change(
+                        change_type=ChangeType.CREATE,
+                        path="prep_failure.py",
+                        content="print('x')",
+                    ),
+                ],
+            )
+
+    gateway = DevAgentGateway(FakeAgent(), root=str(tmp_path))
+
+    approval_id = gateway.supervisor.request_approval(
+        {
+            "instruction": "Criar prep_failure.py",
+            "changes": [
+                {
+                    "path": "prep_failure.py",
+                    "action": "create",
+                    "content": "print('x')",
+                },
+            ],
+        }
+    )
+
+    def failing_register_created(transaction, path):
+        raise RuntimeError("REGISTER_CREATED_FAILURE_TEST")
+
+    executor_called = False
+
+    def forbidden_execute(transaction):
+        nonlocal executor_called
+        executor_called = True
+
+    monkeypatch.setattr(
+        gateway.transactions,
+        "register_created",
+        failing_register_created,
+    )
+    monkeypatch.setattr(
+        gateway.executor,
+        "execute",
+        forbidden_execute,
+    )
+
+    result = gateway.approve(approval_id)
+
+    assert result["status"] == "failed"
+    assert "REGISTER_CREATED_FAILURE_TEST" in result["error"]
+    assert executor_called is False
+    assert not (tmp_path / "prep_failure.py").exists()
+
+
+def test_gateway_preparation_failure_backup_file_rolls_back(
+    tmp_path,
+    monkeypatch,
+):
+    from core.gateway import DevAgentGateway
+    from core.schemas.models import Change, ChangeType, Transaction
+
+    target = tmp_path / "prep_backup_failure.py"
+    target.write_text("original", encoding="utf-8")
+
+    class FakeAgent:
+        ai = None
+
+        def build_transaction_from_approved_plan(self, plan):
+            return Transaction(
+                transaction_id="",
+                changes=[
+                    Change(
+                        change_type=ChangeType.MODIFY,
+                        path="prep_backup_failure.py",
+                        content="alterado",
+                    ),
+                ],
+            )
+
+    gateway = DevAgentGateway(FakeAgent(), root=str(tmp_path))
+
+    approval_id = gateway.supervisor.request_approval(
+        {
+            "instruction": "Modificar prep_backup_failure.py",
+            "changes": [
+                {
+                    "path": "prep_backup_failure.py",
+                    "action": "modify",
+                    "content": "alterado",
+                },
+            ],
+        }
+    )
+
+    def failing_backup_file(transaction, path):
+        raise RuntimeError("BACKUP_FILE_FAILURE_TEST")
+
+    executor_called = False
+
+    def forbidden_execute(transaction):
+        nonlocal executor_called
+        executor_called = True
+
+    monkeypatch.setattr(
+        gateway.transactions,
+        "backup_file",
+        failing_backup_file,
+    )
+    monkeypatch.setattr(
+        gateway.executor,
+        "execute",
+        forbidden_execute,
+    )
+
+    result = gateway.approve(approval_id)
+
+    assert result["status"] == "failed"
+    assert "BACKUP_FILE_FAILURE_TEST" in result["error"]
+    assert executor_called is False
+    assert target.exists()
+    assert target.read_text(encoding="utf-8") == "original"

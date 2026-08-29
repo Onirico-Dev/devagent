@@ -18,7 +18,6 @@ class AIPlanner:
         instruction: str,
         context: str = "",
     ) -> Plan:
-
         if not isinstance(context, str):
             context = ""
 
@@ -30,7 +29,6 @@ class AIPlanner:
 
         prompt = f"""
 Você é o planejador de um agente autônomo de programação.
-
 Sua função é transformar a solicitação do usuário em um plano estruturado
 de alterações no projeto.
 
@@ -43,27 +41,25 @@ CONTEXTO DO PROJETO:
 Retorne SOMENTE JSON válido.
 
 Formato obrigatório:
-
 {{
-  "objective": "objetivo da tarefa",
-  "changes": [
-    {{
-      "type": "create | modify | delete",
-      "path": "caminho relativo",
-      "content": "conteúdo completo quando necessário",
-      "reason": "motivo da alteração"
-    }}
-  ],
-  "tests": [
-    "teste que deve ser executado"
-  ],
-  "risks": [
-    "risco identificado"
-  ]
+    "objective": "objetivo da tarefa",
+    "changes": [
+        {{
+            "type": "create | modify | delete",
+            "path": "caminho relativo",
+            "content": "conteúdo completo quando necessário",
+            "reason": "motivo da alteração"
+        }}
+    ],
+    "tests": [
+        "teste que deve ser executado"
+    ],
+    "risks": [
+        "risco identificado"
+    ]
 }}
 
 Regras:
-
 1. Nunca use caminhos absolutos.
 2. Nunca use ../ para sair do projeto.
 3. Não invente arquivos sem necessidade.
@@ -116,6 +112,11 @@ Regras:
                 "Objetivo inválido."
             )
 
+        if not objective.strip():
+            raise ValueError(
+                "Objetivo não pode ser vazio."
+            )
+
         changes_data = data.get(
             "changes",
             [],
@@ -146,6 +147,18 @@ Regras:
                 "Campo 'risks' deve ser uma lista."
             )
 
+        for test in tests:
+            if not isinstance(test, str):
+                raise ValueError(
+                    "Cada teste deve ser uma string."
+                )
+
+        for risk in risks:
+            if not isinstance(risk, str):
+                raise ValueError(
+                    "Cada risco deve ser uma string."
+                )
+
         changes = []
 
         for item in changes_data:
@@ -173,6 +186,26 @@ Regras:
                 raise ValueError(
                     "Caminho da alteração inválido."
                 )
+
+            if not isinstance(reason, str):
+                raise ValueError(
+                    "Motivo da alteração deve ser uma string."
+                )
+
+            if change_type == ChangeType.DELETE:
+                if content is not None:
+                    raise ValueError(
+                        "DELETE não pode possuir conteúdo."
+                    )
+            elif change_type in (
+                ChangeType.CREATE,
+                ChangeType.MODIFY,
+            ):
+                if not isinstance(content, str):
+                    raise ValueError(
+                        f"{change_type.value.upper()} "
+                        "exige conteúdo textual."
+                    )
 
             changes.append(
                 Change(
