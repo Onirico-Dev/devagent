@@ -111,6 +111,11 @@ Regras:
             "",
         )
 
+        if not isinstance(objective, str):
+            raise ValueError(
+                "Objetivo inválido."
+            )
+
         changes_data = data.get(
             "changes",
             [],

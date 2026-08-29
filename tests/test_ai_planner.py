@@ -198,3 +198,54 @@ def test_ai_planner_sends_instruction_and_context_to_adapter():
 
     assert "Analise o projeto" in adapter.last_prompt
     assert "Python 3.14" in adapter.last_prompt
+
+
+def test_ai_planner_rejects_invalid_objective_type():
+    response = json.dumps({
+        "objective": 123,
+        "changes": [],
+        "tests": [],
+        "risks": [],
+    })
+
+    with pytest.raises(
+        ValueError,
+        match="Objetivo inválido",
+    ):
+        AIPlanner(
+            FixedAdapter(response)
+        ).create_plan("teste")
+
+
+def test_ai_planner_rejects_invalid_tests_type():
+    response = json.dumps({
+        "objective": "teste",
+        "changes": [],
+        "tests": "nao é lista",
+        "risks": [],
+    })
+
+    with pytest.raises(
+        ValueError,
+        match="Campo 'tests' deve ser uma lista",
+    ):
+        AIPlanner(
+            FixedAdapter(response)
+        ).create_plan("teste")
+
+
+def test_ai_planner_rejects_invalid_risks_type():
+    response = json.dumps({
+        "objective": "teste",
+        "changes": [],
+        "tests": [],
+        "risks": "nao é lista",
+    })
+
+    with pytest.raises(
+        ValueError,
+        match="Campo 'risks' deve ser uma lista",
+    ):
+        AIPlanner(
+            FixedAdapter(response)
+        ).create_plan("teste")

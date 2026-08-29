@@ -479,3 +479,27 @@ def test_command_parser_does_not_execute_operation_without_target():
 
         assert command.action == "analyze"
         assert command.target == ""
+
+
+def test_plan_validator_validates_all_changes(tmp_path):
+    plan = Plan(
+        objective="validar múltiplas alterações",
+        changes=[
+            Change(
+                change_type=ChangeType.CREATE,
+                path="primeiro.py",
+                content="print('ok')",
+            ),
+            Change(
+                change_type=ChangeType.CREATE,
+                path="segundo.py",
+                content=None,
+            ),
+        ],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="CREATE exige conteúdo textual",
+    ):
+        PlanValidator(tmp_path).validate(plan)

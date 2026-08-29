@@ -7,13 +7,10 @@ from core.schemas.models import (
 
 
 class PlanValidator:
-
     def __init__(self, root="."):
-
         self.root = Path(root).resolve()
 
     def validate(self, plan: Plan):
-
         if not isinstance(plan, Plan):
             raise TypeError(
                 "O plano deve ser uma instância de Plan."
@@ -30,7 +27,6 @@ class PlanValidator:
             )
 
         for change in plan.changes:
-
             if not change.path:
                 raise ValueError(
                     "Alteração sem caminho."
@@ -45,14 +41,12 @@ class PlanValidator:
                     self.root
                 )
             except ValueError as error:
-
                 raise ValueError(
-                    f"Caminho fora do projeto: "
+                    "Caminho fora do projeto: "
                     f"{change.path}"
                 ) from error
 
             if change.change_type == ChangeType.DELETE:
-
                 if change.content is not None:
                     raise ValueError(
                         "DELETE não pode possuir conteúdo."
@@ -62,14 +56,13 @@ class PlanValidator:
                 ChangeType.CREATE,
                 ChangeType.MODIFY,
             ):
-
                 if not isinstance(
                     change.content,
                     str,
                 ):
                     raise ValueError(
                         f"{change.change_type.value.upper()} "
-                        f"exige conteúdo textual."
+                        "exige conteúdo textual."
                     )
 
         return True
