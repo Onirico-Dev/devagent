@@ -559,6 +559,53 @@ def test_groq_adapter_strips_response_content(monkeypatch):
     assert adapter.generate("Olá") == "resposta válida"
 
 
+def test_build_transaction_from_approved_plan_rejects_whitespace_path():
+    from agent import DevAgent
+    from core.adapters.mock import MockAdapter
+
+    agent = DevAgent(ai_adapter=MockAdapter())
+
+    plan = {
+        "instruction": "Crie app.py",
+        "changes": [
+            {
+                "change_type": "create",
+                "path": "   ",
+                "content": "print('OK')",
+                "reason": "teste",
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match="Alteração sem caminho"):
+        agent.build_transaction_from_approved_plan(plan)
+
+
+def test_build_transaction_from_approved_plan_rejects_non_string_reason():
+    from agent import DevAgent
+    from core.adapters.mock import MockAdapter
+
+    agent = DevAgent(ai_adapter=MockAdapter())
+
+    plan = {
+        "instruction": "Crie app.py",
+        "changes": [
+            {
+                "change_type": "create",
+                "path": "app.py",
+                "content": "print('OK')",
+                "reason": 123,
+            }
+        ],
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="Motivo da alteração deve ser uma string",
+    ):
+        agent.build_transaction_from_approved_plan(plan)
+
+
 def test_build_transaction_from_approved_plan_preserves_plan_metadata():
     from agent import DevAgent
     from core.adapters.mock import MockAdapter

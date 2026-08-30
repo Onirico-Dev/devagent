@@ -111,9 +111,14 @@ class DevAgent:
                     "Tipo de alteração inválido."
                 )
 
-            if not isinstance(path, str) or not path:
+            if not isinstance(path, str) or not path.strip():
                 raise ValueError(
                     "Alteração sem caminho."
+                )
+
+            if not isinstance(reason, str):
+                raise ValueError(
+                    "Motivo da alteração deve ser uma string."
                 )
 
             try:
