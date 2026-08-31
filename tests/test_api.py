@@ -2614,3 +2614,69 @@ def test_gateway_commit_failure_and_rollback_failure_propagates_rollback_error(
         task["repair_state"]["status"]
         == "failed"
     )
+
+
+def test_gateway_keeps_approval_pending_when_post_begin_setup_fails(
+    tmp_path,
+    monkeypatch,
+):
+    from core.gateway import DevAgentGateway
+    from core.schemas.models import (
+        Change,
+        ChangeType,
+        Transaction,
+    )
+
+    class FakeAgent:
+        ai = None
+
+        def build_transaction_from_approved_plan(self, plan):
+            return Transaction(
+                transaction_id="",
+                changes=[
+                    Change(
+                        change_type=ChangeType.CREATE,
+                        path="app.py",
+                        content="print('hello')",
+                    )
+                ],
+            )
+
+    gateway = DevAgentGateway(
+        FakeAgent(),
+        root=str(tmp_path),
+    )
+
+    approval_id = gateway.supervisor.request_approval(
+        {
+            "instruction": "Criar app.py",
+            "changes": [
+                {
+                    "path": "app.py",
+                    "action": "create",
+                    "content": "print('hello')",
+                }
+            ],
+        }
+    )
+
+    def fail_restore(transaction):
+        raise RuntimeError(
+            "simulated post-begin setup failure"
+        )
+
+    monkeypatch.setattr(
+        gateway,
+        "_restore_repair_state",
+        fail_restore,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="simulated post-begin setup failure",
+    ):
+        gateway.approve(approval_id)
+
+    request = gateway.supervisor.get(approval_id)
+
+    assert request["status"] == "pending"

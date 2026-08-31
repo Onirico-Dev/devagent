@@ -845,10 +845,6 @@ class DevAgentGateway:
             transaction
         )
 
-        self.supervisor.approve(
-            approval_id
-        )
-
         repair_state = self._restore_repair_state(
             transaction
         )
@@ -857,6 +853,10 @@ class DevAgentGateway:
 
         self.repair_controller.start(
             transaction.transaction_id
+        )
+
+        self.supervisor.approve(
+            approval_id
         )
 
         self._update_history_safe(
