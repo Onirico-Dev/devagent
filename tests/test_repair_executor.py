@@ -346,3 +346,70 @@ def test_repair_executor_rejects_symlink_path(tmp_path):
             "Corrija link.py",
             transaction,
         )
+
+def test_repair_executor_handles_executor_exception(tmp_path):
+    from core.engine.repair_executor import RepairExecutor
+    from core.executor.transaction_manager import TransactionManager
+    from core.security import SecurityPolicy
+    from core.schemas.models import Transaction, TransactionStatus
+
+    class FailingExecutor:
+        def execute_change(self, change):
+            raise RuntimeError("EXECUTOR_FAILURE_TEST")
+
+    class FakeTests:
+        def run(self, paths):
+            raise AssertionError(
+                "Os testes não deveriam executar após falha do executor."
+            )
+
+    root = tmp_path / "project"
+    root.mkdir()
+
+    target = root / "app.py"
+    target.write_text(
+        "print('old')\n",
+        encoding="utf-8",
+    )
+
+    transactions = TransactionManager(root)
+
+    repair_executor = RepairExecutor(
+        security=SecurityPolicy(root),
+        transaction_manager=transactions,
+        executor=FailingExecutor(),
+        test_runner=FakeTests(),
+    )
+
+    transaction = Transaction(
+        transaction_id="repair-executor-exception",
+        changes=[],
+        metadata={},
+    )
+
+    transaction = transactions.begin(transaction)
+
+    result = repair_executor.execute_repair(
+        {
+            "action": "modify",
+            "path": "app.py",
+            "content": "print('new')\n",
+            "diagnosis": "Teste de exceção.",
+            "correction": "Simular falha do executor.",
+            "risk": "baixo",
+        },
+        "Corrija app.py",
+        transaction,
+    )
+
+    assert result["success"] is False
+    assert result["status"] == "failed"
+    assert result["transaction_id"] == transaction.transaction_id
+    assert result["error"] == "EXECUTOR_FAILURE_TEST"
+    assert result["instruction"] == "Corrija app.py"
+
+    assert transaction.status == TransactionStatus.FAILED
+
+    # O RepairExecutor não faz rollback.
+    # O Gateway/TransactionManager continua responsável por isso.
+    assert target.read_text(encoding="utf-8") == "print('old')\n"
