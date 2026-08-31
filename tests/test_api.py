@@ -2421,3 +2421,196 @@ def test_gateway_commit_failure_with_successful_rollback_is_consistent(
         assert task["metadata"]["repair_cycle"]["status"] == "rolled_back"
 
     assert not (tmp_path / "commit_failure_state.py").exists()
+
+
+def test_commit_transaction_does_not_mark_committed_before_git_success(
+    tmp_path,
+    monkeypatch,
+):
+    from agent import DevAgent
+    from core.gateway import (
+        CommitTransactionError,
+        DevAgentGateway,
+    )
+    from core.engine.repair_cycle_state import RepairCycleState
+    from core.schemas.models import (
+        Change,
+        ChangeType,
+        Transaction,
+        TransactionStatus,
+    )
+
+    gateway = DevAgentGateway(
+        DevAgent(str(tmp_path)),
+        root=str(tmp_path),
+    )
+
+    transaction = Transaction(
+        transaction_id="tx-commit-order",
+        changes=[
+            Change(
+                change_type=ChangeType.CREATE,
+                path="app.py",
+                content="VALUE = 1\n",
+            )
+        ],
+    )
+
+    repair_state = RepairCycleState(
+        transaction_id=transaction.transaction_id,
+        max_attempts=2,
+    )
+
+    def failing_commit(*args, **kwargs):
+        return {
+            "status": "failed",
+            "message": "COMMIT_FAILURE_ORDER_TEST",
+        }
+
+    monkeypatch.setattr(
+        gateway.git,
+        "commit_transaction",
+        failing_commit,
+    )
+
+    with pytest.raises(
+        CommitTransactionError,
+        match="COMMIT_FAILURE_ORDER_TEST",
+    ):
+        gateway._commit_transaction(
+            approval_id="approval-commit-order",
+            instruction="criar app.py",
+            transaction=transaction,
+            test_result={"success": True},
+            repair_state=repair_state,
+        )
+
+    assert transaction.status != TransactionStatus.COMMITTED
+    assert repair_state.status != "committed"
+    assert transaction.repair_state == {}
+
+
+
+def test_gateway_commit_failure_and_rollback_failure_propagates_rollback_error(
+    tmp_path,
+    monkeypatch,
+):
+    from agent import DevAgent
+    from core.gateway import (
+        CommitTransactionError,
+        DevAgentGateway,
+    )
+
+    class FakeAgent:
+        ai = None
+
+        def process(self, instruction):
+            return {
+                "instruction": instruction,
+                "objective": "teste",
+                "changes": [
+                    {
+                        "path": "commit_rollback_failure.py",
+                        "action": "create",
+                        "content": "VALUE = 1\n",
+                    }
+                ],
+            }
+
+        def build_transaction_from_approved_plan(self, plan):
+            from core.schemas.models import (
+                Change,
+                ChangeType,
+                Transaction,
+            )
+
+            return Transaction(
+                transaction_id="",
+                changes=[
+                    Change(
+                        change_type=ChangeType.CREATE,
+                        path="commit_rollback_failure.py",
+                        content="VALUE = 1\n",
+                    )
+                ],
+            )
+
+    gateway = DevAgentGateway(
+        FakeAgent(),
+        root=str(tmp_path),
+    )
+
+    approval_id = gateway.supervisor.request_approval(
+        {
+            "instruction": "criar commit_rollback_failure.py",
+            "objective": "teste",
+            "changes": [
+                {
+                    "change_type": "create",
+                    "path": "commit_rollback_failure.py",
+                    "content": "VALUE = 1\n",
+                }
+            ],
+            "tests": [],
+            "risks": [],
+        }
+    )
+
+    monkeypatch.setattr(
+        gateway.tests,
+        "run",
+        lambda paths: {
+            "success": True,
+            "stdout": "",
+            "stderr": "",
+        },
+    )
+
+    def failing_commit(*args, **kwargs):
+        raise CommitTransactionError(
+            "COMMIT_FAILURE_TEST",
+            result={
+                "status": "failed",
+                "message": "COMMIT_FAILURE_TEST",
+            },
+        )
+
+    monkeypatch.setattr(
+        gateway.git,
+        "commit_transaction",
+        failing_commit,
+    )
+
+    def failing_rollback(transaction):
+        raise RuntimeError("ROLLBACK_FAILURE_TEST")
+
+    monkeypatch.setattr(
+        gateway.transactions,
+        "rollback",
+        failing_rollback,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="ROLLBACK_FAILURE_TEST",
+    ) as exc_info:
+        gateway.approve(approval_id)
+
+    # A falha de rollback deve substituir a falha de commit
+    # como exceção operacional propagada.
+    assert isinstance(
+        exc_info.value.__cause__,
+        CommitTransactionError,
+    )
+
+    task = gateway.history.get(approval_id)
+
+    assert task is not None
+    assert task["status"] == "failed"
+    assert task["rollback_error"] == "ROLLBACK_FAILURE_TEST"
+    assert "COMMIT_FAILURE_TEST" in task["error"]
+
+    assert (
+        task["repair_state"]["status"]
+        == "failed"
+    )
