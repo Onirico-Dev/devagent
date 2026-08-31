@@ -27,14 +27,15 @@ class RepairCycleState:
         self.attempts += 1
         self.last_action = action
         self.status = status
-        self.last_error = error
+        normalized_error = str(error) if error else ""
+        self.last_error = normalized_error
 
         self.history.append(
             {
                 "attempt": self.attempts,
                 "action": action,
                 "status": status,
-                "error": error,
+                "error": normalized_error,
             }
         )
 
@@ -73,16 +74,16 @@ class RepairCycleState:
 
     def mark_failed(self, error=""):
         self.status = "failed"
-        self.last_error = error
+        self.last_error = str(error) if error else ""
 
     def mark_repair_failed(self, error=""):
         self.status = "repair_failed"
-        self.last_error = error
+        self.last_error = str(error) if error else ""
 
     def mark_rolled_back(self, error=""):
         self.status = "rolled_back"
         if error:
-            self.last_error = error
+            self.last_error = str(error)
 
     def mark_committed(self):
         self.status = "committed"

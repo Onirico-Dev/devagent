@@ -2144,7 +2144,23 @@ def test_gateway_preparation_failure_register_created_rolls_back(
         forbidden_execute,
     )
 
+    print("\n===== BEFORE APPROVE =====")
+    print("APPROVAL:", approval_id)
+    print("HISTORY PATH:", gateway.history.storage_path)
+    print("HISTORY TASKS:", gateway.history.tasks)
+    print("TASK FILE EXISTS:", gateway.history.storage_path.exists())
+
     result = gateway.approve(approval_id)
+
+    print("\n===== AFTER APPROVE =====")
+    print("RESULT:", result)
+    print("HISTORY PATH:", gateway.history.storage_path)
+    print("HISTORY TASKS:", gateway.history.tasks)
+    print("TASK FILE EXISTS:", gateway.history.storage_path.exists())
+
+    if gateway.history.storage_path.exists():
+        print("TASK FILE:")
+        print(gateway.history.storage_path.read_text(encoding="utf-8"))
 
     assert result["status"] == "failed"
     assert "REGISTER_CREATED_FAILURE_TEST" in result["error"]
@@ -2212,10 +2228,196 @@ def test_gateway_preparation_failure_backup_file_rolls_back(
         forbidden_execute,
     )
 
-    result = gateway.approve(approval_id)
+    result = gateway.approve(approval_id); print("\n===== APPROVE RESULT ====="); print(result)
 
     assert result["status"] == "failed"
     assert "BACKUP_FILE_FAILURE_TEST" in result["error"]
     assert executor_called is False
     assert target.exists()
     assert target.read_text(encoding="utf-8") == "original"
+
+
+def test_gateway_commit_state_is_consistent_across_transaction_repair_and_history(
+    isolated_project,
+):
+    from core.gateway import DevAgentGateway
+    from agent import DevAgent
+
+    gateway = DevAgentGateway(
+        DevAgent(str(isolated_project)),
+        root=str(isolated_project),
+    )
+
+    def fake_process(instruction):
+        return {
+            "instruction": instruction,
+            "objective": "teste",
+            "changes": [
+                {
+                    "change_type": "create",
+                    "path": "state_consistency.py",
+                    "content": "VALUE = 1\n",
+                }
+            ],
+            "tests": [],
+            "risks": [],
+        }
+
+    gateway.agent.process = fake_process
+
+    created = gateway.create_task(
+        "criar arquivo de consistência"
+    )
+
+    approval_id = created["approval_id"]
+
+    result = gateway.approve(approval_id)
+
+    print("\\n===== APPROVE RESULT =====")
+    print(result)
+
+    assert result["status"] == "committed"
+    assert result["transaction_id"]
+    assert result["repair_attempts"] == 0
+
+    task = gateway.history.get(approval_id)
+
+    assert task is not None
+    assert task["status"] == "committed"
+    assert task["transaction_id"] == result["transaction_id"]
+    assert task["repair_attempts"] == result["repair_attempts"]
+
+    assert task["metadata"]["repair_cycle"]["status"] == "committed"
+    assert task["repair_state"]["status"] == "committed"
+    assert task["repair_state"]["transaction_id"] == result["transaction_id"]
+
+def test_gateway_rollback_state_is_consistent_across_history_and_result(
+    tmp_path,
+    monkeypatch,
+):
+    from core.gateway import DevAgentGateway
+    from core.engine.repair_cycle_state import RepairCycleState
+    from agent import DevAgent
+
+    gateway = DevAgentGateway(DevAgent(str(tmp_path)), root=str(tmp_path))
+
+    approval_id = "state-consistency-rollback"
+
+    approval_id = gateway.supervisor.request_approval(
+        {
+            "instruction": "criar arquivo que falha",
+            "objective": "teste",
+            "changes": [
+                {
+                    "change_type": "create",
+                    "path": "state_consistency_rollback.py",
+                    "content": "VALUE = 1\n",
+                }
+            ],
+            "tests": [],
+            "risks": [],
+        },
+    )
+
+    class FailingTests:
+        def run(self, paths):
+            return {
+                "success": False,
+                "output": "TEST_FAILURE",
+            }
+
+    monkeypatch.setattr(gateway, "tests", FailingTests())
+
+    result = gateway.approve(approval_id); print("\n===== APPROVE RESULT ====="); print(result)
+
+    assert result["status"] == "rolled_back"
+    assert result["transaction_id"]
+    assert result["repair_attempts"] >= 1
+
+    task = gateway.history.get(approval_id)
+
+    assert task is not None
+    assert task["status"] == "rolled_back"
+    assert task["transaction_id"] == result["transaction_id"]
+    assert task["repair_attempts"] == result["repair_attempts"]
+
+    repair_state = task["repair_state"]
+
+    assert repair_state["transaction_id"] == result["transaction_id"]
+    assert repair_state["status"] == "rolled_back"
+    assert repair_state["attempts"] == result["repair_attempts"]
+
+    assert task["metadata"]["repair_cycle"]["status"] == "rolled_back"
+
+    assert not (tmp_path / "state_consistency_rollback.py").exists()
+
+
+def test_gateway_commit_failure_with_successful_rollback_is_consistent(
+    tmp_path,
+    monkeypatch,
+):
+    from core.gateway import DevAgentGateway
+    from core.gateway import CommitTransactionError
+    from agent import DevAgent
+
+    gateway = DevAgentGateway(DevAgent(str(tmp_path)), root=str(tmp_path))
+
+    approval_id = "state-consistency-commit-failure"
+
+    approval_id = gateway.supervisor.request_approval(
+        {
+            "instruction": "criar arquivo e falhar commit",
+            "objective": "teste",
+            "changes": [
+                {
+                    "change_type": "create",
+                    "path": "commit_failure_state.py",
+                    "content": "VALUE = 1\n",
+                }
+            ],
+            "tests": [],
+            "risks": [],
+        },
+    )
+
+    def failing_commit(*args, **kwargs):
+        raise CommitTransactionError(
+            "COMMIT_FAILURE_TEST",
+            result={
+                "status": "failed",
+                "message": "COMMIT_FAILURE_TEST",
+            },
+        )
+
+    monkeypatch.setattr(
+        gateway.git,
+        "commit_transaction",
+        failing_commit,
+    )
+
+    try:
+        gateway.approve(approval_id)
+        assert False, "Gateway deveria propagar CommitTransactionError."
+    except CommitTransactionError as error:
+        assert "COMMIT_FAILURE_TEST" in str(error)
+
+        rollback = error.result["rollback"]
+
+        assert rollback["status"] == "rolled_back"
+        assert rollback["transaction_id"]
+        assert "rollback_error" not in rollback
+
+        task = gateway.history.get(approval_id)
+
+        assert task is not None
+        assert task["status"] == "rolled_back"
+        assert task["transaction_id"] == rollback["transaction_id"]
+        assert task["repair_attempts"] == rollback["repair_attempts"]
+        assert task["repair_state"]["status"] == "rolled_back"
+        assert (
+            task["repair_state"]["transaction_id"]
+            == rollback["transaction_id"]
+        )
+        assert task["metadata"]["repair_cycle"]["status"] == "rolled_back"
+
+    assert not (tmp_path / "commit_failure_state.py").exists()

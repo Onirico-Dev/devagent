@@ -691,6 +691,7 @@ class DevAgentGateway:
             "git": git_result,
             "repair_attempts": attempts,
             "metadata": dict(transaction.metadata),
+            "repair_state": dict(transaction.repair_state),
         }
 
         if repair is not None:
@@ -760,6 +761,7 @@ class DevAgentGateway:
         extra = {
             "repair_attempts": attempts,
             "metadata": dict(transaction.metadata),
+            "repair_state": dict(transaction.repair_state),
         }
 
         if test_result is not None:
@@ -826,6 +828,13 @@ class DevAgentGateway:
         )
 
         instruction = request["plan"]["instruction"]
+
+        if self.history.get(approval_id) is None:
+            self.history.create(
+                approval_id=approval_id,
+                instruction=instruction,
+                plan=request["plan"],
+            )
 
         transaction = self.agent.build_transaction_from_approved_plan(
             request["plan"]
