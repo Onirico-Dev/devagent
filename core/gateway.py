@@ -746,6 +746,7 @@ class DevAgentGateway:
             rollback_error = exc
 
         if rollback_error is not None:
+            transaction.status = TransactionStatus.FAILED
             repair_state.mark_failed(
                 str(rollback_error)
             )
