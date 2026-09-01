@@ -114,5 +114,13 @@ class Session:
             default=self._default_state(),
         )
 
+    @property
+    def instructions(self):
+        return self.load()["instructions"]
+
+    @property
+    def plans(self):
+        return self.load()["plans"]
+
     def context(self):
         return self.load()

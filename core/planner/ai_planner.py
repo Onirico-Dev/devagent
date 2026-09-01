@@ -167,7 +167,10 @@ Regras:
                     "Cada alteração deve ser um objeto."
                 )
 
-            change_type = item.get("type")
+            change_type = item.get("change_type")
+            if change_type is None:
+                change_type = item.get("type")
+
             path = item.get("path")
             content = item.get("content")
             reason = item.get(
