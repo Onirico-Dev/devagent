@@ -206,3 +206,241 @@ def test_session_concurrent_writes_remain_valid(tmp_path):
     assert isinstance(data, dict)
     assert isinstance(data["instructions"], list)
     assert len(data["instructions"]) == 20
+
+
+def test_session_load_normalizes_non_dict_root(tmp_path):
+    path = tmp_path / "session.json"
+    session = Session(path)
+
+    session.store.load = lambda default=None: ["invalid"]
+
+    assert session.load() == {
+        "instructions": [],
+        "plans": [],
+    }
+
+
+def test_session_load_normalizes_invalid_collections(tmp_path):
+    path = tmp_path / "session.json"
+    session = Session(path)
+
+    session.store.load = lambda default=None: {
+        "instructions": "invalid",
+        "plans": {"invalid": True},
+        "metadata": {"version": 2},
+    }
+
+    assert session.load() == {
+        "instructions": [],
+        "plans": [],
+        "metadata": {"version": 2},
+    }
+
+
+def test_session_save_rejects_non_dict(tmp_path):
+    session = Session(tmp_path / "session.json")
+
+    try:
+        session.save([])
+        assert False
+    except ValueError as exc:
+        assert str(exc) == "A sessão deve ser um objeto JSON."
+
+
+def test_session_save_rejects_invalid_instructions(tmp_path):
+    session = Session(tmp_path / "session.json")
+
+    try:
+        session.save({
+            "instructions": "invalid",
+            "plans": [],
+        })
+        assert False
+    except ValueError as exc:
+        assert str(exc) == "instructions deve ser uma lista."
+
+
+def test_session_save_rejects_invalid_plans(tmp_path):
+    session = Session(tmp_path / "session.json")
+
+    try:
+        session.save({
+            "instructions": [],
+            "plans": "invalid",
+        })
+        assert False
+    except ValueError as exc:
+        assert str(exc) == "plans deve ser uma lista."
+
+
+def test_session_add_instruction_recovers_invalid_root(tmp_path):
+    session = Session(tmp_path / "session.json")
+
+    session.store.update = lambda updater, default=None: updater([])
+
+    session.add_instruction("teste")
+
+    assert True
+
+
+def test_session_add_instruction_recovers_invalid_collection(tmp_path):
+    session = Session(tmp_path / "session.json")
+
+    captured = {}
+
+    def fake_update(updater, default=None):
+        captured["result"] = updater({
+            "instructions": "invalid",
+            "plans": [],
+        })
+
+    session.store.update = fake_update
+
+    session.add_instruction("teste")
+
+    assert captured["result"]["instructions"] == ["teste"]
+
+
+def test_session_add_plan_recovers_invalid_root(tmp_path):
+    session = Session(tmp_path / "session.json")
+
+    session.store.update = lambda updater, default=None: updater([])
+
+    session.add_plan({"changes": []})
+
+    assert True
+
+
+def test_session_add_plan_recovers_invalid_collection(tmp_path):
+    session = Session(tmp_path / "session.json")
+
+    captured = {}
+
+    def fake_update(updater, default=None):
+        captured["result"] = updater({
+            "instructions": [],
+            "plans": "invalid",
+        })
+
+    session.store.update = fake_update
+
+    session.add_plan({"changes": []})
+
+    assert captured["result"]["plans"] == [{"changes": []}]
+
+
+def test_memory_load_recovers_non_list_data(tmp_path, monkeypatch):
+    memory = Memory(tmp_path / "memory.json")
+
+    monkeypatch.setattr(
+        memory.store,
+        "load",
+        lambda default=None: {"invalid": True},
+    )
+
+    assert memory._load() == []
+
+
+def test_memory_save_rejects_non_list_data(tmp_path):
+    memory = Memory(tmp_path / "memory.json")
+
+    try:
+        memory._save({"invalid": True})
+        assert False
+    except ValueError as exc:
+        assert str(exc) == "A memória deve ser uma lista."
+
+
+def test_memory_add_recovers_non_list_store_state(tmp_path, monkeypatch):
+    memory = Memory(tmp_path / "memory.json")
+    captured = {}
+
+    def fake_update(updater, default=None):
+        captured["result"] = updater("invalid")
+
+    monkeypatch.setattr(memory.store, "update", fake_update)
+
+    memory.add("recovered.event")
+
+    assert isinstance(captured["result"], list)
+    assert len(captured["result"]) == 1
+    assert captured["result"][0]["event"] == "recovered.event"
+    assert captured["result"][0]["data"] is None
+    assert "timestamp" in captured["result"][0]
+
+
+def test_memory_last_rejects_non_integer_amount(tmp_path):
+    memory = Memory(tmp_path / "memory.json")
+
+    try:
+        memory.last("2")
+        assert False
+    except TypeError as exc:
+        assert str(exc) == "amount deve ser um inteiro."
+
+
+def test_memory_last_rejects_negative_amount(tmp_path):
+    memory = Memory(tmp_path / "memory.json")
+
+    try:
+        memory.last(-1)
+        assert False
+    except ValueError as exc:
+        assert str(exc) == "amount não pode ser negativo."
+
+
+def test_memory_last_zero_returns_empty_list(tmp_path):
+    memory = Memory(tmp_path / "memory.json")
+
+    memory.add("event")
+
+    assert memory.last(0) == []
+
+
+def test_memory_save_rejects_non_list(tmp_path):
+    memory = Memory(tmp_path / "memory.json")
+
+    try:
+        memory._save({"invalid": True})
+        assert False
+    except ValueError as exc:
+        assert str(exc) == "A memória deve ser uma lista."
+
+
+def test_memory_save_persists_valid_list(tmp_path):
+    path = tmp_path / "memory.json"
+    memory = Memory(path)
+
+    data = [
+        {
+            "event": "manual.save",
+            "data": {"ok": True},
+        }
+    ]
+
+    memory._save(data)
+
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+
+    assert loaded == data
+
+
+def test_memory_save_accepts_list(tmp_path):
+    path = tmp_path / "memory.json"
+    memory = Memory(path)
+
+    memory._save([
+        {
+            "event": "manual.save",
+            "data": {"ok": True},
+        }
+    ])
+
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+
+    assert loaded == [
+        {
+            "event": "manual.save",
+            "data": {"ok": True},
+        }
+    ]
