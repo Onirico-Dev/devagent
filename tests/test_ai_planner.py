@@ -327,3 +327,103 @@ def test_ai_planner_rejects_non_string_risk():
         match="Cada risco deve ser uma string",
     ):
         AIPlanner(FixedAdapter()).create_plan("teste")
+
+
+def test_ai_planner_normalizes_non_string_context():
+    class Adapter:
+        def generate(self, prompt):
+            assert "CONTEXTO DO PROJETO:" in prompt
+            return '{"objective": "teste", "changes": [], "tests": [], "risks": []}'
+
+    planner = AIPlanner(Adapter())
+
+    plan = planner.create_plan("apenas analisar", context=None)
+
+    assert plan.objective == "teste"
+    assert plan.changes == []
+
+
+def test_ai_planner_truncates_oversized_context():
+    class Adapter:
+        def generate(self, prompt):
+            assert "=== CONTEXTO TRUNCADO ===" in prompt
+            assert "A" * AIPlanner.MAX_CONTEXT_CHARS in prompt
+            return '{"objective": "teste", "changes": [], "tests": [], "risks": []}'
+
+    planner = AIPlanner(Adapter())
+    context = "A" * (AIPlanner.MAX_CONTEXT_CHARS + 100)
+
+    plan = planner.create_plan("apenas analisar", context=context)
+
+    assert plan.objective == "teste"
+
+
+def test_ai_planner_rejects_non_string_reason():
+    class Adapter:
+        def generate(self, prompt):
+            return (
+                '{"objective": "teste", "changes": ['
+                '{"type": "create", "path": "arquivo.py", '
+                '"content": "VALUE = 1\\n", "reason": 123}'
+                '], "tests": [], "risks": []}'
+            )
+
+    planner = AIPlanner(Adapter())
+
+    with pytest.raises(
+        ValueError,
+        match="Motivo da alteração deve ser uma string",
+    ):
+        planner.create_plan("criar arquivo.py")
+
+
+def test_ai_planner_rejects_delete_with_content():
+    class Adapter:
+        def generate(self, prompt):
+            return (
+                '{"objective": "teste", "changes": ['
+                '{"type": "delete", "path": "arquivo.py", '
+                '"content": "não deveria existir", "reason": "teste"}'
+                '], "tests": [], "risks": []}'
+            )
+
+    planner = AIPlanner(Adapter())
+
+    with pytest.raises(
+        ValueError,
+        match="DELETE não pode possuir conteúdo",
+    ):
+        planner.create_plan("deletar arquivo.py")
+
+
+def test_ai_planner_rejects_create_without_text_content():
+    class Adapter:
+        def generate(self, prompt):
+            return (
+                '{"objective": "teste", "changes": ['
+                '{"type": "create", "path": "arquivo.py", '
+                '"content": null, "reason": "teste"}'
+                '], "tests": [], "risks": []}'
+            )
+
+    planner = AIPlanner(Adapter())
+
+    with pytest.raises(
+        ValueError,
+        match="CREATE exige conteúdo textual",
+    ):
+        planner.create_plan("criar arquivo.py")
+
+
+def test_ai_planner_rejects_required_change_without_changes():
+    class Adapter:
+        def generate(self, prompt):
+            return '{"objective": "teste", "changes": [], "tests": [], "risks": []}'
+
+    planner = AIPlanner(Adapter())
+
+    with pytest.raises(
+        ValueError,
+        match="A solicitação exige alteração no projeto",
+    ):
+        planner.create_plan("criar o arquivo novo.py")
