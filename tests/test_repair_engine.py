@@ -228,3 +228,129 @@ def test_repair_engine_rejects_whitespace_content_for_create():
     assert result["risk"] == "alto"
     assert result["path"] == ""
     assert result["content"] == ""
+
+
+def test_repair_engine_non_dict_json_returns_safe_failure():
+    result = RepairEngine(FakeAI("[]")).analyze_failure(
+        instruction="corrigir",
+        error="erro",
+        test_output="falhou",
+    )
+
+    assert result == {
+        "diagnosis": "Resposta do modelo não é um objeto JSON.",
+        "correction": "",
+        "risk": "alto",
+        "action": "none",
+        "path": "",
+        "content": "",
+    }
+
+
+def test_repair_engine_non_string_risk_becomes_high():
+    response = json.dumps({
+        "diagnosis": "causa",
+        "correction": "correção",
+        "risk": 123,
+        "action": "modify",
+        "path": "app.py",
+        "content": "novo conteúdo",
+    })
+
+    result = RepairEngine(FakeAI(response)).analyze_failure(
+        instruction="corrigir",
+        error="erro",
+        test_output="falhou",
+    )
+
+    assert result["risk"] == "alto"
+
+
+def test_repair_engine_non_string_action_becomes_none():
+    response = json.dumps({
+        "diagnosis": "causa",
+        "correction": "correção",
+        "risk": "baixo",
+        "action": 123,
+        "path": "app.py",
+        "content": "novo conteúdo",
+    })
+
+    result = RepairEngine(FakeAI(response)).analyze_failure(
+        instruction="corrigir",
+        error="erro",
+        test_output="falhou",
+    )
+
+    assert result["action"] == "none"
+
+
+def test_repair_engine_non_string_path_becomes_empty():
+    response = json.dumps({
+        "diagnosis": "causa",
+        "correction": "correção",
+        "risk": "baixo",
+        "action": "none",
+        "path": 123,
+        "content": "",
+    })
+
+    result = RepairEngine(FakeAI(response)).analyze_failure(
+        instruction="corrigir",
+        error="erro",
+        test_output="falhou",
+    )
+
+    assert result["path"] == ""
+
+
+def test_repair_engine_non_string_content_becomes_safe_failure():
+    response = json.dumps({
+        "diagnosis": "causa",
+        "correction": "correção",
+        "risk": "baixo",
+        "action": "modify",
+        "path": "app.py",
+        "content": 123,
+    })
+
+    result = RepairEngine(FakeAI(response)).analyze_failure(
+        instruction="corrigir",
+        error="erro",
+        test_output="falhou",
+    )
+
+    assert result == {
+        "diagnosis": "Resposta do modelo não contém conteúdo de reparo.",
+        "correction": "",
+        "risk": "alto",
+        "action": "none",
+        "path": "",
+        "content": "",
+    }
+
+
+def test_repair_engine_rejects_oversized_repair_content():
+    response = json.dumps({
+        "diagnosis": "causa",
+        "correction": "correção",
+        "risk": "baixo",
+        "action": "modify",
+        "path": "app.py",
+        "content": "x" * 1_000_001,
+    })
+
+    result = RepairEngine(FakeAI(response)).analyze_failure(
+        instruction="corrigir app.py",
+        error="erro",
+        test_output="falhou",
+    )
+
+    assert result == {
+        "diagnosis": "Conteúdo de reparo excede o limite permitido.",
+        "correction": "",
+        "risk": "alto",
+        "action": "none",
+        "path": "",
+        "content": "",
+    }
