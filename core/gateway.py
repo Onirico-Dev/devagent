@@ -9,7 +9,7 @@ from core.engine.repair_engine import RepairEngine
 from core.engine.repair_executor import RepairExecutor
 from core.engine.repair_controller import RepairController
 from core.engine.repair_cycle_state import RepairCycleState
-from core.memory.task_history import TaskHistory
+from core.memory.task_history import TaskHistory, TaskHistoryStatus
 from core.schemas.models import TransactionStatus
 
 
@@ -339,7 +339,7 @@ class DevAgentGateway:
                 "action",
                 "unknown",
             ),
-            status="repairing",
+            status=TaskHistoryStatus.REPAIRING.value,
         )
         repair_state.persist(transaction)
 
@@ -599,7 +599,7 @@ class DevAgentGateway:
             # FALHA FÍSICA AO APLICAR REPARO
             # ----------------------------------------------------------
 
-            if status == "failed":
+            if status == TaskHistoryStatus.FAILED.value:
                 return {
                     "success": False,
                     "status": "rolled_back",
@@ -717,7 +717,7 @@ class DevAgentGateway:
 
         self._update_history_safe(
             approval_id,
-            status="committed",
+            status=TaskHistoryStatus.COMMITTED.value,
             transaction_id=transaction.transaction_id,
             extra=extra,
         )
@@ -751,7 +751,7 @@ class DevAgentGateway:
         repair_state,
         test_result=None,
         repair=None,
-        status="rolled_back",
+        status=TaskHistoryStatus.ROLLED_BACK.value,
         error=None,
     ):
         rollback_error = None
@@ -879,7 +879,7 @@ class DevAgentGateway:
 
         self._update_history_safe(
             approval_id,
-            status="executing",
+            status=TaskHistoryStatus.EXECUTING.value,
             transaction_id=transaction.transaction_id,
         )
 
@@ -921,7 +921,7 @@ class DevAgentGateway:
 
             self._update_history_safe(
                 approval_id,
-                status="testing",
+                status=TaskHistoryStatus.TESTING.value,
                 transaction_id=transaction.transaction_id,
             )
 
@@ -985,7 +985,7 @@ class DevAgentGateway:
                 repair=repair_cycle.get(
                     "repair"
                 ),
-                status="rolled_back",
+                status=TaskHistoryStatus.ROLLED_BACK.value,
                 error=repair_cycle.get(
                     "error"
                 ),
@@ -1001,7 +1001,7 @@ class DevAgentGateway:
                 transaction=transaction,
                 repair_state=repair_state,
                 error=str(error),
-                status="rolled_back",
+                status=TaskHistoryStatus.ROLLED_BACK.value,
             )
 
             # Se o rollback também falhou, a falha de rollback deve
@@ -1035,7 +1035,7 @@ class DevAgentGateway:
                 transaction=transaction,
                 repair_state=repair_state,
                 error=error,
-                status="failed",
+                status=TaskHistoryStatus.FAILED.value,
             )
 
             # Se o rollback também falhou, não retornar como sucesso HTTP.
@@ -1059,7 +1059,7 @@ class DevAgentGateway:
 
         self._update_history_safe(
             approval_id,
-            status="rejected",
+            status=TaskHistoryStatus.REJECTED.value,
         )
 
         return result
