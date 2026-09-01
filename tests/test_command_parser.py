@@ -275,6 +275,27 @@ def test_extract_target_fallback_delete_clears_instruction(parser):
     assert instruction == ""
 
 
+def test_parse_empty_extracted_target_falls_back_to_analysis(parser, monkeypatch):
+    def fake_extract(remainder, action):
+        return "", "instrução"
+
+    monkeypatch.setattr(
+        parser,
+        "_extract_target_and_instruction",
+        fake_extract,
+    )
+
+    result = parser.parse("crie alguma coisa")
+
+    assert_command(
+        result,
+        raw="crie alguma coisa",
+        action="analyze",
+        target="",
+        instruction="crie alguma coisa",
+    )
+
+
 def test_parse_case_insensitive_action(parser):
     result = parser.parse("CRIE arquivo teste.py conteúdo")
 

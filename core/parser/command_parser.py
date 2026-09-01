@@ -102,14 +102,6 @@ class CommandParser:
 
         remainder = words[1].strip()
 
-        if not remainder:
-            return Command(
-                raw=text,
-                action="analyze",
-                target="",
-                instruction=text,
-            )
-
         target, instruction = self._extract_target_and_instruction(
             remainder,
             action,
