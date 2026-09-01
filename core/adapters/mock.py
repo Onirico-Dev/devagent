@@ -119,9 +119,9 @@ class MockAdapter(AIAdapter):
 
         delete_match = re.match(
             r"^\s*"
-            r"(?:delete|apague|remova|remover)"
+            r"(?:delete|apague|remova|remover|remover)"
             r"\s+"
-            r"(?:o\s+|a\s+|arquivo\s+)?"
+            r"(?:o\s+|a\s+)?(?:arquivo\s+)?"
             r"([A-Za-z0-9_./-]+\.[A-Za-z0-9_-]+)"
             r"(?:\s+.*)?$",
             instruction,
@@ -147,7 +147,7 @@ class MockAdapter(AIAdapter):
             r"^\s*"
             r"(?:modifique|modificar|altere|alterar|modify)"
             r"\s+"
-            r"(?:o\s+|a\s+|arquivo\s+)?"
+            r"(?:o\s+|a\s+)?(?:arquivo\s+)?"
             r"([A-Za-z0-9_./-]+\.[A-Za-z0-9_-]+)"
             r"(?:\s+(.*))?$",
             instruction,
