@@ -181,14 +181,6 @@ class TransactionManager:
                 "Diretório de backup inválido."
             )
 
-        # O diretório de backup deve permanecer dentro do projeto.
-        try:
-            backup_root.relative_to(self.root)
-        except ValueError as error:
-            raise ValueError(
-                "Diretório de backup fora do projeto."
-            ) from error
-
         # Remove arquivos criados durante a transação.
         for relative_path in transaction.metadata.get(
             "created",
@@ -242,13 +234,6 @@ class TransactionManager:
             destination = (
                 self.root / relative
             ).resolve()
-
-            try:
-                destination.relative_to(self.root)
-            except ValueError as error:
-                raise ValueError(
-                    f"Destino de rollback fora do projeto: {relative}"
-                ) from error
 
             raw_destination = self.root / relative
 
