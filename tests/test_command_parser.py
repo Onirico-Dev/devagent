@@ -301,23 +301,33 @@ def test_extract_target_case_insensitive_pattern(parser):
     assert instruction == "conteúdo"
 
 @pytest.mark.parametrize(
-    "remainder",
+    "remainder, expected_target",
     [
-        "um arquivo chamado teste.py conteúdo que deve ser ignorado",
-        'arquivo "teste.py", conteúdo que deve ser ignorado',
-        "arquivo de arquivo.py conteúdo que deve ser ignorado",
+        (
+            "um arquivo chamado teste.py conteúdo que deve ser ignorado",
+            "teste.py",
+        ),
+        (
+            'arquivo "teste.py", conteúdo que deve ser ignorado',
+            "teste.py",
+        ),
+        (
+            "arquivo de arquivo.py conteúdo que deve ser ignorado",
+            "de",
+        ),
     ],
 )
 def test_extract_target_delete_clears_instruction_for_all_special_patterns(
     parser,
     remainder,
+    expected_target,
 ):
     target, instruction = parser._extract_target_and_instruction(
         remainder,
         "delete",
     )
 
-    assert target in {"teste.py", "de"}
+    assert target == expected_target
     assert instruction == ""
 
 
