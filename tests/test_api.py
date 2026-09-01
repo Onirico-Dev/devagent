@@ -2822,3 +2822,240 @@ def test_gateway_serializes_concurrent_approve_for_same_request(
     assert request["status"] == "approved"
 
     assert len(list(tmp_path.glob("app.py"))) == 1
+
+
+def test_gateway_history_update_ignores_missing_task_keyerror(isolated_project):
+    from core.gateway import DevAgentGateway
+
+    gateway = DevAgentGateway(
+        agent=None,
+        root=str(isolated_project),
+    )
+
+    def fake_update(*args, **kwargs):
+        raise KeyError("Tarefa não encontrada.")
+
+    gateway.history.update = fake_update
+
+    result = gateway._history_update("missing-id", status="failed")
+
+    assert result is None
+
+
+def test_gateway_history_update_reraises_unexpected_keyerror(isolated_project):
+    from core.gateway import DevAgentGateway
+
+    gateway = DevAgentGateway(
+        agent=None,
+        root=str(isolated_project),
+    )
+
+    def fake_update(*args, **kwargs):
+        raise KeyError("Outra chave")
+
+    gateway.history.update = fake_update
+
+    with pytest.raises(KeyError, match="Outra chave"):
+        gateway._history_update("task-id", status="failed")
+
+
+def test_gateway_create_task_rejects_invalid_instruction(isolated_project):
+    from core.gateway import DevAgentGateway
+
+    gateway = DevAgentGateway(
+        agent=None,
+        root=str(isolated_project),
+    )
+
+    with pytest.raises(ValueError, match="Instrução inválida"):
+        gateway.create_task("   ")
+
+
+def test_gateway_create_task_rejects_non_dict_agent_result(isolated_project):
+    from core.gateway import DevAgentGateway
+
+    class FakeAgent:
+        def process(self, instruction):
+            return None
+
+    gateway = DevAgentGateway(
+        agent=FakeAgent(),
+        root=str(isolated_project),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Plano inválido retornado pelo agente",
+    ):
+        gateway.create_task("teste")
+
+
+def test_gateway_create_task_rejects_non_list_changes(isolated_project):
+    from core.gateway import DevAgentGateway
+
+    class FakeAgent:
+        def process(self, instruction):
+            return {
+                "instruction": instruction,
+                "changes": {},
+            }
+
+    gateway = DevAgentGateway(
+        agent=FakeAgent(),
+        root=str(isolated_project),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Plano não possui lista de alterações",
+    ):
+        gateway.create_task("teste")
+
+
+def test_gateway_create_task_rejects_non_dict_change(isolated_project):
+    from core.gateway import DevAgentGateway
+
+    class FakeAgent:
+        def process(self, instruction):
+            return {
+                "instruction": instruction,
+                "changes": ["invalid"],
+            }
+
+    gateway = DevAgentGateway(
+        agent=FakeAgent(),
+        root=str(isolated_project),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Alteração inválida no plano",
+    ):
+        gateway.create_task("teste")
+
+
+def test_gateway_create_task_rejects_change_without_path(isolated_project):
+    from core.gateway import DevAgentGateway
+
+    class FakeAgent:
+        def process(self, instruction):
+            return {
+                "instruction": instruction,
+                "changes": [
+                    {
+                        "change_type": "create",
+                        "content": "print('x')",
+                    }
+                ],
+            }
+
+    gateway = DevAgentGateway(
+        agent=FakeAgent(),
+        root=str(isolated_project),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Alteração sem caminho",
+    ):
+        gateway.create_task("teste")
+
+
+def test_gateway_create_task_rejects_non_string_content(isolated_project):
+    from core.gateway import DevAgentGateway
+
+    class FakeAgent:
+        def process(self, instruction):
+            return {
+                "instruction": instruction,
+                "changes": [
+                    {
+                        "change_type": "create",
+                        "path": "app.py",
+                        "content": None,
+                    }
+                ],
+            }
+
+    gateway = DevAgentGateway(
+        agent=FakeAgent(),
+        root=str(isolated_project),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Conteúdo inválido para alteração",
+    ):
+        gateway.create_task("teste")
+
+
+def test_gateway_execute_approved_rejects_missing_task(isolated_project):
+    from core.gateway import DevAgentGateway
+
+    gateway = DevAgentGateway(
+        agent=None,
+        root=str(isolated_project),
+    )
+
+    gateway.supervisor.get = lambda approval_id: None
+
+    with pytest.raises(
+        KeyError,
+        match="Tarefa não encontrada",
+    ):
+        gateway.execute_approved("missing")
+
+
+def test_gateway_execute_approved_rejects_unapproved_task(isolated_project):
+    from core.gateway import DevAgentGateway
+
+    gateway = DevAgentGateway(
+        agent=None,
+        root=str(isolated_project),
+    )
+
+    gateway.supervisor.get = lambda approval_id: {
+        "status": "pending",
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="Tarefa não está aprovada",
+    ):
+        gateway.execute_approved("pending")
+
+
+def test_gateway_execute_approved_delegates_approved_task(
+    isolated_project,
+    monkeypatch,
+):
+    from core.gateway import DevAgentGateway
+
+    gateway = DevAgentGateway(
+        agent=None,
+        root=str(isolated_project),
+    )
+
+    gateway.supervisor.get = lambda approval_id: {
+        "status": "approved",
+    }
+
+    called = []
+
+    def fake_approve(approval_id):
+        called.append(approval_id)
+        return {
+            "success": True,
+            "status": "committed",
+        }
+
+    monkeypatch.setattr(
+        gateway,
+        "approve",
+        fake_approve,
+    )
+
+    result = gateway.execute_approved("approval-123")
+
+    assert called == ["approval-123"]
+    assert result["status"] == "committed"

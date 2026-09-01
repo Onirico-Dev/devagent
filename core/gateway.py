@@ -41,7 +41,9 @@ class DevAgentGateway:
         self.tests = TestRunner(root)
         self.git = GitManager(root)
 
-        self.repair_engine = RepairEngine(agent.ai)
+        self.repair_engine = RepairEngine(
+            agent.ai if agent is not None and hasattr(agent, "ai") else None
+        )
 
         self.repair_executor = RepairExecutor(
             security=self.security,
@@ -66,7 +68,7 @@ class DevAgentGateway:
     # HISTORY
     # ------------------------------------------------------------------
 
-    def _update_history_safe(
+    def _history_update(
         self,
         approval_id,
         status=None,
@@ -84,6 +86,20 @@ class DevAgentGateway:
             if str(exc) != "'Tarefa não encontrada.'":
                 raise
             return None
+
+    def _update_history_safe(
+        self,
+        approval_id,
+        status=None,
+        transaction_id=None,
+        extra=None,
+    ):
+        return self._history_update(
+            approval_id,
+            status=status,
+            transaction_id=transaction_id,
+            extra=extra,
+        )
 
     # ------------------------------------------------------------------
     # TASK CREATION
