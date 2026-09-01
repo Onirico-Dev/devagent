@@ -1,12 +1,12 @@
 from pathlib import Path
 from core.security import SecurityPolicy
-from core.supervisor import Supervisor
+from core.supervisor import ApprovalStatus, Supervisor
 from core.executor.safe_executor import SafeExecutor
 from core.executor.transaction_manager import TransactionManager
 from core.executor.test_runner import TestRunner
-from core.executor.git_manager import GitManager
+from core.executor.git_manager import GitManager, GitStatus
 from core.engine.repair_engine import RepairEngine
-from core.engine.repair_executor import RepairExecutor
+from core.engine.repair_executor import RepairExecutor, RepairExecutorStatus
 from core.engine.repair_controller import RepairController
 from core.engine.repair_cycle_state import RepairCycleState
 from core.memory.task_history import TaskHistory, TaskHistoryStatus
@@ -158,7 +158,7 @@ class DevAgentGateway:
 
         return {
             "approval_id": approval_id,
-            "status": "pending",
+            "status": ApprovalStatus.PENDING.value,
             "plan": result,
         }
 
@@ -172,7 +172,7 @@ class DevAgentGateway:
         if request is None:
             raise KeyError("Tarefa não encontrada.")
 
-        if request.get("status") != "approved":
+        if request.get("status") != ApprovalStatus.APPROVED.value:
             raise ValueError(
                 "Tarefa não está aprovada."
             )
@@ -375,7 +375,7 @@ class DevAgentGateway:
 
         # Falha física ao aplicar a correção.
         # Não existe novo teste confiável para alimentar o ciclo.
-        if repair_result.get("status") == "failed":
+        if repair_result.get("status") == RepairExecutorStatus.FAILED.value:
             error = repair_result.get(
                 "error",
                 "",
@@ -402,10 +402,10 @@ class DevAgentGateway:
             repair_state.persist(transaction)
 
             repair_result["success"] = False
-            repair_result["status"] = "repair_failed"
+            repair_result["status"] = RepairExecutorStatus.REPAIR_FAILED.value
             repair_result["tests"] = {
                 "success": False,
-                "status": "invalid_test_result",
+                "status": RepairExecutorStatus.INVALID_TEST_RESULT.value,
                 "stderr": (
                     "Resultado de testes inválido."
                 ),
@@ -419,7 +419,7 @@ class DevAgentGateway:
             repair_state.persist(transaction)
 
             repair_result["success"] = True
-            repair_result["status"] = "repair_verified"
+            repair_result["status"] = RepairExecutorStatus.REPAIR_VERIFIED.value
 
             return repair_result
 
@@ -435,7 +435,7 @@ class DevAgentGateway:
         repair_state.persist(transaction)
 
         repair_result["success"] = False
-        repair_result["status"] = "repair_failed"
+        repair_result["status"] = RepairExecutorStatus.REPAIR_FAILED.value
 
         return repair_result
 
@@ -549,7 +549,7 @@ class DevAgentGateway:
             # REPARO APLICADO, MAS TESTES CONTINUAM FALHANDO
             # ----------------------------------------------------------
 
-            if status == "repair_failed":
+            if status == RepairExecutorStatus.REPAIR_FAILED.value:
                 next_tests = repair_result.get(
                     "tests"
                 )
@@ -599,7 +599,7 @@ class DevAgentGateway:
             # FALHA FÍSICA AO APLICAR REPARO
             # ----------------------------------------------------------
 
-            if status == TaskHistoryStatus.FAILED.value:
+            if status == RepairExecutorStatus.FAILED.value:
                 return {
                     "success": False,
                     "status": "rolled_back",
@@ -683,7 +683,7 @@ class DevAgentGateway:
             ],
         )
 
-        if git_result.get("status") != "committed":
+        if git_result.get("status") != GitStatus.COMMITTED.value:
             raise CommitTransactionError(
                 "Commit Git não foi concluído: "
                 f"{git_result.get('status', 'desconhecido')}"
