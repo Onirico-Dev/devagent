@@ -195,3 +195,124 @@ def test_persistent_store_update_serializes_read_modify_write(tmp_path):
 
     assert errors == []
     assert store.load() == {"count": 20}
+
+def test_persistent_store_save_ignores_temporary_cleanup_error(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "state.json"
+    store = PersistentStore(path)
+
+    original_unlink = Path.unlink
+
+    def failing_unlink(self, *args, **kwargs):
+        if self.name.startswith(".state.json.") and self.name.endswith(".tmp"):
+            raise OSError("cleanup failure")
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", failing_unlink)
+
+    store.save({"value": 1})
+
+    assert path.exists()
+    assert store.load() == {"value": 1}
+
+def test_persistent_store_save_ignores_temporary_cleanup_error(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "state.json"
+    store = PersistentStore(path)
+
+    original_unlink = Path.unlink
+
+    def failing_unlink(self, *args, **kwargs):
+        if self.name.startswith(".state.json.") and self.name.endswith(".tmp"):
+            raise OSError("cleanup failure")
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", failing_unlink)
+
+    store.save({"value": 1})
+
+    assert path.exists()
+    assert store.load() == {"value": 1}
+
+
+def test_persistent_store_save_removes_existing_temporary_file_when_replace_fails(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "state.json"
+    store = PersistentStore(path)
+
+    original_replace = os.replace
+
+    def failing_replace(source, destination):
+        raise OSError("replace failure")
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+
+    original_exists = Path.exists
+
+    def fake_exists(self):
+        if self.parent == tmp_path and self.name.startswith(".state.json.") and self.name.endswith(".tmp"):
+            return True
+        return original_exists(self)
+
+    monkeypatch.setattr(Path, "exists", fake_exists)
+
+    original_unlink = Path.unlink
+    removed = []
+
+    def tracking_unlink(self, *args, **kwargs):
+        removed.append(self)
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", tracking_unlink)
+
+    try:
+        store.save({"value": 1})
+        assert False
+    except OSError as exc:
+        assert str(exc) == "replace failure"
+
+    assert len(removed) == 1
+    assert removed[0].name.startswith(".state.json.")
+    assert removed[0].name.endswith(".tmp")
+
+
+def test_persistent_store_save_ignores_cleanup_error_after_replace(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "state.json"
+    store = PersistentStore(path)
+
+    original_exists = Path.exists
+    original_unlink = Path.unlink
+
+    def fake_exists(self):
+        if (
+            self.parent == tmp_path
+            and self.name.startswith(".state.json.")
+            and self.name.endswith(".tmp")
+        ):
+            return True
+        return original_exists(self)
+
+    def failing_unlink(self, *args, **kwargs):
+        if (
+            self.parent == tmp_path
+            and self.name.startswith(".state.json.")
+            and self.name.endswith(".tmp")
+        ):
+            raise OSError("cleanup failure")
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "exists", fake_exists)
+    monkeypatch.setattr(Path, "unlink", failing_unlink)
+
+    store.save({"value": 1})
+
+    assert path.exists()
+    assert store.load() == {"value": 1}
