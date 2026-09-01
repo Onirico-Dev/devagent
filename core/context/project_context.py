@@ -142,7 +142,13 @@ class ProjectContext:
         included = 0
 
         for relative in files:
+            path = (self.root / relative).resolve()
+
+            if path.stat().st_size > self.max_file_size:
+                continue
+
             content = self.read_file(relative)
+
             section = (
                 f"=== ARQUIVO: {relative} ===\n"
                 f"{content}\n"
