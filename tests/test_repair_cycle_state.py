@@ -394,3 +394,127 @@ def test_repair_cycle_state_persist_updates_transaction():
     assert transaction.metadata["repair_cycle"]["status"] == "analyzing"
     assert transaction.metadata["repair_cycle"]["max_attempts"] == 2
     assert transaction.metadata["repair_cycle"]["remaining"] == 2
+
+
+def test_repair_cycle_state_status_lifecycle_all_markers():
+    state = RepairCycleState("tx-lifecycle")
+
+    state.mark_pending()
+    assert state.status == "pending"
+
+    state.mark_analyzing()
+    assert state.status == "analyzing"
+
+    state.mark_repairing()
+    assert state.status == "repairing"
+
+    state.mark_testing()
+    assert state.status == "testing"
+
+    state.mark_verified()
+    assert state.status == "verified"
+
+    state.mark_failed("erro final")
+    assert state.status == "failed"
+    assert state.last_error == "erro final"
+
+    state.mark_repair_failed("falha no reparo")
+    assert state.status == "repair_failed"
+    assert state.last_error == "falha no reparo"
+
+    state.mark_rolled_back()
+    assert state.status == "rolled_back"
+
+    state.mark_rolled_back("falha no rollback")
+    assert state.status == "rolled_back"
+    assert state.last_error == "falha no rollback"
+
+    state.mark_committed()
+    assert state.status == "committed"
+
+
+def test_repair_cycle_state_from_dict_normalizes_negative_attempts_and_limit():
+    state = RepairCycleState.from_dict(
+        {
+            "transaction_id": "tx-normalize",
+            "status": "pending",
+            "attempts": -10,
+            "max_attempts": 0,
+            "last_error": "",
+            "last_action": "",
+            "history": [],
+        }
+    )
+
+    assert state.transaction_id == "tx-normalize"
+    assert state.attempts == 0
+    assert state.max_attempts == 1
+
+
+def test_repair_cycle_state_from_dict_preserves_valid_persisted_values():
+    state = RepairCycleState.from_dict(
+        {
+            "transaction_id": "tx-valid",
+            "status": "repairing",
+            "attempts": 3,
+            "max_attempts": 5,
+            "last_error": "erro",
+            "last_action": "modify",
+            "history": [
+                {
+                    "attempt": 1,
+                    "action": "modify",
+                    "status": "repair_failed",
+                    "error": "erro",
+                }
+            ],
+        }
+    )
+
+    assert state.transaction_id == "tx-valid"
+    assert state.status == "repairing"
+    assert state.attempts == 3
+    assert state.max_attempts == 5
+    assert state.last_error == "erro"
+    assert state.last_action == "modify"
+    assert state.history == [
+        {
+            "attempt": 1,
+            "action": "modify",
+            "status": "repair_failed",
+            "error": "erro",
+        }
+    ]
+
+
+def test_repair_cycle_state_from_dict_rejects_non_dict():
+    import pytest
+
+    with pytest.raises(ValueError, match="Estado de reparo inválido"):
+        RepairCycleState.from_dict(None)
+
+
+def test_repair_cycle_state_from_dict_rejects_missing_transaction_id():
+    import pytest
+
+    with pytest.raises(
+        ValueError,
+        match="Estado de reparo sem transaction_id",
+    ):
+        RepairCycleState.from_dict(
+            {
+                "status": "pending",
+                "attempts": 0,
+                "max_attempts": 2,
+            }
+        )
+
+
+def test_repair_cycle_state_mark_rolled_back_without_error_preserves_last_error():
+    state = RepairCycleState("tx-rollback")
+    state.last_error = "erro anterior"
+
+    state.mark_rolled_back()
+
+    assert state.status == "rolled_back"
+    assert state.last_error == "erro anterior"
