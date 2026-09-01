@@ -3236,3 +3236,103 @@ def test_change_engine_prepare_rejects_invalid_change(tmp_path):
         raise AssertionError(
             "ChangeEngine.prepare aceitou alteração inválida."
         )
+
+
+def test_safe_executor_modify_missing_file(tmp_path):
+    from core.schemas.models import Change, ChangeType
+    from core.executor.safe_executor import SafeExecutor
+
+    executor = SafeExecutor(tmp_path)
+
+    change = Change(
+        change_type=ChangeType.MODIFY,
+        path="inexistente.py",
+        content="print('novo')",
+    )
+
+    with pytest.raises(
+        FileNotFoundError,
+        match="Arquivo não encontrado",
+    ):
+        executor.execute_change(change)
+
+
+def test_safe_executor_delete_missing_file(tmp_path):
+    from core.schemas.models import Change, ChangeType
+    from core.executor.safe_executor import SafeExecutor
+
+    executor = SafeExecutor(tmp_path)
+
+    change = Change(
+        change_type=ChangeType.DELETE,
+        path="inexistente.py",
+    )
+
+    with pytest.raises(
+        FileNotFoundError,
+        match="Arquivo não encontrado",
+    ):
+        executor.execute_change(change)
+
+
+def test_safe_executor_rejects_unsupported_change_type(tmp_path):
+    from core.schemas.models import Change
+    from core.executor.safe_executor import SafeExecutor
+
+    executor = SafeExecutor(tmp_path)
+
+    change = Change(
+        change_type="unsupported",
+        path="arquivo.py",
+        content="conteúdo",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Tipo de alteração não suportado",
+    ):
+        executor.execute_change(change)
+
+
+def test_safe_executor_rejects_modify_directory(tmp_path):
+    executor = SafeExecutor(tmp_path)
+    directory = tmp_path / "pasta"
+    directory.mkdir()
+
+    change = type(
+        "Change",
+        (),
+        {
+            "path": "pasta",
+            "change_type": ChangeType.MODIFY,
+            "content": "conteudo",
+        },
+    )()
+
+    with pytest.raises(
+        ValueError,
+        match="Caminho não é um arquivo",
+    ):
+        executor.execute_change(change)
+
+
+def test_safe_executor_rejects_delete_directory(tmp_path):
+    executor = SafeExecutor(tmp_path)
+    directory = tmp_path / "pasta"
+    directory.mkdir()
+
+    change = type(
+        "Change",
+        (),
+        {
+            "path": "pasta",
+            "change_type": ChangeType.DELETE,
+            "content": None,
+        },
+    )()
+
+    with pytest.raises(
+        ValueError,
+        match="Caminho não é um arquivo",
+    ):
+        executor.execute_change(change)
