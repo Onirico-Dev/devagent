@@ -3336,3 +3336,519 @@ def test_safe_executor_rejects_delete_directory(tmp_path):
         match="Caminho não é um arquivo",
     ):
         executor.execute_change(change)
+
+
+def test_git_manager_normalize_paths_none(tmp_path):
+    manager = GitManager(tmp_path)
+    assert manager._normalize_paths(None) is None
+
+
+def test_git_manager_normalize_paths_accepts_string_and_deduplicates(tmp_path):
+    manager = GitManager(tmp_path)
+    assert manager._normalize_paths("app.py") == ["app.py"]
+    assert manager._normalize_paths(["app.py", "app.py", "dir/../app.py"]) == ["app.py"]
+
+
+def test_git_manager_normalize_paths_rejects_invalid_sequence(tmp_path):
+    manager = GitManager(tmp_path)
+
+    with pytest.raises(ValueError, match="sequência de caminhos"):
+        manager._normalize_paths(123)
+
+
+def test_git_manager_normalize_paths_rejects_invalid_path_item(tmp_path):
+    manager = GitManager(tmp_path)
+
+    with pytest.raises(ValueError, match="string ou Path"):
+        manager._normalize_paths(["app.py", 123])
+
+
+def test_git_manager_normalize_paths_ignores_empty_paths(tmp_path):
+    manager = GitManager(tmp_path)
+    assert manager._normalize_paths(["", "   ", "app.py"]) == ["app.py"]
+
+
+def test_git_manager_normalize_paths_rejects_path_outside_project(tmp_path):
+    manager = GitManager(tmp_path)
+
+    with pytest.raises(ValueError, match="fora do projeto"):
+        manager._normalize_paths(["../fora.py"])
+
+
+def test_git_manager_infer_paths_ignores_invalid_candidates(tmp_path):
+    manager = GitManager(tmp_path)
+
+    result = manager._infer_paths_from_instruction(
+        "alterar ../fora.py e /tmp/fora.py e app.py"
+    )
+
+    assert "app.py" in result
+    assert "../fora.py" not in result
+    assert "/tmp/fora.py" not in result
+
+
+def test_git_manager_infer_paths_from_quoted_project_path(tmp_path):
+    manager = GitManager(tmp_path)
+
+    result = manager._infer_paths_from_instruction(
+        'alterar "src/app.py" agora'
+    )
+
+    assert result == ["src/app.py"]
+
+
+def test_git_manager_infer_new_files_from_worktree(tmp_path):
+    import subprocess
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    (tmp_path / "novo.py").write_text("print('novo')\n", encoding="utf-8")
+
+    manager = GitManager(tmp_path)
+
+    assert manager._infer_new_files_from_worktree() == ["novo.py"]
+
+
+def test_git_manager_infer_new_files_from_worktree_ignores_tracked_changes(tmp_path):
+    import subprocess
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    target = tmp_path / "app.py"
+    target.write_text("original\n", encoding="utf-8")
+
+    subprocess.run(
+        ["git", "add", "app.py"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "initial"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    target.write_text("alterado\n", encoding="utf-8")
+
+    manager = GitManager(tmp_path)
+
+    assert manager._infer_new_files_from_worktree() == []
+
+
+def test_git_manager_path_has_changes_returns_false_for_clean_path(tmp_path):
+    import subprocess
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    target = tmp_path / "app.py"
+    target.write_text("app\n", encoding="utf-8")
+
+    manager = GitManager(tmp_path)
+
+    assert manager._path_has_changes("app.py") is True
+
+
+def test_git_manager_stage_paths_returns_empty_for_empty_input(tmp_path):
+    manager = GitManager(tmp_path)
+    assert manager._stage_paths([]) == []
+
+
+def test_git_manager_stage_paths_returns_empty_without_changes(tmp_path):
+    import subprocess
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    target = tmp_path / "app.py"
+    target.write_text("app\n", encoding="utf-8")
+
+    subprocess.run(
+        ["git", "add", "app.py"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=DevAgent Test",
+            "commit",
+            "-m",
+            "initial",
+        ],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    manager = GitManager(tmp_path)
+
+    assert manager._stage_paths(["app.py"]) == []
+
+
+def test_git_manager_unstage_all_clears_staged_changes(tmp_path):
+    import subprocess
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    target = tmp_path / "app.py"
+    target.write_text("app\n", encoding="utf-8")
+
+    manager = GitManager(tmp_path)
+
+    subprocess.run(
+        ["git", "add", "app.py"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    assert subprocess.run(
+        ["git", "diff", "--cached", "--quiet"],
+        cwd=tmp_path,
+    ).returncode != 0
+
+    manager._unstage_all()
+
+    assert subprocess.run(
+        ["git", "diff", "--cached", "--quiet"],
+        cwd=tmp_path,
+    ).returncode == 0
+
+
+def test_git_manager_commit_transaction_uses_explicit_paths(tmp_path):
+    import subprocess
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    target = tmp_path / "app.py"
+    target.write_text("alterado\n", encoding="utf-8")
+
+    manager = GitManager(tmp_path)
+
+    result = manager.commit_transaction(
+        "transaction-explicit",
+        "alterar app.py",
+        paths="app.py",
+    )
+
+    assert result["status"] == "committed"
+    assert result["commit_hash"]
+
+
+def test_git_manager_commit_transaction_falls_back_to_untracked_files(tmp_path):
+    import subprocess
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    target = tmp_path / "novo.py"
+    target.write_text("novo\n", encoding="utf-8")
+
+    manager = GitManager(tmp_path)
+
+    result = manager.commit_transaction(
+        "transaction-fallback",
+        "criar novo.py",
+    )
+
+    assert result["status"] == "committed"
+    assert "novo.py" in result["files"]
+
+
+def test_git_manager_commit_failure_returns_error_and_unstages(tmp_path):
+    import subprocess
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    target = tmp_path / "app.py"
+    target.write_text("alterado\n", encoding="utf-8")
+
+    manager = GitManager(tmp_path)
+
+    original_run = subprocess.run
+
+    def fake_run(command, *args, **kwargs):
+        if command[:2] == ["git", "commit"]:
+            return subprocess.CompletedProcess(
+                command,
+                1,
+                stdout="",
+                stderr="commit simulado falhou",
+            )
+        return original_run(command, *args, **kwargs)
+
+    import unittest.mock
+
+    with unittest.mock.patch(
+        "core.executor.git_manager.subprocess.run",
+        side_effect=fake_run,
+    ):
+        result = manager.commit_transaction(
+            "transaction-failure",
+            "alterar app.py",
+            paths=["app.py"],
+        )
+
+    assert result["status"] == "error"
+    assert result["commit_hash"] is None
+    assert "commit simulado falhou" in result["message"]
+
+    staged = subprocess.run(
+        ["git", "diff", "--cached", "--quiet"],
+        cwd=tmp_path,
+    )
+    assert staged.returncode == 0
+
+def test_git_manager_rejects_non_string_instruction(tmp_path):
+    import subprocess
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    manager = GitManager(tmp_path)
+
+    with pytest.raises(ValueError, match="instruction deve ser uma string"):
+        manager.commit_transaction("transaction-type", 123)
+
+
+def test_git_manager_rejects_non_string_transaction_id(tmp_path):
+    import subprocess
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    manager = GitManager(tmp_path)
+
+    with pytest.raises(ValueError, match="transaction_id deve ser uma string"):
+        manager.commit_transaction(123, "Alterar app.py")
+
+
+def test_git_manager_returns_no_changes_when_explicit_paths_have_no_changes(
+    tmp_path,
+):
+    import subprocess
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    target = tmp_path / "app.py"
+    target.write_text("ORIGINAL\n", encoding="utf-8")
+
+    subprocess.run(
+        ["git", "add", "app.py"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "initial"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    manager = GitManager(tmp_path)
+
+    result = manager.commit_transaction(
+        "transaction-no-change",
+        "Alterar app.py",
+        paths=["app.py"],
+    )
+
+    assert result == {
+        "status": "no_changes",
+        "transaction_id": "transaction-no-change",
+        "commit_hash": None,
+        "files": [],
+        "message": None,
+    }
+
+
+def test_git_manager_unstages_and_reraises_post_commit_failure(tmp_path):
+    import subprocess
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    target = tmp_path / "app.py"
+    target.write_text("ORIGINAL\n", encoding="utf-8")
+
+    subprocess.run(
+        ["git", "add", "app.py"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "initial"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    target.write_text("ALTERADO\n", encoding="utf-8")
+
+    manager = GitManager(tmp_path)
+
+    original_run_git = manager._run_git
+    calls = []
+
+    def fail_after_commit(*args):
+        calls.append(args)
+        if args == ("rev-parse", "HEAD"):
+            raise RuntimeError("simulated post-commit failure")
+        return original_run_git(*args)
+
+    manager._run_git = fail_after_commit
+
+    with pytest.raises(RuntimeError, match="simulated post-commit failure"):
+        manager.commit_transaction(
+            "transaction-post-commit-failure",
+            "Alterar app.py",
+            paths=["app.py"],
+        )
+
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert status.stdout == ""
+    assert calls == [
+        ("add", "--", "app.py"),
+        ("rev-parse", "HEAD"),
+    ]
