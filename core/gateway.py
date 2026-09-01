@@ -359,7 +359,7 @@ class DevAgentGateway:
         if not isinstance(repair_result, dict):
             repair_result = {
                 "success": False,
-                "status": "failed",
+                "status": RepairExecutorStatus.FAILED.value,
                 "error": (
                     "Resultado de reparo inválido."
                 ),
@@ -513,7 +513,7 @@ class DevAgentGateway:
 
             status = repair_result.get(
                 "status",
-                "repair_failed",
+                RepairExecutorStatus.REPAIR_FAILED.value,
             )
 
             # ----------------------------------------------------------
