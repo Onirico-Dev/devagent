@@ -1055,7 +1055,7 @@ class DevAgentGateway:
             approval_id
         )
 
-        self.history.update(
+        self._update_history_safe(
             approval_id,
             status="rejected",
         )
