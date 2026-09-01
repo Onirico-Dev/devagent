@@ -507,3 +507,61 @@ def test_execute_repair_returns_failed_tests(tmp_path):
     assert result["success"] is False
     assert result["status"] == "repair_failed"
     assert result["tests"]["stderr"] == "teste falhou"
+
+
+def test_validate_risk_rejects_assessed_high_risk_after_content_validation(
+    tmp_path,
+    monkeypatch,
+):
+    repair_executor = make_executor(tmp_path)
+
+    monkeypatch.setattr(
+        repair_executor.security,
+        "validate_content",
+        lambda content: True,
+    )
+    monkeypatch.setattr(
+        repair_executor.security,
+        "assess_content_risk",
+        lambda content: "alto",
+    )
+
+    with pytest.raises(
+        PermissionError,
+        match="alto risco não autorizado",
+    ):
+        repair_executor._validate_risk(
+            {
+                "risk": "baixo",
+                "content": "conteudo seguro no teste",
+            }
+        )
+
+
+def test_validate_risk_rejects_medium_when_assessed_risk_is_medium(
+    tmp_path,
+    monkeypatch,
+):
+    repair_executor = make_executor(tmp_path)
+
+    monkeypatch.setattr(
+        repair_executor.security,
+        "validate_content",
+        lambda content: True,
+    )
+    monkeypatch.setattr(
+        repair_executor.security,
+        "assess_content_risk",
+        lambda content: "medio",
+    )
+
+    with pytest.raises(
+        PermissionError,
+        match="Reparo não autorizado pela política de risco",
+    ):
+        repair_executor._validate_risk(
+            {
+                "risk": "medio",
+                "content": "conteudo de risco medio",
+            }
+        )
