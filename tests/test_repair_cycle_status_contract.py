@@ -1,32 +1,58 @@
-from core.engine.repair_cycle_state import RepairCycleState
+from core.engine.repair_cycle_state import (
+    RepairCycleState,
+    RepairCycleStatus,
+)
 
 
-def test_repair_cycle_status_contract():
+def test_repair_cycle_status_enum_values():
+    assert {status.value for status in RepairCycleStatus} == {
+        "pending",
+        "analyzing",
+        "repairing",
+        "testing",
+        "verified",
+        "failed",
+        "repair_failed",
+        "rolled_back",
+        "committed",
+    }
+
+
+def test_repair_cycle_state_uses_enum_status_values():
     state = RepairCycleState("tx-1")
 
-    state.mark_pending()
-    assert state.status == "pending"
+    assert state.status == RepairCycleStatus.PENDING.value
 
     state.mark_analyzing()
-    assert state.status == "analyzing"
+    assert state.status == RepairCycleStatus.ANALYZING.value
 
     state.mark_repairing()
-    assert state.status == "repairing"
+    assert state.status == RepairCycleStatus.REPAIRING.value
 
     state.mark_testing()
-    assert state.status == "testing"
+    assert state.status == RepairCycleStatus.TESTING.value
 
     state.mark_verified()
-    assert state.status == "verified"
+    assert state.status == RepairCycleStatus.VERIFIED.value
 
-    state.mark_repair_failed("falha")
-    assert state.status == "repair_failed"
+    state.mark_failed("error")
+    assert state.status == RepairCycleStatus.FAILED.value
 
-    state.mark_failed("erro")
-    assert state.status == "failed"
+    state.mark_repair_failed("error")
+    assert state.status == RepairCycleStatus.REPAIR_FAILED.value
 
-    state.mark_rolled_back("rollback")
-    assert state.status == "rolled_back"
+    state.mark_rolled_back()
+    assert state.status == RepairCycleStatus.ROLLED_BACK.value
 
     state.mark_committed()
-    assert state.status == "committed"
+    assert state.status == RepairCycleStatus.COMMITTED.value
+
+
+def test_repair_cycle_terminal_statuses_block_continuation():
+    state = RepairCycleState("tx-1", attempts=0, max_attempts=2)
+
+    state.mark_committed()
+    assert state.can_continue() is False
+
+    state.mark_rolled_back()
+    assert state.can_continue() is False

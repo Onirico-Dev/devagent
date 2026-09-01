@@ -1,4 +1,18 @@
 from dataclasses import dataclass, field
+from enum import Enum
+
+
+
+class RepairCycleStatus(str, Enum):
+    PENDING = "pending"
+    ANALYZING = "analyzing"
+    REPAIRING = "repairing"
+    TESTING = "testing"
+    VERIFIED = "verified"
+    FAILED = "failed"
+    REPAIR_FAILED = "repair_failed"
+    ROLLED_BACK = "rolled_back"
+    COMMITTED = "committed"
 
 
 @dataclass
@@ -16,7 +30,7 @@ class RepairCycleState:
     """
 
     transaction_id: str
-    status: str = "pending"
+    status: str = RepairCycleStatus.PENDING.value
     attempts: int = 0
     max_attempts: int = 2
     last_error: str = ""
@@ -42,8 +56,8 @@ class RepairCycleState:
     def can_continue(self):
         return (
             self.status not in {
-                "committed",
-                "rolled_back",
+                RepairCycleStatus.COMMITTED.value,
+                RepairCycleStatus.ROLLED_BACK.value,
             }
             and self.attempts < self.max_attempts
         )
@@ -58,35 +72,35 @@ class RepairCycleState:
         return self.attempts >= self.max_attempts
 
     def mark_pending(self):
-        self.status = "pending"
+        self.status = RepairCycleStatus.PENDING.value
 
     def mark_analyzing(self):
-        self.status = "analyzing"
+        self.status = RepairCycleStatus.ANALYZING.value
 
     def mark_repairing(self):
-        self.status = "repairing"
+        self.status = RepairCycleStatus.REPAIRING.value
 
     def mark_testing(self):
-        self.status = "testing"
+        self.status = RepairCycleStatus.TESTING.value
 
     def mark_verified(self):
-        self.status = "verified"
+        self.status = RepairCycleStatus.VERIFIED.value
 
     def mark_failed(self, error=""):
-        self.status = "failed"
+        self.status = RepairCycleStatus.FAILED.value
         self.last_error = str(error) if error else ""
 
     def mark_repair_failed(self, error=""):
-        self.status = "repair_failed"
+        self.status = RepairCycleStatus.REPAIR_FAILED.value
         self.last_error = str(error) if error else ""
 
     def mark_rolled_back(self, error=""):
-        self.status = "rolled_back"
+        self.status = RepairCycleStatus.ROLLED_BACK.value
         if error:
             self.last_error = str(error)
 
     def mark_committed(self):
-        self.status = "committed"
+        self.status = RepairCycleStatus.COMMITTED.value
 
     def persist(self, transaction):
         transaction.repair_state = self.to_dict()
