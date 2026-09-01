@@ -568,6 +568,8 @@ class DevAgentGateway:
                     if isinstance(repair, dict):
                         repair = dict(repair)
                         repair["status"] = "limit_reached"
+                    else:
+                        repair = None
 
                     return {
                         "success": False,

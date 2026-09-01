@@ -3059,3 +3059,979 @@ def test_gateway_execute_approved_delegates_approved_task(
 
     assert called == ["approval-123"]
     assert result["status"] == "committed"
+
+
+def test_gateway_attempt_repair_rechecks_limit_after_analysis(
+    isolated_project,
+    monkeypatch,
+):
+    from core.gateway import DevAgentGateway
+    from core.engine.repair_cycle_state import RepairCycleState
+
+    class FakeAgent:
+        ai = None
+
+    gateway = DevAgentGateway(
+        agent=FakeAgent(),
+        root=isolated_project,
+    )
+
+    transaction = type(
+        "Transaction",
+        (),
+        {
+            "transaction_id": "test-transaction",
+            "repair_state": None,
+            "metadata": {},
+        },
+    )()
+
+    state = RepairCycleState(
+        transaction_id=transaction.transaction_id,
+        max_attempts=2,
+    )
+
+    calls = []
+
+    def fake_can_continue():
+        calls.append(1)
+
+        if len(calls) == 1:
+            return True
+
+        state.attempts = state.max_attempts
+        return False
+
+    monkeypatch.setattr(
+        state,
+        "can_continue",
+        fake_can_continue,
+    )
+
+    monkeypatch.setattr(
+        gateway.repair_engine,
+        "analyze_failure",
+        lambda **kwargs: {
+            "diagnosis": "erro",
+            "correction": "corrigir",
+            "risk": "baixo",
+            "action": "modify",
+            "path": "arquivo.py",
+            "content": "VALUE = 1\n",
+        },
+    )
+
+    result = gateway._attempt_repair(
+        instruction="reparar",
+        transaction=transaction,
+        test_result={
+            "success": False,
+            "stderr": "erro",
+            "stdout": "",
+        },
+        repair_state=state,
+    )
+
+    assert result["status"] == "limit_reached"
+    assert result["success"] is False
+    assert state.attempts == state.max_attempts
+
+# ===== GATEWAY DEFENSIVE COVERAGE =====
+
+def test_gateway_evaluate_execution_rolls_back_non_dict(isolated_project):
+    from core.gateway import DevAgentGateway
+
+    class FakeAgent:
+        ai = None
+
+    gateway = DevAgentGateway(
+        agent=FakeAgent(),
+        root=isolated_project,
+    )
+
+    assert gateway._evaluate_execution(None) == "rollback"
+
+
+def test_gateway_evaluate_execution_repairs_failed_tests_after_success(
+    isolated_project,
+):
+    from core.gateway import DevAgentGateway
+
+    class FakeAgent:
+        ai = None
+
+    gateway = DevAgentGateway(
+        agent=FakeAgent(),
+        root=isolated_project,
+    )
+
+    result = gateway._evaluate_execution(
+        {
+            "success": True,
+            "verification": {"success": True},
+            "tests": {"success": False},
+        }
+    )
+
+    assert result == "repair"
+
+
+def test_gateway_attempt_repair_stops_when_limit_already_reached(
+    isolated_project,
+):
+    from core.gateway import DevAgentGateway
+    from core.engine.repair_cycle_state import RepairCycleState
+
+    class FakeAgent:
+        ai = None
+
+    gateway = DevAgentGateway(
+        agent=FakeAgent(),
+        root=isolated_project,
+    )
+
+    transaction = type(
+        "Transaction",
+        (),
+        {
+            "transaction_id": "test-transaction",
+            "repair_state": None,
+            "metadata": {},
+        },
+    )()
+
+    state = RepairCycleState(
+        transaction_id=transaction.transaction_id,
+        attempts=2,
+        max_attempts=2,
+    )
+
+    result = gateway._attempt_repair(
+        instruction="reparar",
+        transaction=transaction,
+        test_result={
+            "success": False,
+            "stderr": "falha",
+            "stdout": "",
+        },
+        repair_state=state,
+    )
+
+    assert result["status"] == "limit_reached"
+    assert result["success"] is False
+    assert result["repair"]["action"] == "none"
+
+
+def test_gateway_attempt_repair_normalizes_invalid_diagnosis(
+    isolated_project,
+    monkeypatch,
+):
+    from core.gateway import DevAgentGateway
+    from core.engine.repair_cycle_state import RepairCycleState
+
+    class FakeAgent:
+        ai = None
+
+    gateway = DevAgentGateway(
+        agent=FakeAgent(),
+        root=isolated_project,
+    )
+
+    transaction = type(
+        "Transaction",
+        (),
+        {
+            "transaction_id": "test-transaction",
+            "repair_state": None,
+            "metadata": {},
+        },
+    )()
+
+    state = RepairCycleState(
+        transaction_id=transaction.transaction_id,
+        max_attempts=2,
+    )
+
+    monkeypatch.setattr(
+        gateway.repair_engine,
+        "analyze_failure",
+        lambda **kwargs: None,
+    )
+
+    result = gateway._attempt_repair(
+        instruction="reparar",
+        transaction=transaction,
+        test_result={
+            "success": False,
+            "stderr": "erro",
+            "stdout": "",
+        },
+        repair_state=state,
+    )
+
+    assert result["status"] == "no_repair"
+    assert result["success"] is False
+    assert result["repair"]["action"] == "none"
+    assert result["repair"]["diagnosis"] == (
+        "Diagnóstico de reparo inválido."
+    )
+    assert state.attempts == 0
+
+
+def test_gateway_attempt_repair_returns_no_repair_for_none_action(
+    isolated_project,
+    monkeypatch,
+):
+    from core.gateway import DevAgentGateway
+    from core.engine.repair_cycle_state import RepairCycleState
+
+    class FakeAgent:
+        ai = None
+
+    gateway = DevAgentGateway(
+        agent=FakeAgent(),
+        root=isolated_project,
+    )
+
+    transaction = type(
+        "Transaction",
+        (),
+        {
+            "transaction_id": "test-transaction",
+            "repair_state": None,
+            "metadata": {},
+        },
+    )()
+
+    state = RepairCycleState(
+        transaction_id=transaction.transaction_id,
+        max_attempts=2,
+    )
+
+    diagnosis = {
+        "diagnosis": "Sem correção segura.",
+        "correction": "",
+        "risk": "baixo",
+        "action": "none",
+        "path": "",
+        "content": "",
+    }
+
+    monkeypatch.setattr(
+        gateway.repair_engine,
+        "analyze_failure",
+        lambda **kwargs: diagnosis,
+    )
+
+    result = gateway._attempt_repair(
+        instruction="reparar",
+        transaction=transaction,
+        test_result={
+            "success": False,
+            "stderr": "erro",
+            "stdout": "",
+        },
+        repair_state=state,
+    )
+
+    assert result["status"] == "no_repair"
+    assert result["success"] is False
+    assert result["repair"] == diagnosis
+    assert state.attempts == 0
+
+
+def test_gateway_attempt_repair_normalizes_invalid_repair_result(
+    isolated_project,
+    monkeypatch,
+):
+    from core.gateway import DevAgentGateway
+    from core.engine.repair_cycle_state import RepairCycleState
+
+    class FakeAgent:
+        ai = None
+
+    gateway = DevAgentGateway(
+        agent=FakeAgent(),
+        root=isolated_project,
+    )
+
+    transaction = type(
+        "Transaction",
+        (),
+        {
+            "transaction_id": "test-transaction",
+            "repair_state": None,
+            "metadata": {},
+        },
+    )()
+
+    state = RepairCycleState(
+        transaction_id=transaction.transaction_id,
+        max_attempts=2,
+    )
+
+    diagnosis = {
+        "diagnosis": "Erro corrigível.",
+        "correction": "Aplicar correção.",
+        "risk": "baixo",
+        "action": "modify",
+        "path": "arquivo.py",
+        "content": "VALUE = 1\n",
+    }
+
+    monkeypatch.setattr(
+        gateway.repair_engine,
+        "analyze_failure",
+        lambda **kwargs: diagnosis,
+    )
+
+    monkeypatch.setattr(
+        gateway.repair_executor,
+        "execute_repair",
+        lambda *args, **kwargs: None,
+    )
+
+    result = gateway._attempt_repair(
+        instruction="reparar",
+        transaction=transaction,
+        test_result={
+            "success": False,
+            "stderr": "erro",
+            "stdout": "",
+        },
+        repair_state=state,
+    )
+
+    assert result["status"] == "failed"
+    assert result["success"] is False
+    assert result["error"] == "Resultado de reparo inválido."
+    assert result["repair_attempts"] == 1
+    assert state.status == "failed"
+
+
+def test_gateway_attempt_repair_handles_invalid_test_result(
+    isolated_project,
+    monkeypatch,
+):
+    from core.gateway import DevAgentGateway
+    from core.engine.repair_cycle_state import RepairCycleState
+
+    class FakeAgent:
+        ai = None
+
+    gateway = DevAgentGateway(
+        agent=FakeAgent(),
+        root=isolated_project,
+    )
+
+    transaction = type(
+        "Transaction",
+        (),
+        {
+            "transaction_id": "test-transaction",
+            "repair_state": None,
+            "metadata": {},
+        },
+    )()
+
+    state = RepairCycleState(
+        transaction_id=transaction.transaction_id,
+        max_attempts=2,
+    )
+
+    diagnosis = {
+        "diagnosis": "Erro corrigível.",
+        "correction": "Aplicar correção.",
+        "risk": "baixo",
+        "action": "modify",
+        "path": "arquivo.py",
+        "content": "VALUE = 1\n",
+    }
+
+    monkeypatch.setattr(
+        gateway.repair_engine,
+        "analyze_failure",
+        lambda **kwargs: diagnosis,
+    )
+
+    monkeypatch.setattr(
+        gateway.repair_executor,
+        "execute_repair",
+        lambda *args, **kwargs: {
+            "success": False,
+            "status": "repair_failed",
+            "tests": None,
+        },
+    )
+
+    result = gateway._attempt_repair(
+        instruction="reparar",
+        transaction=transaction,
+        test_result={
+            "success": False,
+            "stderr": "erro",
+            "stdout": "",
+        },
+        repair_state=state,
+    )
+
+    assert result["status"] == "repair_failed"
+    assert result["success"] is False
+    assert result["tests"]["status"] == "invalid_test_result"
+    assert result["tests"]["success"] is False
+    assert state.status == "failed"
+    assert state.attempts == 1
+
+
+def test_gateway_attempt_repair_rechecks_limit_after_analysis(
+    isolated_project,
+    monkeypatch,
+):
+    from core.gateway import DevAgentGateway
+    from core.engine.repair_cycle_state import RepairCycleState
+
+    class FakeAgent:
+        ai = None
+
+    gateway = DevAgentGateway(
+        agent=FakeAgent(),
+        root=isolated_project,
+    )
+
+    transaction = type(
+        "Transaction",
+        (),
+        {
+            "transaction_id": "test-transaction",
+            "repair_state": None,
+            "metadata": {},
+        },
+    )()
+
+    state = RepairCycleState(
+        transaction_id=transaction.transaction_id,
+        max_attempts=2,
+    )
+
+    calls = []
+
+    def fake_can_continue():
+        calls.append(1)
+
+        if len(calls) == 1:
+            return True
+
+        state.attempts = state.max_attempts
+        return False
+
+    monkeypatch.setattr(
+        state,
+        "can_continue",
+        fake_can_continue,
+    )
+
+    monkeypatch.setattr(
+        gateway.repair_engine,
+        "analyze_failure",
+        lambda **kwargs: {
+            "diagnosis": "erro",
+            "correction": "corrigir",
+            "risk": "baixo",
+            "action": "modify",
+            "path": "arquivo.py",
+            "content": "VALUE = 1\n",
+        },
+    )
+
+    result = gateway._attempt_repair(
+        instruction="reparar",
+        transaction=transaction,
+        test_result={
+            "success": False,
+            "stderr": "erro",
+            "stdout": "",
+        },
+        repair_state=state,
+    )
+
+    assert result["status"] == "limit_reached"
+    assert result["success"] is False
+    assert state.attempts == state.max_attempts
+    assert len(calls) == 2
+
+
+def test_gateway_run_repair_cycle_rolls_back_when_limit_reached(
+    isolated_project,
+):
+    from core.gateway import DevAgentGateway
+    from core.engine.repair_cycle_state import RepairCycleState
+
+    class FakeAgent:
+        ai = None
+
+    gateway = DevAgentGateway(
+        agent=FakeAgent(),
+        root=isolated_project,
+    )
+
+    transaction = type(
+        "Transaction",
+        (),
+        {
+            "transaction_id": "test-transaction",
+            "repair_state": None,
+            "metadata": {},
+        },
+    )()
+
+    state = RepairCycleState(
+        transaction_id=transaction.transaction_id,
+        attempts=2,
+        max_attempts=2,
+    )
+
+    result = gateway._run_repair_cycle(
+        instruction="reparar",
+        transaction=transaction,
+        test_result={
+            "success": False,
+            "stderr": "falha",
+            "stdout": "",
+        },
+        repair_state=state,
+    )
+
+    assert result["status"] == "rolled_back"
+    assert result["repair_attempts"] == 2
+    assert result["repair"]["status"] == "limit_reached"
+
+
+def test_gateway_run_repair_cycle_handles_repair_failed_without_tests(
+    isolated_project,
+    monkeypatch,
+):
+    from core.gateway import DevAgentGateway
+    from core.engine.repair_cycle_state import RepairCycleState
+
+    class FakeAgent:
+        ai = None
+
+    gateway = DevAgentGateway(
+        agent=FakeAgent(),
+        root=isolated_project,
+    )
+
+    transaction = type(
+        "Transaction",
+        (),
+        {
+            "transaction_id": "test-transaction",
+            "repair_state": None,
+            "metadata": {},
+        },
+    )()
+
+    state = RepairCycleState(
+        transaction_id=transaction.transaction_id,
+        max_attempts=2,
+    )
+
+    monkeypatch.setattr(
+        gateway,
+        "_attempt_repair",
+        lambda **kwargs: {
+            "success": False,
+            "status": "repair_failed",
+            "tests": None,
+            "repair": {
+                "action": "modify",
+                "risk": "baixo",
+            },
+        },
+    )
+
+    result = gateway._run_repair_cycle(
+        instruction="reparar",
+        transaction=transaction,
+        test_result={
+            "success": False,
+            "stderr": "falha",
+            "stdout": "",
+        },
+        repair_state=state,
+    )
+
+    assert result["status"] == "rolled_back"
+    assert result["tests"]["success"] is False
+    assert result["repair_attempts"] == 0
+
+
+def test_gateway_run_repair_cycle_handles_unknown_repair_status(
+    isolated_project,
+    monkeypatch,
+):
+    from core.gateway import DevAgentGateway
+    from core.engine.repair_cycle_state import RepairCycleState
+
+    class FakeAgent:
+        ai = None
+
+    gateway = DevAgentGateway(
+        agent=FakeAgent(),
+        root=isolated_project,
+    )
+
+    transaction = type(
+        "Transaction",
+        (),
+        {
+            "transaction_id": "test-transaction",
+            "repair_state": None,
+            "metadata": {},
+        },
+    )()
+
+    state = RepairCycleState(
+        transaction_id=transaction.transaction_id,
+        max_attempts=2,
+    )
+
+    monkeypatch.setattr(
+        gateway,
+        "_attempt_repair",
+        lambda **kwargs: {
+            "success": False,
+            "status": "future_unknown_status",
+            "tests": {
+                "success": False,
+            },
+            "repair": {
+                "action": "modify",
+                "risk": "baixo",
+            },
+        },
+    )
+
+    result = gateway._run_repair_cycle(
+        instruction="reparar",
+        transaction=transaction,
+        test_result={
+            "success": False,
+            "stderr": "falha",
+            "stdout": "",
+        },
+        repair_state=state,
+    )
+
+    assert result["status"] == "rolled_back"
+    assert result["repair_attempts"] == 0
+
+
+def test_gateway_run_repair_cycle_returns_verified_when_initial_tests_pass(
+    isolated_project,
+):
+    from core.gateway import DevAgentGateway
+    from core.engine.repair_cycle_state import RepairCycleState
+
+    class FakeAgent:
+        ai = None
+
+    gateway = DevAgentGateway(
+        agent=FakeAgent(),
+        root=isolated_project,
+    )
+
+    transaction = type(
+        "Transaction",
+        (),
+        {
+            "transaction_id": "test-transaction",
+            "repair_state": None,
+            "metadata": {},
+        },
+    )()
+
+    state = RepairCycleState(
+        transaction_id=transaction.transaction_id,
+        max_attempts=2,
+    )
+
+    result = gateway._run_repair_cycle(
+        instruction="reparar",
+        transaction=transaction,
+        test_result={
+            "success": True,
+            "stdout": "OK",
+            "stderr": "",
+        },
+        repair_state=state,
+    )
+
+    assert result["success"] is True
+    assert result["status"] == "verified"
+    assert result["repair"] is None
+    assert result["repair_attempts"] == 0
+
+
+def test_gateway_run_repair_cycle_handles_success_without_successful_tests(
+    isolated_project,
+    monkeypatch,
+):
+    from core.gateway import DevAgentGateway
+    from core.engine.repair_cycle_state import RepairCycleState
+
+    class FakeAgent:
+        ai = None
+
+    gateway = DevAgentGateway(
+        agent=FakeAgent(),
+        root=isolated_project,
+    )
+
+    transaction = type(
+        "Transaction",
+        (),
+        {
+            "transaction_id": "test-transaction",
+            "repair_state": None,
+            "metadata": {},
+        },
+    )()
+
+    state = RepairCycleState(
+        transaction_id=transaction.transaction_id,
+        max_attempts=2,
+    )
+
+    monkeypatch.setattr(
+        gateway,
+        "_attempt_repair",
+        lambda **kwargs: {
+            "success": True,
+            "status": "unexpected_success",
+            "tests": {
+                "success": False,
+            },
+            "repair": {
+                "action": "modify",
+                "risk": "baixo",
+            },
+        },
+    )
+
+    result = gateway._run_repair_cycle(
+        instruction="reparar",
+        transaction=transaction,
+        test_result={
+            "success": False,
+            "stderr": "falha",
+            "stdout": "",
+        },
+        repair_state=state,
+    )
+
+    assert result["status"] == "rolled_back"
+    assert result["success"] is False
+    assert result["repair_attempts"] == 0
+
+
+def test_gateway_run_repair_cycle_handles_success_without_test_dict(
+    isolated_project,
+    monkeypatch,
+):
+    from core.gateway import DevAgentGateway
+    from core.engine.repair_cycle_state import RepairCycleState
+
+    class FakeAgent:
+        ai = None
+
+    gateway = DevAgentGateway(
+        agent=FakeAgent(),
+        root=isolated_project,
+    )
+
+    transaction = type(
+        "Transaction",
+        (),
+        {
+            "transaction_id": "test-transaction",
+            "repair_state": None,
+            "metadata": {},
+        },
+    )()
+
+    state = RepairCycleState(
+        transaction_id=transaction.transaction_id,
+        max_attempts=2,
+    )
+
+    monkeypatch.setattr(
+        gateway,
+        "_attempt_repair",
+        lambda **kwargs: {
+            "success": True,
+            "status": "unexpected_success",
+            "tests": None,
+            "repair": {
+                "action": "modify",
+                "risk": "baixo",
+            },
+        },
+    )
+
+    result = gateway._run_repair_cycle(
+        instruction="reparar",
+        transaction=transaction,
+        test_result={
+            "success": False,
+            "stderr": "falha",
+            "stdout": "",
+        },
+        repair_state=state,
+    )
+
+    assert result["status"] == "rolled_back"
+    assert result["success"] is False
+    assert result["repair_attempts"] == 0
+
+
+def test_gateway_run_repair_cycle_marks_limit_after_repair_failed_with_tests(
+    isolated_project,
+    monkeypatch,
+):
+    from core.gateway import DevAgentGateway
+    from core.engine.repair_cycle_state import RepairCycleState
+    from core.schemas.models import Transaction
+
+    class FakeAgent:
+        ai = None
+
+    gateway = DevAgentGateway(
+        agent=FakeAgent(),
+        root=isolated_project,
+    )
+
+    transaction = gateway.transactions.begin(
+        Transaction(
+            transaction_id="test-repair-limit-after-failure",
+            changes=[],
+        )
+    )
+
+    state = RepairCycleState(
+        transaction_id=transaction.transaction_id,
+        attempts=1,
+        max_attempts=2,
+    )
+
+    monkeypatch.setattr(
+        gateway,
+        "_attempt_repair",
+        lambda **kwargs: {
+            "success": False,
+            "status": "repair_failed",
+            "tests": {
+                "success": False,
+                "stderr": "falha persistente",
+                "stdout": "",
+            },
+            "repair": {
+                "action": "modify",
+                "risk": "baixo",
+                "path": "arquivo.py",
+            },
+        },
+    )
+
+    monkeypatch.setattr(
+        state,
+        "can_continue",
+        lambda: False,
+    )
+
+    result = gateway._run_repair_cycle(
+        instruction="reparar",
+        transaction=transaction,
+        test_result={
+            "success": False,
+            "stderr": "falha inicial",
+            "stdout": "",
+        },
+        repair_state=state,
+    )
+
+    assert result["success"] is False
+    assert result["status"] == "rolled_back"
+    assert result["repair_attempts"] == 1
+    assert result["tests"]["success"] is False
+    assert result["repair"]["status"] == "limit_reached"
+
+
+
+def test_gateway_run_repair_cycle_marks_limit_with_non_dict_repair(
+    isolated_project,
+    monkeypatch,
+):
+    from core.gateway import DevAgentGateway
+    from core.engine.repair_cycle_state import RepairCycleState
+    from core.schemas.models import Transaction
+
+    class FakeAgent:
+        ai = None
+
+    gateway = DevAgentGateway(
+        agent=FakeAgent(),
+        root=isolated_project,
+    )
+
+    transaction = gateway.transactions.begin(
+        Transaction(
+            transaction_id="test-limit-non-dict-repair",
+            changes=[],
+        )
+    )
+
+    state = RepairCycleState(
+        transaction_id=transaction.transaction_id,
+        attempts=1,
+        max_attempts=2,
+    )
+
+    monkeypatch.setattr(
+        gateway,
+        "_attempt_repair",
+        lambda **kwargs: {
+            "success": False,
+            "status": "repair_failed",
+            "tests": {
+                "success": False,
+                "stderr": "falha persistente",
+                "stdout": "",
+            },
+            "repair": "invalid-repair-result",
+        },
+    )
+
+    can_continue_results = iter([True, False])
+    monkeypatch.setattr(
+        state,
+        "can_continue",
+        lambda: next(can_continue_results),
+    )
+
+    result = gateway._run_repair_cycle(
+        instruction="reparar",
+        transaction=transaction,
+        test_result={
+            "success": False,
+            "stderr": "falha inicial",
+            "stdout": "",
+        },
+        repair_state=state,
+    )
+
+    assert result["success"] is False
+    assert result["status"] == "rolled_back"
+    assert result["repair_attempts"] == 1
+    assert result["tests"]["success"] is False
+    assert result["repair"] is None
