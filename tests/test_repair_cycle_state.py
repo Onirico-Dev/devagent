@@ -518,3 +518,70 @@ def test_repair_cycle_state_mark_rolled_back_without_error_preserves_last_error(
 
     assert state.status == "rolled_back"
     assert state.last_error == "erro anterior"
+
+
+def test_repair_controller_rejects_invalid_max_attempts():
+    from core.engine.repair_controller import RepairController
+
+    import pytest
+
+    with pytest.raises(
+        ValueError,
+        match="max_attempts deve ser maior que zero",
+    ):
+        RepairController(max_attempts=0)
+
+
+def test_repair_controller_can_attempt_alias():
+    from core.engine.repair_controller import RepairController
+
+    controller = RepairController(max_attempts=2)
+
+    assert controller.can_attempt("tx-alias") is True
+
+    controller.register_attempt("tx-alias")
+    assert controller.can_attempt("tx-alias") is True
+
+    controller.register_attempt("tx-alias")
+    assert controller.can_attempt("tx-alias") is False
+
+
+def test_repair_controller_record_attempt_alias():
+    from core.engine.repair_controller import RepairController
+
+    controller = RepairController(max_attempts=2)
+
+    assert controller.record_attempt("tx-record") is True
+    assert controller.get_attempts("tx-record") == 1
+
+    assert controller.record_attempt("tx-record") is True
+    assert controller.get_attempts("tx-record") == 2
+
+    assert controller.record_attempt("tx-record") is False
+    assert controller.get_attempts("tx-record") == 2
+
+
+def test_repair_controller_reset_clears_transient_attempts():
+    from core.engine.repair_controller import RepairController
+
+    controller = RepairController(max_attempts=2)
+
+    controller.register_attempt("tx-reset")
+    assert controller.get_attempts("tx-reset") == 1
+
+    controller.reset("tx-reset")
+
+    assert controller.get_attempts("tx-reset") == 0
+    assert controller.remaining("tx-reset") == 2
+    assert controller.can_repair("tx-reset") is True
+
+
+def test_repair_controller_reset_unknown_transaction_is_safe():
+    from core.engine.repair_controller import RepairController
+
+    controller = RepairController(max_attempts=2)
+
+    controller.reset("tx-unknown")
+
+    assert controller.get_attempts("tx-unknown") == 0
+    assert controller.can_repair("tx-unknown") is True
