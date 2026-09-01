@@ -1,8 +1,20 @@
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from enum import Enum
 
 from core.memory.persistent_store import PersistentStore
+
+
+class TaskHistoryStatus(str, Enum):
+    PENDING = "pending"
+    REPAIRING = "repairing"
+    EXECUTING = "executing"
+    TESTING = "testing"
+    COMMITTED = "committed"
+    ROLLED_BACK = "rolled_back"
+    FAILED = "failed"
+    REJECTED = "rejected"
 
 
 class TaskHistory:
@@ -75,7 +87,7 @@ class TaskHistory:
             "approval_id": task_id,
             "instruction": instruction,
             "plan": plan,
-            "status": "pending",
+            "status": TaskHistoryStatus.PENDING.value,
             "transaction_id": None,
             "created_at": now,
             "updated_at": now,
@@ -132,7 +144,7 @@ class TaskHistory:
         return [
             task
             for task in self.tasks.values()
-            if task["status"] == "pending"
+            if task["status"] == TaskHistoryStatus.PENDING.value
         ]
 
     def latest(self):
