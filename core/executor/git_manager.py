@@ -1,6 +1,12 @@
+from enum import Enum
 from pathlib import Path
 import re
 import subprocess
+
+
+class GitStatus(str, Enum):
+    ERROR = "error"
+    COMMITTED = "committed"
 
 
 class GitManager:
@@ -284,7 +290,7 @@ class GitManager:
                 self._unstage_all()
 
                 return {
-                    "status": "error",
+                    "status": GitStatus.ERROR.value,
                     "transaction_id": transaction_id,
                     "commit_hash": None,
                     "files": [],
@@ -310,7 +316,7 @@ class GitManager:
             ]
 
             return {
-                "status": "committed",
+                "status": GitStatus.COMMITTED.value,
                 "transaction_id": transaction_id,
                 "commit_hash": commit_hash,
                 "files": committed_files,

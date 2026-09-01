@@ -1,8 +1,17 @@
+from enum import Enum
 from core.schemas.models import (
     Change,
     ChangeType,
     TransactionStatus,
 )
+
+
+class RepairExecutorStatus(str, Enum):
+    FAILED = "failed"
+    REPAIR_APPLIED = "repair_applied"
+    REPAIR_VERIFIED = "repair_verified"
+    REPAIR_FAILED = "repair_failed"
+    INVALID_TEST_RESULT = "invalid_test_result"
 
 
 class RepairExecutor:
@@ -181,7 +190,7 @@ class RepairExecutor:
 
             return {
                 "success": False,
-                "status": "failed",
+                "status": RepairExecutorStatus.FAILED.value,
                 "transaction_id": transaction.transaction_id,
                 "error": str(exc),
                 "instruction": instruction,
@@ -193,7 +202,7 @@ class RepairExecutor:
         if self.test_runner is None:
             return {
                 "success": True,
-                "status": "repair_applied",
+                "status": RepairExecutorStatus.REPAIR_APPLIED.value,
                 "transaction_id": transaction.transaction_id,
                 "instruction": instruction,
                 "repair": repair,
@@ -206,7 +215,7 @@ class RepairExecutor:
         if not isinstance(test_result, dict):
             test_result = {
                 "success": False,
-                "status": "invalid_test_result",
+                "status": RepairExecutorStatus.INVALID_TEST_RESULT.value,
                 "stderr": "Resultado de testes inválido.",
                 "stdout": "",
             }
@@ -218,7 +227,7 @@ class RepairExecutor:
             "status": (
                 "repair_verified"
                 if test_result.get("success", False)
-                else "repair_failed"
+                else RepairExecutorStatus.REPAIR_FAILED.value
             ),
             "transaction_id": transaction.transaction_id,
             "instruction": instruction,

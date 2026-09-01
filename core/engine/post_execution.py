@@ -1,4 +1,12 @@
+from enum import Enum
 from pathlib import Path
+
+
+class PostExecutionStatus(str, Enum):
+    MISSING = "missing"
+    NOT_FILE = "not_file"
+    CONTENT_MISMATCH = "content_mismatch"
+    VERIFIED = "verified"
 
 
 class PostExecutionVerifier:
@@ -20,14 +28,14 @@ class PostExecutionVerifier:
         if not target.exists():
             return {
                 "success": False,
-                "status": "missing",
+                "status": PostExecutionStatus.MISSING.value,
                 "path": str(path),
             }
 
         if not target.is_file():
             return {
                 "success": False,
-                "status": "not_file",
+                "status": PostExecutionStatus.NOT_FILE.value,
                 "path": str(path),
             }
 
@@ -36,12 +44,12 @@ class PostExecutionVerifier:
             if actual != expected_content:
                 return {
                     "success": False,
-                    "status": "content_mismatch",
+                    "status": PostExecutionStatus.CONTENT_MISMATCH.value,
                     "path": str(path),
                 }
 
         return {
             "success": True,
-            "status": "verified",
+            "status": PostExecutionStatus.VERIFIED.value,
             "path": str(path),
         }
