@@ -1777,6 +1777,7 @@ def test_supervisor_returns_isolated_approval_data(tmp_path):
 
 def test_gateway_keeps_approval_pending_when_transaction_build_fails(
     tmp_path,
+    monkeypatch,
 ):
     from core.gateway import DevAgentGateway
 
@@ -1791,6 +1792,24 @@ def test_gateway_keeps_approval_pending_when_transaction_build_fails(
     gateway = DevAgentGateway(
         FakeAgent(),
         root=str(tmp_path),
+    )
+
+    def fake_commit_transaction(**kwargs):
+        transaction = kwargs["transaction"]
+        return {
+            "approval_id": kwargs["approval_id"],
+            "status": "committed",
+            "transaction_id": transaction.transaction_id,
+            "tests": kwargs["test_result"],
+            "repair": kwargs.get("repair"),
+            "repair_attempts": 0,
+            "error": None,
+        }
+
+    monkeypatch.setattr(
+        gateway,
+        "_commit_transaction",
+        fake_commit_transaction,
     )
 
     approval_id = gateway.supervisor.request_approval(
@@ -2680,3 +2699,126 @@ def test_gateway_keeps_approval_pending_when_post_begin_setup_fails(
     request = gateway.supervisor.get(approval_id)
 
     assert request["status"] == "pending"
+
+
+def test_gateway_serializes_concurrent_approve_for_same_request(
+    tmp_path,
+    monkeypatch,
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    import subprocess
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    subprocess.run(
+        ["git", "config", "user.name", "Test User"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    from core.gateway import DevAgentGateway
+    from core.schemas.models import (
+        Change,
+        ChangeType,
+        Transaction,
+    )
+
+    class FakeAgent:
+        ai = None
+
+        def build_transaction_from_approved_plan(self, plan):
+            return Transaction(
+                transaction_id="",
+                changes=[
+                    Change(
+                        change_type=ChangeType.CREATE,
+                        path="app.py",
+                        content="print('hello')",
+                    )
+                ],
+            )
+
+    gateway = DevAgentGateway(
+        FakeAgent(),
+        root=str(tmp_path),
+    )
+
+    approval_id = gateway.supervisor.request_approval(
+        {
+            "instruction": "Criar app.py",
+            "changes": [
+                {
+                    "path": "app.py",
+                    "action": "create",
+                    "content": "print('hello')",
+                }
+            ],
+        }
+    )
+
+    barrier = Barrier(2)
+    entered = {"count": 0}
+
+    original_prepare = gateway.supervisor.prepare_approval
+
+    def synchronized_prepare(approval_id):
+        entered["count"] += 1
+        if entered["count"] <= 2:
+            barrier.wait(timeout=5)
+        return original_prepare(approval_id)
+
+    monkeypatch.setattr(
+        gateway.supervisor,
+        "prepare_approval",
+        synchronized_prepare,
+    )
+
+    def approve():
+        try:
+            return ("success", gateway.approve(approval_id))
+        except Exception as exc:
+            return ("error", type(exc).__name__, str(exc))
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _: approve(), range(2)))
+
+    print("\n===== CONCURRENT APPROVE RESULTS =====")
+    for result in results:
+        print(repr(result))
+    print("===== FILE EXISTS =====")
+    print((tmp_path / "app.py").exists())
+
+    successes = [
+        result
+        for result in results
+        if result[0] == "success"
+    ]
+    errors = [
+        result
+        for result in results
+        if result[0] == "error"
+    ]
+
+    assert len(successes) == 1
+    assert len(errors) == 1
+
+    assert errors[0][1] == "ValueError"
+    assert errors[0][2] == "Solicitação não está pendente."
+
+    request = gateway.supervisor.get(approval_id)
+    assert request["status"] == "approved"
+
+    assert len(list(tmp_path.glob("app.py"))) == 1
