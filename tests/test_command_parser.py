@@ -299,3 +299,71 @@ def test_extract_target_case_insensitive_pattern(parser):
 
     assert target == "teste.py"
     assert instruction == "conteúdo"
+
+@pytest.mark.parametrize(
+    "remainder",
+    [
+        "um arquivo chamado teste.py conteúdo que deve ser ignorado",
+        'arquivo "teste.py", conteúdo que deve ser ignorado',
+        "arquivo de arquivo.py conteúdo que deve ser ignorado",
+    ],
+)
+def test_extract_target_delete_clears_instruction_for_all_special_patterns(
+    parser,
+    remainder,
+):
+    target, instruction = parser._extract_target_and_instruction(
+        remainder,
+        "delete",
+    )
+
+    assert target in {"teste.py", "de"}
+    assert instruction == ""
+
+
+@pytest.mark.parametrize(
+    "remainder, expected_target",
+    [
+        (
+            "um arquivo chamado teste.py conteúdo que deve ser ignorado",
+            "teste.py",
+        ),
+        (
+            'arquivo "teste.py", conteúdo que deve ser ignorado',
+            "teste.py",
+        ),
+        (
+            "arquivo de arquivo.py conteúdo que deve ser ignorado",
+            "de",
+        ),
+    ],
+)
+def test_extract_target_delete_clears_instruction_for_all_special_patterns(
+    parser,
+    remainder,
+    expected_target,
+):
+    target, instruction = parser._extract_target_and_instruction(
+        remainder,
+        "delete",
+    )
+
+    assert target == expected_target
+    assert instruction == ""
+
+
+def test_core_main_entrypoint_calls_cli_main(monkeypatch):
+    import runpy
+
+    called = []
+
+    def fake_main():
+        called.append(True)
+
+    import cli
+
+    monkeypatch.setattr(cli, "main", fake_main)
+
+    runpy.run_module("core.__main__", run_name="__main__")
+
+    assert called == [True]
