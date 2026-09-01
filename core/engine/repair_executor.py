@@ -88,7 +88,6 @@ class RepairExecutor:
             )
 
         self._validate_risk(repair)
-        self.security.validate_path(path)
 
         target = self.security.root / path
 
@@ -96,6 +95,8 @@ class RepairExecutor:
             raise PermissionError(
                 f"Caminho não é um arquivo: {path}"
             )
+
+        self.security.validate_path(path)
 
         change_type = (
             ChangeType.CREATE
