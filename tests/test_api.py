@@ -4499,6 +4499,65 @@ def test_gateway_run_repair_cycle_marks_limit_with_non_dict_repair(
     assert result["tests"]["success"] is False
     assert result["repair"] is None
 
+
+
+def test_full_task_flow_with_executor_failure_and_rollback(
+    isolated_project,
+    monkeypatch,
+):
+    import api
+
+    gateway = api.gateway
+
+    original = isolated_project / "executor_failure.py"
+    original.write_text(
+        'print("ORIGINAL")\n',
+        encoding="utf-8",
+    )
+
+    approval_id = gateway.supervisor.request_approval(
+        {
+            "instruction": (
+                'Modifique executor_failure.py para '
+                'print("ALTERADO")'
+            ),
+            "objective": "Modificar arquivo",
+            "changes": [
+                {
+                    "change_type": "modify",
+                    "path": "executor_failure.py",
+                    "content": 'print("ALTERADO")',
+                    "reason": "teste",
+                }
+            ],
+            "tests": [],
+            "risks": [],
+        }
+    )
+
+    def failing_execute(transaction):
+        raise RuntimeError("simulated executor failure")
+
+    monkeypatch.setattr(
+        gateway.executor,
+        "execute",
+        failing_execute,
+    )
+
+    result = gateway.approve(approval_id)
+
+    assert result["success"] is False
+    assert result["status"] == "failed"
+    assert result["transaction_id"]
+    assert "simulated executor failure" in result["error"]
+
+    assert original.read_text(encoding="utf-8") == (
+        'print("ORIGINAL")\n'
+    )
+
+    task = gateway.history.get(approval_id)
+    assert task["status"] == "failed"
+
 def test_full_task_flow_with_invalid_initial_test_result_rolls_back(
     isolated_project,
     monkeypatch,
