@@ -198,8 +198,11 @@ class DevAgentGateway:
 
         tests = result.get("tests")
         if (
-            isinstance(tests, dict)
-            and not tests.get("success", False)
+            tests is not None
+            and (
+                not isinstance(tests, dict)
+                or not tests.get("success", False)
+            )
         ):
             return "repair"
 
