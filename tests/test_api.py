@@ -164,6 +164,19 @@ def test_full_task_flow(isolated_project):
         assert approved["repair_attempts"] == 0
         assert "transaction_id" in approved
 
+        created_file = isolated_project / "api_teste.py"
+        assert created_file.is_file()
+        assert created_file.read_text() == 'print("API OK")'
+
+        git_log = __import__("subprocess").run(
+            ["git", "log", "-1", "--format=%s"],
+            cwd=isolated_project,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert git_log.stdout.strip()
+
         status, final_task = request(
             server,
             "GET",
