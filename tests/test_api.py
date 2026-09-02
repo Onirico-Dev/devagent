@@ -4498,3 +4498,66 @@ def test_gateway_run_repair_cycle_marks_limit_with_non_dict_repair(
     assert result["repair_attempts"] == 1
     assert result["tests"]["success"] is False
     assert result["repair"] is None
+
+def test_full_task_flow_with_invalid_initial_test_result_rolls_back(
+    isolated_project,
+    monkeypatch,
+):
+    import api
+
+    server, _ = start_server(isolated_project)
+
+    try:
+        original = isolated_project / "api_invalid_test_result.py"
+        original.write_text('print("ORIGINAL")')
+
+        status, created = request(
+            server,
+            "POST",
+            "/plan",
+            {
+                "instruction": (
+                    'Modifique api_invalid_test_result.py contendo '
+                    'print("ALTERADO")'
+                )
+            },
+        )
+
+        assert status == 200
+        assert created["status"] == "pending"
+
+        approval_id = created["approval_id"]
+        gateway = api.gateway
+
+        monkeypatch.setattr(
+            gateway.tests,
+            "run",
+            lambda paths: None,
+        )
+
+        status, result = request(
+            server,
+            "POST",
+            f"/approve/{approval_id}",
+        )
+
+        assert status == 200
+        assert result["status"] == "failed"
+        assert result["success"] is False
+        assert result["transaction_id"]
+        assert "tests" not in result or result["tests"] is None
+
+        assert original.read_text() == 'print("ORIGINAL")'
+
+        status, final_task = request(
+            server,
+            "GET",
+            f"/tasks/{approval_id}",
+        )
+
+        assert status == 200
+        assert final_task["status"] == "failed"
+
+    finally:
+        server.shutdown()
+        server.server_close()
