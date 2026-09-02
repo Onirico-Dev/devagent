@@ -252,6 +252,19 @@ def test_plan_validator_rejects_invalid_change_type(tmp_path):
         validator.validate(plan)
 
 
+def test_plan_validator_rejects_non_string_change_reason(tmp_path):
+    validator = make_validator(tmp_path)
+    change = make_change(ChangeType.CREATE)
+    change.reason = 123
+    plan = make_plan([change])
+
+    with pytest.raises(
+        ValueError,
+        match="Motivo da alteração deve ser uma string.",
+    ):
+        validator.validate(plan)
+
+
 def test_plan_validator_rejects_non_string_change_path(tmp_path):
     validator = make_validator(tmp_path)
     change = make_change(ChangeType.CREATE)

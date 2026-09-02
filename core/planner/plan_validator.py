@@ -70,6 +70,11 @@ class PlanValidator:
                     "Caminho da alteração deve ser uma string."
                 )
 
+            if not isinstance(change.reason, str):
+                raise ValueError(
+                    "Motivo da alteração deve ser uma string."
+                )
+
             if not change.path.strip():
                 raise ValueError(
                     "Alteração sem caminho."
