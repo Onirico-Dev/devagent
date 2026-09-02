@@ -120,6 +120,117 @@ def test_unknown_endpoint():
         server.server_close()
 
 
+
+
+def test_full_task_flow_with_repair_and_commit(
+    isolated_project,
+    monkeypatch,
+):
+    from core.gateway import DevAgentGateway
+
+    server, _ = start_server(isolated_project)
+
+    try:
+        status, created = request(
+            server,
+            "POST",
+            "/plan",
+            {
+                "instruction": (
+                    'Crie api_reparo.py contendo '
+                    'print("REPARADO")'
+                )
+            },
+        )
+
+        assert status == 200
+        assert created["status"] == "pending"
+
+        approval_id = created["approval_id"]
+
+        gateway = __import__("api").gateway
+
+        original_run = gateway.tests.run
+        calls = {"count": 0}
+
+        def run_with_initial_failure(paths):
+            calls["count"] += 1
+
+            if calls["count"] == 1:
+                return {
+                    "success": False,
+                    "status": "failed",
+                    "stdout": "",
+                    "stderr": "falha inicial simulada",
+                }
+
+            return original_run(paths)
+
+        monkeypatch.setattr(
+            gateway.tests,
+            "run",
+            run_with_initial_failure,
+        )
+
+        original_analyze = gateway.repair_engine.analyze_failure
+
+        def deterministic_repair(
+            instruction,
+            error,
+            test_output,
+        ):
+            result = original_analyze(
+                instruction,
+                error,
+                test_output,
+            )
+
+            result["action"] = "modify"
+            result["risk"] = "baixo"
+            result["path"] = "api_reparo.py"
+            result["content"] = 'print("REPARADO")'
+            result["correction"] = "Correção determinística do teste."
+
+            return result
+
+        monkeypatch.setattr(
+            gateway.repair_engine,
+            "analyze_failure",
+            deterministic_repair,
+        )
+
+        status, approved = request(
+            server,
+            "POST",
+            f"/approve/{approval_id}",
+        )
+
+        assert status == 200
+        assert approved["status"] == "committed"
+        assert approved["tests"]["success"] is True
+        assert approved["repair_attempts"] == 1
+        assert approved.get("repair") is not None
+
+        repaired_file = isolated_project / "api_reparo.py"
+
+        assert repaired_file.is_file()
+        assert repaired_file.read_text() == 'print("REPARADO")'
+
+        assert calls["count"] >= 2
+
+        status, final_task = request(
+            server,
+            "GET",
+            f"/tasks/{approval_id}",
+        )
+
+        assert status == 200
+        assert final_task["status"] == "committed"
+
+    finally:
+        server.shutdown()
+        server.server_close()
+
 def test_full_task_flow(isolated_project):
     server, _ = start_server(isolated_project)
 
