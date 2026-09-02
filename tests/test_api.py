@@ -4561,3 +4561,68 @@ def test_full_task_flow_with_invalid_initial_test_result_rolls_back(
     finally:
         server.shutdown()
         server.server_close()
+
+
+@pytest.mark.parametrize(
+    "invalid_git_result",
+    [
+        None,
+        [],
+        "invalid",
+    ],
+)
+def test_gateway_commit_rejects_invalid_git_result(
+    isolated_project,
+    monkeypatch,
+    invalid_git_result,
+):
+    import api
+    from core.gateway import CommitTransactionError
+
+    gateway = api.gateway
+
+    transaction = gateway.agent.build_transaction_from_approved_plan(
+        {
+            "instruction": (
+                'Crie api_invalid_git.py contendo '
+                'print("TESTE")'
+            ),
+            "objective": "Criar arquivo",
+            "changes": [
+                {
+                    "change_type": "create",
+                    "path": "api_invalid_git.py",
+                    "content": 'print("TESTE")',
+                    "reason": "teste",
+                }
+            ],
+            "tests": [],
+            "risks": [],
+        }
+    )
+
+    transaction = gateway.transactions.begin(transaction)
+
+    repair_state = gateway._restore_repair_state(transaction)
+
+    monkeypatch.setattr(
+        gateway.git,
+        "commit_transaction",
+        lambda *args, **kwargs: invalid_git_result,
+    )
+
+    with pytest.raises(CommitTransactionError) as exc_info:
+        gateway._commit_transaction(
+            approval_id="invalid-git-result",
+            instruction=(
+                'Crie api_invalid_git.py contendo '
+                'print("TESTE")'
+            ),
+            transaction=transaction,
+            test_result={"success": True},
+            repair_state=repair_state,
+        )
+
+    assert "Resultado de commit Git inválido." in str(
+        exc_info.value
+    )

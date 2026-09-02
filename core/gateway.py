@@ -696,6 +696,12 @@ class DevAgentGateway:
             ],
         )
 
+        if not isinstance(git_result, dict):
+            raise CommitTransactionError(
+                "Resultado de commit Git inválido.",
+                result=git_result,
+            )
+
         if git_result.get("status") != GitStatus.COMMITTED.value:
             raise CommitTransactionError(
                 "Commit Git não foi concluído: "
@@ -708,10 +714,7 @@ class DevAgentGateway:
                 result=git_result,
             )
 
-        transaction.status = (
-            TransactionStatus.COMMITTED
-        )
-
+        transaction.status = TransactionStatus.COMMITTED
         repair_state.mark_committed()
         repair_state.persist(transaction)
 
@@ -752,10 +755,6 @@ class DevAgentGateway:
                 else {}
             ),
         }
-
-    # ------------------------------------------------------------------
-    # ROLLBACK
-    # ------------------------------------------------------------------
 
     def _rollback_transaction(
         self,
