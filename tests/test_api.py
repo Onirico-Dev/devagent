@@ -241,6 +241,102 @@ def test_full_task_flow_with_repair_and_commit(
         server.shutdown()
         server.server_close()
 
+
+def test_full_task_flow_with_repair_failure_and_rollback(
+    isolated_project,
+    monkeypatch,
+):
+    import api
+
+    server, _ = start_server(isolated_project)
+
+    try:
+        original = isolated_project / "api_rollback.py"
+        original.write_text('print("ORIGINAL")')
+
+        status, created = request(
+            server,
+            "POST",
+            "/plan",
+            {
+                "instruction": (
+                    'Modifique api_rollback.py contendo '
+                    'print("ALTERADO")'
+                )
+            },
+        )
+
+        assert status == 200
+        assert created["status"] == "pending"
+
+        approval_id = created["approval_id"]
+        gateway = api.gateway
+
+        original_run = gateway.tests.run
+        calls = {"count": 0}
+
+        def always_fail_after_execution(paths):
+            calls["count"] += 1
+            return {
+                "success": False,
+                "status": "failed",
+                "stdout": "",
+                "stderr": "falha persistente simulada",
+            }
+
+        monkeypatch.setattr(
+            gateway.tests,
+            "run",
+            always_fail_after_execution,
+        )
+
+        def deterministic_repair(
+            instruction,
+            error,
+            test_output,
+        ):
+            return {
+                "diagnosis": "Falha persistente simulada.",
+                "correction": "Correção determinística que continuará falhando.",
+                "risk": "baixo",
+                "action": "modify",
+                "path": "api_rollback.py",
+                "content": 'print("REPARADO")',
+            }
+
+        monkeypatch.setattr(
+            gateway.repair_engine,
+            "analyze_failure",
+            deterministic_repair,
+        )
+
+        status, result = request(
+            server,
+            "POST",
+            f"/approve/{approval_id}",
+        )
+
+        assert status == 200
+        assert result["status"] == "rolled_back"
+        assert result["success"] is False
+        assert result["repair_attempts"] == 2
+        assert calls["count"] >= 2
+
+        assert original.read_text() == 'print("ORIGINAL")'
+
+        status, final_task = request(
+            server,
+            "GET",
+            f"/tasks/{approval_id}",
+        )
+
+        assert status == 200
+        assert final_task["status"] == "rolled_back"
+
+    finally:
+        server.shutdown()
+        server.server_close()
+
 def test_full_task_flow(isolated_project):
     server, _ = start_server(isolated_project)
 
