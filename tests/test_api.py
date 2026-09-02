@@ -3763,6 +3763,36 @@ def test_gateway_attempt_repair_rechecks_limit_after_analysis(
     assert len(calls) == 2
 
 
+def test_gateway_run_repair_cycle_rolls_back_for_invalid_initial_test_result(
+    isolated_project,
+):
+    from core.gateway import DevAgentGateway
+
+    class FakeAgent:
+        ai = None
+
+    gateway = DevAgentGateway(
+        agent=FakeAgent(),
+        root=isolated_project,
+    )
+
+    class FakeRepairState:
+        attempts = 0
+
+    repair_state = FakeRepairState()
+
+    result = gateway._run_repair_cycle(
+        instruction="test",
+        transaction=object(),
+        test_result="invalid",
+        repair_state=repair_state,
+    )
+
+    assert result["success"] is False
+    assert result["status"] == "rolled_back"
+    assert result["tests"] == "invalid"
+
+
 def test_gateway_run_repair_cycle_rolls_back_when_limit_reached(
     isolated_project,
 ):

@@ -475,6 +475,15 @@ class DevAgentGateway:
         Ele apenas determina o resultado do ciclo.
         """
 
+        if not isinstance(test_result, dict):
+            return {
+                "success": False,
+                "status": TransactionStatus.ROLLED_BACK.value,
+                "tests": test_result,
+                "repair": None,
+                "repair_attempts": repair_state.attempts,
+            }
+
         while not test_result.get("success", False):
 
             self._sync_repair_controller(
