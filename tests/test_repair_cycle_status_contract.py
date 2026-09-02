@@ -58,3 +58,8 @@ def test_repair_cycle_terminal_statuses_block_continuation():
 
     state.mark_rolled_back()
     assert state.can_continue() is False
+
+
+def test_repair_cycle_status_values():
+    assert RepairCycleStatus.NO_REPAIR.value == "no_repair"
+    assert RepairCycleStatus.LIMIT_REACHED.value == "limit_reached"

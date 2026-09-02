@@ -2701,7 +2701,168 @@ def test_gateway_keeps_approval_pending_when_post_begin_setup_fails(
     assert request["status"] == "pending"
 
 
+def test_gateway_does_not_execute_same_approval_twice(
+    tmp_path,
+    monkeypatch,
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    import subprocess
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test User"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    from core.gateway import DevAgentGateway
+    from core.schemas.models import (
+        Change,
+        ChangeType,
+        Transaction,
+    )
+
+    class FakeAgent:
+        ai = None
+
+        def build_transaction_from_approved_plan(self, plan):
+            return Transaction(
+                transaction_id="",
+                changes=[
+                    Change(
+                        change_type=ChangeType.CREATE,
+                        path="app.py",
+                        content="print('hello')",
+                    )
+                ],
+            )
+
+    gateway = DevAgentGateway(
+        FakeAgent(),
+        root=str(tmp_path),
+    )
+
+    approval_id = gateway.supervisor.request_approval(
+        {
+            "instruction": "Criar app.py",
+            "changes": [
+                {
+                    "path": "app.py",
+                    "action": "create",
+                    "content": "print('hello')",
+                }
+            ],
+        }
+    )
+
+    first_entered = Event()
+    release_first = Event()
+    executions = {"count": 0}
+
+    original_execute = gateway.executor.execute
+
+    def controlled_execute(transaction):
+        executions["count"] += 1
+
+        if executions["count"] == 1:
+            first_entered.set()
+
+            if not release_first.wait(timeout=5):
+                raise RuntimeError(
+                    "timeout aguardando liberação da primeira execução"
+                )
+
+        return original_execute(transaction)
+
+    monkeypatch.setattr(
+        gateway.executor,
+        "execute",
+        controlled_execute,
+    )
+
+    def approve():
+        try:
+            return ("success", gateway.approve(approval_id))
+        except Exception as exc:
+            return (
+                "error",
+                type(exc).__name__,
+                str(exc),
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_future = executor.submit(approve)
+
+        assert first_entered.wait(timeout=5), (
+            "A primeira aprovação não chegou ao executor."
+        )
+
+        second_future = executor.submit(approve)
+
+        # A primeira execução permanece bloqueada.
+        # Se a segunda aprovação conseguir entrar no executor,
+        # existe sobreposição real do mesmo approval.
+        import time
+        deadline = time.monotonic() + 1.0
+
+        while (
+            executions["count"] < 2
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+
+        overlapping_executions = executions["count"]
+
+        release_first.set()
+
+        first_result = first_future.result(timeout=10)
+        second_result = second_future.result(timeout=10)
+
+    assert overlapping_executions == 1, (
+        "A mesma aprovação entrou no executor "
+        f"{overlapping_executions} vezes antes da primeira terminar."
+    )
+
+    results = [
+        first_result,
+        second_result,
+    ]
+
+    successes = [
+        result
+        for result in results
+        if result[0] == "success"
+    ]
+    errors = [
+        result
+        for result in results
+        if result[0] == "error"
+    ]
+
+    assert len(successes) == 1
+    assert len(errors) == 1
+    assert errors[0][1] == "ValueError"
+    assert errors[0][2] == (
+        "Solicitação não está pendente."
+    )
+
+    assert executions["count"] == 1
+
 def test_gateway_serializes_concurrent_approve_for_same_request(
+
     tmp_path,
     monkeypatch,
 ):

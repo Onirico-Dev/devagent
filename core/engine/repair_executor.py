@@ -130,22 +130,17 @@ class RepairExecutor:
         transaction,
     ):
         change = self.build_change(repair)
-
         self.security.validate_path(change.path)
-
         target = self.security.root / change.path
-
         if target.exists() and target.is_symlink():
             raise PermissionError(
                 "Reparo recusado em caminho simbólico: "
                 f"{change.path}"
             )
-
         existing_paths = {
             existing.path
             for existing in transaction.changes
         }
-
         if (
             change.path in existing_paths
             and change.change_type == ChangeType.CREATE
@@ -154,7 +149,6 @@ class RepairExecutor:
                 "Arquivo já está registrado na transação: "
                 f"{change.path}"
             )
-
         if change.path not in existing_paths:
             if change.change_type == ChangeType.MODIFY:
                 self.transaction_manager.backup_file(
@@ -166,9 +160,7 @@ class RepairExecutor:
                     transaction,
                     change.path,
                 )
-
-        transaction.changes.append(change)
-
+            transaction.changes.append(change)
         transaction.metadata.setdefault(
             "repairs",
             [],
@@ -182,12 +174,10 @@ class RepairExecutor:
                 "risk": repair.get("risk", "baixo"),
             }
         )
-
         try:
             self.executor.execute_change(change)
         except Exception as exc:
             transaction.status = TransactionStatus.FAILED
-
             return {
                 "success": False,
                 "status": RepairExecutorStatus.FAILED.value,
@@ -208,25 +198,50 @@ class RepairExecutor:
                 "repair": repair,
             }
 
-        test_result = self.test_runner.run(
-            [change.path]
-        )
+        try:
+            test_result = self.test_runner.run(
+                [change.path]
+            )
+        except Exception as exc:
+            transaction.status = TransactionStatus.FAILED
+            return {
+                "success": False,
+                "status": RepairExecutorStatus.FAILED.value,
+                "transaction_id": transaction.transaction_id,
+                "error": str(exc),
+                "instruction": instruction,
+                "repair": repair,
+            }
 
         if not isinstance(test_result, dict):
             test_result = {
                 "success": False,
-                "status": RepairExecutorStatus.INVALID_TEST_RESULT.value,
+                "status": (
+                    RepairExecutorStatus.INVALID_TEST_RESULT.value
+                ),
+                "stderr": "Resultado de testes inválido.",
+                "stdout": "",
+            }
+        elif not isinstance(
+            test_result.get("success", False),
+            bool,
+        ):
+            test_result = {
+                "success": False,
+                "status": (
+                    RepairExecutorStatus.INVALID_TEST_RESULT.value
+                ),
                 "stderr": "Resultado de testes inválido.",
                 "stdout": "",
             }
 
+        test_success = test_result.get("success", False)
+
         return {
-            "success": bool(
-                test_result.get("success", False)
-            ),
+            "success": test_success,
             "status": (
-                "repair_verified"
-                if test_result.get("success", False)
+                RepairExecutorStatus.REPAIR_VERIFIED.value
+                if test_success
                 else RepairExecutorStatus.REPAIR_FAILED.value
             ),
             "transaction_id": transaction.transaction_id,

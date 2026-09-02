@@ -426,6 +426,66 @@ def test_execute_repair_marks_failed_when_executor_raises(tmp_path):
     assert transaction.status == TransactionStatus.FAILED
 
 
+def test_execute_repair_marks_failed_when_test_runner_raises(tmp_path):
+    class RaisingTestRunner:
+        def run(self, paths):
+            raise RuntimeError("falha no test runner")
+
+    repair_executor = make_executor(
+        tmp_path,
+        test_runner=RaisingTestRunner(),
+    )
+    transaction = make_transaction(tmp_path)
+
+    result = repair_executor.execute_repair(
+        repair={
+            "action": "create",
+            "path": "arquivo.py",
+            "content": "VALUE = 1\\n",
+            "risk": "baixo",
+        },
+        instruction="reparar",
+        transaction=transaction,
+    )
+
+    assert result["success"] is False
+    assert result["status"] == "failed"
+    assert result["error"] == "falha no test runner"
+    assert transaction.status == TransactionStatus.FAILED
+
+
+def test_execute_repair_rejects_non_boolean_test_success(tmp_path):
+    runner = FakeTestRunner(
+        {
+            "success": "false",
+            "status": "failed",
+            "stderr": "",
+            "stdout": "",
+        }
+    )
+    repair_executor = make_executor(
+        tmp_path,
+        test_runner=runner,
+    )
+    transaction = make_transaction(tmp_path)
+
+    result = repair_executor.execute_repair(
+        repair={
+            "action": "create",
+            "path": "arquivo.py",
+            "content": "VALUE = 1\\n",
+            "risk": "baixo",
+        },
+        instruction="reparar",
+        transaction=transaction,
+    )
+
+    assert result["success"] is False
+    assert result["status"] == "repair_failed"
+    assert result["tests"]["success"] is False
+    assert result["tests"]["status"] == "invalid_test_result"
+
+
 def test_execute_repair_without_test_runner_returns_applied(tmp_path):
     fake_executor = FakeExecutor()
     repair_executor = make_executor(
