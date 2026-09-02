@@ -13,6 +13,8 @@ def test_repair_cycle_status_enum_values():
         "verified",
         "failed",
         "repair_failed",
+        "no_repair",
+        "limit_reached",
         "rolled_back",
         "committed",
     }

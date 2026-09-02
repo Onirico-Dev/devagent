@@ -11,6 +11,8 @@ class RepairCycleStatus(str, Enum):
     VERIFIED = "verified"
     FAILED = "failed"
     REPAIR_FAILED = "repair_failed"
+    NO_REPAIR = "no_repair"
+    LIMIT_REACHED = "limit_reached"
     ROLLED_BACK = "rolled_back"
     COMMITTED = "committed"
 

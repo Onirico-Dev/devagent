@@ -8,7 +8,7 @@ from core.executor.git_manager import GitManager, GitStatus
 from core.engine.repair_engine import RepairEngine
 from core.engine.repair_executor import RepairExecutor, RepairExecutorStatus
 from core.engine.repair_controller import RepairController
-from core.engine.repair_cycle_state import RepairCycleState
+from core.engine.repair_cycle_state import RepairCycleState, RepairCycleStatus
 from core.memory.task_history import TaskHistory, TaskHistoryStatus
 from core.schemas.models import TransactionStatus
 
@@ -269,10 +269,10 @@ class DevAgentGateway:
 
         if not repair_state.can_continue():
             return {
-                "status": "limit_reached",
+                "status": RepairCycleStatus.LIMIT_REACHED.value,
                 "success": False,
                 "repair": {
-                    "status": "limit_reached",
+                    "status": RepairCycleStatus.LIMIT_REACHED.value,
                     "action": "none",
                     "risk": "baixo",
                     "path": "",
@@ -312,21 +312,21 @@ class DevAgentGateway:
 
         if diagnosis.get("risk") == "alto":
             return {
-                "status": "rolled_back",
+                "status": TransactionStatus.ROLLED_BACK.value,
                 "success": False,
                 "repair": diagnosis,
             }
 
         if diagnosis.get("action") == "none":
             return {
-                "status": "no_repair",
+                "status": RepairCycleStatus.NO_REPAIR.value,
                 "success": False,
                 "repair": diagnosis,
             }
 
         if not repair_state.can_continue():
             return {
-                "status": "limit_reached",
+                "status": RepairCycleStatus.LIMIT_REACHED.value,
                 "success": False,
                 "repair": diagnosis,
             }
@@ -482,7 +482,7 @@ class DevAgentGateway:
             if not repair_state.can_continue():
                 return {
                     "success": False,
-                    "status": "rolled_back",
+                    "status": TransactionStatus.ROLLED_BACK.value,
                     "tests": test_result,
                     "repair_attempts": (
                         repair_state.attempts
@@ -492,7 +492,7 @@ class DevAgentGateway:
                         "risk": "baixo",
                         "path": "",
                         "content": "",
-                        "status": "limit_reached",
+                        "status": RepairCycleStatus.LIMIT_REACHED.value,
                         "diagnosis": (
                             "Limite máximo de tentativas "
                             "de reparo atingido."
@@ -535,7 +535,7 @@ class DevAgentGateway:
 
                     return {
                         "success": True,
-                        "status": "verified",
+                        "status": RepairCycleStatus.VERIFIED.value,
                         "tests": next_tests,
                         "repair": repair_result.get(
                             "repair"
@@ -567,13 +567,13 @@ class DevAgentGateway:
 
                     if isinstance(repair, dict):
                         repair = dict(repair)
-                        repair["status"] = "limit_reached"
+                        repair["status"] = RepairCycleStatus.LIMIT_REACHED.value
                     else:
                         repair = None
 
                     return {
                         "success": False,
-                        "status": "rolled_back",
+                        "status": TransactionStatus.ROLLED_BACK.value,
                         "tests": test_result,
                         "repair": repair,
                         "repair_attempts": (
@@ -585,7 +585,7 @@ class DevAgentGateway:
                 # não há base para outra tentativa.
                 return {
                     "success": False,
-                    "status": "rolled_back",
+                    "status": TransactionStatus.ROLLED_BACK.value,
                     "tests": test_result,
                     "repair": repair_result.get(
                         "repair"
@@ -602,7 +602,7 @@ class DevAgentGateway:
             if status == RepairExecutorStatus.FAILED.value:
                 return {
                     "success": False,
-                    "status": "rolled_back",
+                    "status": TransactionStatus.ROLLED_BACK.value,
                     "tests": test_result,
                     "repair": repair_result.get(
                         "repair"
@@ -621,13 +621,13 @@ class DevAgentGateway:
             # ----------------------------------------------------------
 
             if status in {
-                "no_repair",
-                "limit_reached",
-                "rolled_back",
+                RepairCycleStatus.NO_REPAIR.value,
+                RepairCycleStatus.LIMIT_REACHED.value,
+                TransactionStatus.ROLLED_BACK.value,
             }:
                 return {
                     "success": False,
-                    "status": "rolled_back",
+                    "status": TransactionStatus.ROLLED_BACK.value,
                     "tests": test_result,
                     "repair": repair_result.get(
                         "repair"
@@ -643,7 +643,7 @@ class DevAgentGateway:
 
             return {
                 "success": False,
-                "status": "rolled_back",
+                "status": TransactionStatus.ROLLED_BACK.value,
                 "tests": test_result,
                 "repair": repair_result.get(
                     "repair"
@@ -655,7 +655,7 @@ class DevAgentGateway:
 
         return {
             "success": True,
-            "status": "verified",
+            "status": RepairCycleStatus.VERIFIED.value,
             "tests": test_result,
             "repair": None,
             "repair_attempts": repair_state.attempts,
@@ -728,7 +728,7 @@ class DevAgentGateway:
 
         return {
             "approval_id": approval_id,
-            "status": "committed",
+            "status": TransactionStatus.COMMITTED.value,
             "transaction_id": transaction.transaction_id,
             "tests": test_result,
             "git": git_result,
@@ -798,7 +798,7 @@ class DevAgentGateway:
             )
 
         final_status = (
-            "failed"
+            TaskHistoryStatus.FAILED.value
             if rollback_error is not None
             else status
         )
