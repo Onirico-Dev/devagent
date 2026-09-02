@@ -82,7 +82,7 @@ Regras:
 
         try:
             data = json.loads(response)
-        except json.JSONDecodeError as error:
+        except (json.JSONDecodeError, TypeError) as error:
             raise ValueError(
                 "A IA retornou um plano que não é JSON válido."
             ) from error

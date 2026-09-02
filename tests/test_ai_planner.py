@@ -97,6 +97,20 @@ def test_ai_planner_rejects_invalid_json():
         AIPlanner(adapter).create_plan("Crie app.py")
 
 
+def test_ai_planner_rejects_non_text_ai_response():
+    class NonTextAdapter:
+        def generate(self, prompt):
+            return {"invalid": "response"}
+
+    planner = AIPlanner(NonTextAdapter())
+
+    with pytest.raises(
+        ValueError,
+        match="A IA retornou um plano que não é JSON válido.",
+    ):
+        planner.create_plan("criar arquivo.py")
+
+
 def test_ai_planner_rejects_non_object_json():
     adapter = FixedAdapter("[]")
 
