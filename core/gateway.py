@@ -830,6 +830,7 @@ class DevAgentGateway:
         return {
             "approval_id": approval_id,
             "status": final_status,
+            "success": False,
             "transaction_id": transaction.transaction_id,
             "tests": test_result,
             "repair": repair,
