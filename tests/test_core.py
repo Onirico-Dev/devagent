@@ -675,3 +675,235 @@ def test_task_history_persists_transaction_metadata(tmp_path):
     task = reloaded.get(approval_id)
 
     assert task["metadata"] == metadata
+
+
+# ============================================================
+# REPAIR ENGINE — NORMALIZAÇÃO E CONTRATO DA RESPOSTA DA IA
+# ============================================================
+
+def test_repair_engine_accepts_valid_json(monkeypatch):
+    from core.engine.repair_engine import RepairEngine
+
+    class FakeAI:
+        def generate(self, prompt):
+            return (
+                '{"diagnosis":"erro simples",'
+                '"correction":"corrigir arquivo",'
+                '"risk":"baixo",'
+                '"action":"modify",'
+                '"path":"app.py",'
+                '"content":"print(\\"ok\\")"}'
+            )
+
+    engine = RepairEngine(FakeAI())
+
+    result = engine.analyze_failure(
+        instruction="corrija app.py",
+        error="erro",
+        test_output="falhou",
+    )
+
+    assert result["risk"] == "baixo"
+    assert result["action"] == "modify"
+    assert result["path"] == "app.py"
+    assert result["content"] == 'print("ok")'
+
+
+def test_repair_engine_rejects_invalid_json():
+    from core.engine.repair_engine import RepairEngine
+
+    class FakeAI:
+        def generate(self, prompt):
+            return "não é json"
+
+    engine = RepairEngine(FakeAI())
+
+    result = engine.analyze_failure(
+        instruction="corrija app.py",
+        error="erro",
+        test_output="falhou",
+    )
+
+    assert result["action"] == "none"
+    assert result["risk"] == "alto"
+    assert result["path"] == ""
+    assert result["content"] == ""
+
+
+def test_repair_engine_rejects_non_object_json():
+    from core.engine.repair_engine import RepairEngine
+
+    class FakeAI:
+        def generate(self, prompt):
+            return '["invalid"]'
+
+    engine = RepairEngine(FakeAI())
+
+    result = engine.analyze_failure(
+        instruction="corrija app.py",
+        error="erro",
+        test_output="falhou",
+    )
+
+    assert result["action"] == "none"
+    assert result["risk"] == "alto"
+
+
+def test_repair_engine_rejects_incomplete_json():
+    from core.engine.repair_engine import RepairEngine
+
+    class FakeAI:
+        def generate(self, prompt):
+            return (
+                '{"diagnosis":"erro",'
+                '"correction":"corrigir",'
+                '"risk":"baixo",'
+                '"action":"modify",'
+                '"path":"app.py"}'
+            )
+
+    engine = RepairEngine(FakeAI())
+
+    result = engine.analyze_failure(
+        instruction="corrija app.py",
+        error="erro",
+        test_output="falhou",
+    )
+
+    assert result["action"] == "none"
+    assert result["risk"] == "alto"
+
+
+def test_repair_engine_normalizes_invalid_risk():
+    from core.engine.repair_engine import RepairEngine
+
+    class FakeAI:
+        def generate(self, prompt):
+            return (
+                '{"diagnosis":"erro",'
+                '"correction":"corrigir",'
+                '"risk":"critico",'
+                '"action":"modify",'
+                '"path":"app.py",'
+                '"content":"print(\\"ok\\")"}'
+            )
+
+    engine = RepairEngine(FakeAI())
+
+    result = engine.analyze_failure(
+        instruction="corrija app.py",
+        error="erro",
+        test_output="falhou",
+    )
+
+    assert result["risk"] == "alto"
+    assert result["action"] == "modify"
+
+
+def test_repair_engine_normalizes_invalid_action():
+    from core.engine.repair_engine import RepairEngine
+
+    class FakeAI:
+        def generate(self, prompt):
+            return (
+                '{"diagnosis":"erro",'
+                '"correction":"corrigir",'
+                '"risk":"baixo",'
+                '"action":"delete",'
+                '"path":"app.py",'
+                '"content":"print(\\"ok\\")"}'
+            )
+
+    engine = RepairEngine(FakeAI())
+
+    result = engine.analyze_failure(
+        instruction="corrija app.py",
+        error="erro",
+        test_output="falhou",
+    )
+
+    assert result["action"] == "none"
+
+
+def test_repair_engine_rejects_create_without_content():
+    from core.engine.repair_engine import RepairEngine
+
+    class FakeAI:
+        def generate(self, prompt):
+            return (
+                '{"diagnosis":"erro",'
+                '"correction":"criar arquivo",'
+                '"risk":"baixo",'
+                '"action":"create",'
+                '"path":"app.py",'
+                '"content":"   "}'
+            )
+
+    engine = RepairEngine(FakeAI())
+
+    result = engine.analyze_failure(
+        instruction="crie app.py",
+        error="erro",
+        test_output="falhou",
+    )
+
+    assert result["action"] == "none"
+    assert result["risk"] == "alto"
+
+
+def test_repair_engine_rejects_modify_without_content():
+    from core.engine.repair_engine import RepairEngine
+
+    class FakeAI:
+        def generate(self, prompt):
+            return (
+                '{"diagnosis":"erro",'
+                '"correction":"corrigir",'
+                '"risk":"baixo",'
+                '"action":"modify",'
+                '"path":"app.py",'
+                '"content":""}'
+            )
+
+    engine = RepairEngine(FakeAI())
+
+    result = engine.analyze_failure(
+        instruction="corrija app.py",
+        error="erro",
+        test_output="falhou",
+    )
+
+    assert result["action"] == "none"
+    assert result["risk"] == "alto"
+
+
+def test_repair_engine_rejects_oversized_content():
+    from core.engine.repair_engine import RepairEngine
+
+    class FakeAI:
+        def generate(self, prompt):
+            import json
+
+            return json.dumps(
+                {
+                    "diagnosis": "erro",
+                    "correction": "corrigir",
+                    "risk": "baixo",
+                    "action": "modify",
+                    "path": "app.py",
+                    "content": "x" * 1_000_001,
+                }
+            )
+
+    engine = RepairEngine(FakeAI())
+
+    result = engine.analyze_failure(
+        instruction="corrija app.py",
+        error="erro",
+        test_output="falhou",
+    )
+
+    assert result["action"] == "none"
+    assert result["risk"] == "alto"
+    assert result["path"] == ""
+    assert result["content"] == ""
