@@ -16,6 +16,15 @@ def assert_command(command, *, raw, action, target, instruction):
     assert command.instruction == instruction
 
 
+@pytest.mark.parametrize("value", [None, 123, [], {}, b"crie arquivo.py"])
+def test_parse_rejects_non_string_input(parser, value):
+    with pytest.raises(
+        ValueError,
+        match="Comando deve ser uma string.",
+    ):
+        parser.parse(value)
+
+
 def test_parse_rejects_empty_command(parser):
     with pytest.raises(ValueError, match="Comando vazio."):
         parser.parse("   ")

@@ -52,6 +52,9 @@ class CommandParser:
         return value.lstrip(" \t.,;:").strip()
 
     def parse(self, text: str) -> Command:
+        if not isinstance(text, str):
+            raise ValueError("Comando deve ser uma string.")
+
         text = text.strip()
 
         if not text:
