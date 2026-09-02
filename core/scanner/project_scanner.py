@@ -1,9 +1,9 @@
 from pathlib import Path
+
 from core.schemas.models import FileInfo
 
 
 class ProjectScanner:
-
     def __init__(self, root: str):
         self.root = Path(root).resolve()
 
@@ -15,9 +15,16 @@ class ProjectScanner:
                 f"Projeto não encontrado: {self.root}"
             )
 
-        for path in sorted(self.root.rglob("*")):
+        if not self.root.is_dir():
+            raise NotADirectoryError(
+                f"Projeto não é um diretório: {self.root}"
+            )
 
+        for path in sorted(self.root.rglob("*")):
             if ".git" in path.parts:
+                continue
+
+            if path.is_symlink():
                 continue
 
             if path.is_file():
@@ -30,7 +37,6 @@ class ProjectScanner:
                         size=path.stat().st_size,
                     )
                 )
-
             elif path.is_dir():
                 results.append(
                     FileInfo(

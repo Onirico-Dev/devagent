@@ -695,3 +695,37 @@ def test_change_engine_rejects_delete_for_directory(tmp_path):
         match="não é um arquivo",
     ):
         ChangeEngine(tmp_path).validate_change(change)
+
+
+def test_project_scanner_rejects_file_root(tmp_path):
+    root_file = tmp_path / "project.py"
+    root_file.write_text("print('ok')")
+
+    with pytest.raises(
+        NotADirectoryError,
+        match="Projeto não é um diretório",
+    ):
+        ProjectScanner(str(root_file)).scan()
+
+
+def test_project_scanner_ignores_symlink(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.py").write_text("secret")
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "normal.py").write_text("normal")
+
+    link = project / "external"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("Symlinks não suportados neste ambiente.")
+
+    results = ProjectScanner(str(project)).scan()
+    paths = {item.path for item in results}
+
+    assert "normal.py" in paths
+    assert "external" not in paths
+    assert str(Path("external") / "secret.py") not in paths
