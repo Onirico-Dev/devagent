@@ -177,12 +177,15 @@ def test_prepare_propagates_validation_error(tmp_path):
         engine.prepare(plan)
 
 
-def test_validate_unsupported_change_type_does_not_raise(tmp_path):
+def test_validate_unsupported_change_type_rejects_invalid_type(tmp_path):
     engine = ChangeEngine(tmp_path)
-
     change = make_change(
         "arquivo.py",
         "unsupported",
     )
 
-    engine.validate_change(change)
+    with pytest.raises(
+        ValueError,
+        match="Tipo de alteração inválido",
+    ):
+        engine.validate_change(change)

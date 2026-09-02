@@ -48,6 +48,10 @@ class ChangeEngine:
 
             return
 
+        raise ValueError(
+            f"Tipo de alteração inválido: {change.change_type}"
+        )
+
     def prepare(self, plan: Plan) -> list[Change]:
         for change in plan.changes:
             self.validate_change(change)
