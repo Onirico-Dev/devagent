@@ -3313,6 +3313,27 @@ def test_gateway_evaluate_execution_rolls_back_non_dict(isolated_project):
     assert gateway._evaluate_execution(None) == "rollback"
 
 
+def test_gateway_evaluate_execution_repairs_invalid_verification_shape(
+    isolated_project,
+):
+    from core.gateway import DevAgentGateway
+
+    class FakeAgent:
+        ai = None
+
+    gateway = DevAgentGateway(
+        agent=FakeAgent(),
+        root=isolated_project,
+    )
+
+    result = {
+        "success": True,
+        "verification": "invalid",
+    }
+
+    assert gateway._evaluate_execution(result) == "repair"
+
+
 def test_gateway_evaluate_execution_repairs_failed_tests_after_success(
     isolated_project,
 ):

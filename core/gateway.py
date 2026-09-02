@@ -187,15 +187,16 @@ class DevAgentGateway:
             return "repair"
 
         verification = result.get("verification")
-
         if (
             verification is not None
-            and not verification.get("success")
+            and (
+                not isinstance(verification, dict)
+                or not verification.get("success")
+            )
         ):
             return "repair"
 
         tests = result.get("tests")
-
         if (
             isinstance(tests, dict)
             and not tests.get("success", False)
