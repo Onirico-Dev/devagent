@@ -226,6 +226,16 @@ def test_full_task_flow_with_repair_and_commit(
 
         assert status == 200
         assert final_task["status"] == "committed"
+        assert final_task["repair_attempts"] == 1
+        assert final_task.get("repair") is not None
+
+        repair = final_task["repair"]
+        assert isinstance(repair, dict)
+        assert repair["action"] == "modify"
+        assert repair["risk"] == "baixo"
+        assert repair["path"] == "api_reparo.py"
+        assert repair["content"] == 'print("REPARADO")'
+        assert repair["correction"] == "Correção determinística do teste."
 
     finally:
         server.shutdown()
