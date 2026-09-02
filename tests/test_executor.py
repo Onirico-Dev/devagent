@@ -1470,6 +1470,76 @@ def test_safe_executor_blocks_file_symlink_swap_after_validation(
     assert target.is_symlink()
 
 
+def test_safe_executor_delete_does_not_unlink_replacement_after_validation(
+    tmp_path,
+    monkeypatch,
+):
+    import core.executor.safe_executor as safe_executor_module
+
+    from core.schemas.models import Change, ChangeType
+
+    executor = safe_executor_module.SafeExecutor(str(tmp_path))
+
+    target = tmp_path / "victim.py"
+    replacement = tmp_path / "replacement.py"
+
+    target.write_text(
+        "ORIGINAL\n",
+        encoding="utf-8",
+    )
+
+    replacement.write_text(
+        "MUST_SURVIVE\n",
+        encoding="utf-8",
+    )
+
+    original_verify = executor._verify_regular_file_in_parent
+    swapped = {"value": False}
+
+    def verify_then_swap(parent_fd, filename, relative_path):
+        result = original_verify(
+            parent_fd,
+            filename,
+            relative_path,
+        )
+
+        if not swapped["value"]:
+            target.unlink()
+            target.write_text(
+                replacement.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            swapped["value"] = True
+
+        return result
+
+    monkeypatch.setattr(
+        executor,
+        "_verify_regular_file_in_parent",
+        verify_then_swap,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Arquivo foi alterado durante a remoção: victim.py",
+    ):
+        executor.execute_change(
+            Change(
+                path="victim.py",
+                change_type=ChangeType.DELETE,
+                content=None,
+            )
+        )
+
+    assert target.exists()
+    assert target.read_text(encoding="utf-8") == "MUST_SURVIVE\n"
+    assert replacement.read_text(encoding="utf-8") == "MUST_SURVIVE\n"
+
+    assert target.exists()
+    assert target.read_text(encoding="utf-8") == "MUST_SURVIVE\n"
+    assert replacement.read_text(encoding="utf-8") == "MUST_SURVIVE\n"
+
+
 def test_safe_executor_delete_does_not_follow_symlink_after_validation(
     tmp_path,
     monkeypatch,

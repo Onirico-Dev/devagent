@@ -185,7 +185,7 @@ class SafeExecutor:
         parent_fd: int,
         filename: str,
         relative_path: str,
-    ) -> None:
+    ) -> tuple[int, int]:
         try:
             fd = os.open(
                 filename,
@@ -212,6 +212,10 @@ class SafeExecutor:
                 raise ValueError(
                     f"Caminho não é um arquivo: {relative_path}"
                 )
+            return (
+                stat_result.st_dev,
+                stat_result.st_ino,
+            )
         finally:
             os.close(fd)
 
@@ -260,11 +264,49 @@ class SafeExecutor:
                 change.path,
             )
             try:
-                self._verify_regular_file_in_parent(
+                expected_identity = self._verify_regular_file_in_parent(
                     parent_fd,
                     relative.name,
                     change.path,
                 )
+
+                try:
+                    fd = os.open(
+                        relative.name,
+                        os.O_RDONLY | os.O_NOFOLLOW,
+                        dir_fd=parent_fd,
+                    )
+                except FileNotFoundError as error:
+                    raise RuntimeError(
+                        f"Arquivo foi alterado durante a remoção: "
+                        f"{change.path}"
+                    ) from error
+                except OSError as error:
+                    if getattr(error, "errno", None) in (
+                        errno.ELOOP,
+                        errno.EISDIR,
+                    ):
+                        raise RuntimeError(
+                            f"Arquivo foi alterado durante a remoção: "
+                            f"{change.path}"
+                        ) from error
+                    raise
+
+                try:
+                    current_stat = os.fstat(fd)
+                    current_identity = (
+                        current_stat.st_dev,
+                        current_stat.st_ino,
+                    )
+                finally:
+                    os.close(fd)
+
+                if current_identity != expected_identity:
+                    raise RuntimeError(
+                        f"Arquivo foi alterado durante a remoção: "
+                        f"{change.path}"
+                    )
+
                 os.unlink(relative.name, dir_fd=parent_fd)
             finally:
                 os.close(parent_fd)
