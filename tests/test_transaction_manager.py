@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -280,7 +281,9 @@ def test_rollback_rejects_backup_outside_project(tmp_path):
     manager, transaction = make_started_transaction(tmp_path)
 
     backup = Path(transaction.metadata["backup"])
-    outside = tmp_path.parent / "outside-backup"
+    outside = tmp_path.parent / (
+        f"outside-backup-{tmp_path.name}"
+    )
     outside.mkdir()
     backup.rmdir()
 
@@ -575,3 +578,227 @@ def test_rollback_rejects_symlink_destination(tmp_path):
         match="Destino de rollback é um symlink",
     ):
         manager.rollback(transaction)
+
+
+def test_backup_blocks_parent_directory_symlink_swap(tmp_path):
+    import core.executor.transaction_manager as module
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Transaction
+
+    root = tmp_path / "project"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+
+    (root / "safe.py").write_text("SAFE", encoding="utf-8")
+
+    manager = TransactionManager(root=root)
+    transaction = Transaction(transaction_id="test")
+    manager.begin(transaction)
+
+    backup_dir = root / "transactions" / transaction.transaction_id
+    backup_dir_real = root / "transactions" / (
+        transaction.transaction_id + "_real"
+    )
+
+    original_open = module.os.open
+    swapped = False
+
+    def hooked_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+
+        candidate = Path(path)
+
+        if (
+            not swapped
+            and candidate.name == "safe.py"
+            and kwargs.get("dir_fd") is not None
+        ):
+            swapped = True
+            backup_dir.rename(backup_dir_real)
+            backup_dir.symlink_to(
+                outside,
+                target_is_directory=True,
+            )
+
+        return original_open(path, flags, *args, **kwargs)
+
+    module.os.open = hooked_open
+
+    try:
+        manager.backup_file(transaction, "safe.py")
+    finally:
+        module.os.open = original_open
+
+    assert swapped
+    assert not (outside / "safe.py").exists()
+
+    legitimate = backup_dir_real / "safe.py"
+    assert legitimate.exists()
+    assert legitimate.read_text(encoding="utf-8") == "SAFE"
+
+
+def test_backup_blocks_ancestor_directory_symlink_swap(tmp_path):
+    import core.executor.transaction_manager as module
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Transaction
+
+    root = tmp_path / "project"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+
+    (root / "safe.py").write_text("SAFE", encoding="utf-8")
+
+    manager = TransactionManager(root=root)
+    transaction = Transaction(transaction_id="test")
+    manager.begin(transaction)
+
+    transactions = root / "transactions"
+    transactions_real = root / "transactions_real"
+
+    original_open = module.os.open
+    swapped = False
+
+    def hooked_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+
+        candidate = Path(path)
+
+        if (
+            not swapped
+            and candidate.name == "safe.py"
+            and kwargs.get("dir_fd") is not None
+        ):
+            swapped = True
+            transactions.rename(transactions_real)
+            transactions.symlink_to(
+                outside,
+                target_is_directory=True,
+            )
+
+        return original_open(path, flags, *args, **kwargs)
+
+    module.os.open = hooked_open
+
+    try:
+        manager.backup_file(transaction, "safe.py")
+    except Exception:
+        pass
+    finally:
+        module.os.open = original_open
+
+    assert swapped
+    assert not (
+        outside
+        / transaction.transaction_id
+        / "safe.py"
+    ).exists()
+
+    legitimate = (
+        transactions_real
+        / transaction.transaction_id
+        / "safe.py"
+    )
+    assert legitimate.exists()
+    assert legitimate.read_text(encoding="utf-8") == "SAFE"
+
+
+def test_rollback_removes_identity_tracked_created_file(
+    tmp_path,
+    monkeypatch,
+):
+    manager, transaction = make_started_transaction(tmp_path)
+
+    race_dir = tmp_path / "race"
+    race_dir.mkdir()
+
+    created = race_dir / "created.py"
+    replacement = race_dir / "replacement.py"
+
+    created.write_text(
+        "ORIGINAL\n",
+        encoding="utf-8",
+    )
+    replacement.write_text(
+        "MUST_SURVIVE\n",
+        encoding="utf-8",
+    )
+
+    manager.register_created(
+        transaction,
+        "race/created.py",
+    )
+
+    real_unlink = os.unlink
+    unlink_calls = []
+
+    def tracked_unlink(path, *args, **kwargs):
+        unlink_calls.append(
+            (
+                path,
+                kwargs.get("dir_fd"),
+            )
+        )
+        return real_unlink(
+            path,
+            *args,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(
+        os,
+        "unlink",
+        tracked_unlink,
+    )
+
+    manager.rollback(transaction)
+
+    assert not created.exists()
+    assert replacement.read_text(
+        encoding="utf-8",
+    ) == "MUST_SURVIVE\n"
+    assert unlink_calls
+    assert unlink_calls[-1][1] is not None
+
+
+def test_begin_rejects_preexisting_backup_symlink(
+    tmp_path,
+    monkeypatch,
+):
+    from core.schemas.models import Transaction
+
+    manager = TransactionManager(root=tmp_path)
+
+    transaction_id = "fixed-transaction-id"
+
+    monkeypatch.setattr(
+        "core.executor.transaction_manager.uuid.uuid4",
+        lambda: transaction_id,
+    )
+
+    outside = tmp_path / "outside-backup-target"
+    outside.mkdir()
+
+    backup_parent = tmp_path / "transactions"
+    backup_parent.mkdir()
+
+    malicious_backup = backup_parent / transaction_id
+    malicious_backup.symlink_to(
+        outside,
+        target_is_directory=True,
+    )
+
+    transaction = Transaction(
+        transaction_id="unused",
+        changes=[],
+    )
+
+    with pytest.raises(
+        (ValueError, RuntimeError, OSError),
+    ):
+        manager.begin(transaction)
+
+    assert outside.exists()
+    assert outside.is_dir()
+    assert malicious_backup.is_symlink()

@@ -1130,6 +1130,401 @@ def test_safe_executor_rejects_symlink_outside_project(tmp_path):
     ) == "FORA\n"
 
 
+def test_safe_executor_blocks_create_symlink_swap_before_open(
+    tmp_path,
+    monkeypatch,
+):
+    from core.executor import safe_executor as safe_executor_module
+    from core.executor.safe_executor import SafeExecutor
+    from core.schemas.models import Change, ChangeType, Transaction
+
+    outside = tmp_path.parent / "create_toctou_outside.py"
+    outside.write_text("ORIGINAL\\n", encoding="utf-8")
+
+    target = tmp_path / "app.py"
+
+    executor = SafeExecutor(root=str(tmp_path))
+
+    transaction = Transaction(
+        transaction_id="tx-create-toctou",
+        changes=[
+            Change(
+                change_type=ChangeType.CREATE,
+                path="app.py",
+                content="ATTACKED\\n",
+            )
+        ],
+    )
+
+    original_open = safe_executor_module.os.open
+    swapped = {"value": False}
+
+    def open_with_swap(candidate, flags, *args, **kwargs):
+        if (
+            not swapped["value"]
+            and Path(candidate).name == target.name
+        ):
+            target.symlink_to(outside)
+            swapped["value"] = True
+
+        return original_open(candidate, flags, *args, **kwargs)
+
+    monkeypatch.setattr(
+        safe_executor_module.os,
+        "open",
+        open_with_swap,
+    )
+
+    try:
+        executor.execute_change(transaction.changes[0])
+    except (FileExistsError, OSError):
+        pass
+
+    assert swapped["value"] is True
+    assert outside.read_text(encoding="utf-8") == "ORIGINAL\\n"
+    assert target.is_symlink()
+def test_transaction_manager_blocks_backup_symlink_swap_before_copy(
+    tmp_path,
+    monkeypatch,
+):
+    from core.executor import transaction_manager as transaction_manager_module
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Transaction
+
+    outside = tmp_path.parent / "backup_toctou_outside.py"
+    outside.write_text("OUTSIDE\n", encoding="utf-8")
+
+    source = tmp_path / "app.py"
+    source.write_text("SAFE\n", encoding="utf-8")
+
+    manager = TransactionManager(root=str(tmp_path))
+    transaction = Transaction(transaction_id="tx-backup-toctou")
+    manager.begin(transaction)
+
+    original_open = transaction_manager_module.os.open
+    swapped = {"value": False}
+
+    def open_with_swap(candidate, flags, *args, **kwargs):
+        if (
+            not swapped["value"]
+            and Path(candidate).name == source.name
+            and flags & transaction_manager_module.os.O_NOFOLLOW
+        ):
+            source.unlink()
+            source.symlink_to(outside)
+            swapped["value"] = True
+
+        return original_open(candidate, flags, *args, **kwargs)
+
+    monkeypatch.setattr(
+        transaction_manager_module.os,
+        "open",
+        open_with_swap,
+    )
+
+    try:
+        manager.backup_file(transaction, "app.py")
+    except (OSError, ValueError):
+        pass
+
+    assert swapped["value"] is True
+
+    backup = (
+        manager.backup_dir
+        / transaction.transaction_id
+        / "app.py"
+    )
+
+    if backup.exists():
+        assert backup.read_text(encoding="utf-8") != "OUTSIDE\n"
+
+    assert outside.read_text(encoding="utf-8") == "OUTSIDE\n"
+    assert source.is_symlink()
+
+
+def test_transaction_manager_blocks_rollback_backup_symlink_swap_before_copy(
+    tmp_path,
+    monkeypatch,
+):
+    from core.executor import transaction_manager as transaction_manager_module
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Transaction
+
+    outside = tmp_path.parent / "rollback_toctou_outside.py"
+    outside.write_text("OUTSIDE\\n", encoding="utf-8")
+
+    source = tmp_path / "app.py"
+    source.write_text("CURRENT\\n", encoding="utf-8")
+
+    manager = TransactionManager(root=str(tmp_path))
+    transaction = Transaction(transaction_id="tx-rollback-toctou")
+    manager.begin(transaction)
+
+    manager.backup_file(transaction, "app.py")
+
+    backup = (
+        manager.backup_dir
+        / transaction.transaction_id
+        / "app.py"
+    )
+
+    source.write_text("MODIFIED\\n", encoding="utf-8")
+
+    original_open = transaction_manager_module.os.open
+    swapped = {"value": False}
+
+    def open_with_swap(candidate, flags, *args, **kwargs):
+        if (
+            not swapped["value"]
+            and Path(candidate).name == backup.name
+            and flags & transaction_manager_module.os.O_NOFOLLOW
+        ):
+            backup.unlink()
+            backup.symlink_to(outside)
+            swapped["value"] = True
+
+        return original_open(candidate, flags, *args, **kwargs)
+
+    monkeypatch.setattr(
+        transaction_manager_module.os,
+        "open",
+        open_with_swap,
+    )
+
+    try:
+        manager.rollback(transaction)
+    except (OSError, ValueError):
+        pass
+
+    assert swapped["value"] is True
+    assert source.read_text(encoding="utf-8") == "MODIFIED\\n"
+    assert outside.read_text(encoding="utf-8") == "OUTSIDE\\n"
+
+
+def test_transaction_manager_blocks_rollback_destination_symlink_swap_before_copy(
+    tmp_path,
+    monkeypatch,
+):
+    from core.executor import transaction_manager as transaction_manager_module
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Transaction
+
+    outside = tmp_path.parent / "rollback_destination_outside.py"
+    outside.write_text("OUTSIDE\\n", encoding="utf-8")
+
+    source = tmp_path / "app.py"
+    source.write_text("CURRENT\\n", encoding="utf-8")
+
+    manager = TransactionManager(root=str(tmp_path))
+    transaction = Transaction(transaction_id="tx-rollback-destination-toctou")
+    manager.begin(transaction)
+
+    manager.backup_file(transaction, "app.py")
+
+    source.write_text("MODIFIED\\n", encoding="utf-8")
+
+    backup = (
+        manager.backup_dir
+        / transaction.transaction_id
+        / "app.py"
+    )
+
+    original_open = transaction_manager_module.os.open
+    swapped = {"value": False}
+
+    def open_with_swap(candidate, flags, *args, **kwargs):
+        if (
+            not swapped["value"]
+            and Path(candidate).name == source.name
+            and flags & transaction_manager_module.os.O_NOFOLLOW
+        ):
+            source.unlink()
+            source.symlink_to(outside)
+            swapped["value"] = True
+
+        return original_open(candidate, flags, *args, **kwargs)
+
+    monkeypatch.setattr(
+        transaction_manager_module.os,
+        "open",
+        open_with_swap,
+    )
+
+    try:
+        manager.rollback(transaction)
+    except (OSError, ValueError):
+        pass
+
+    assert swapped["value"] is True
+    assert outside.read_text(encoding="utf-8") == "OUTSIDE\\n"
+    assert source.is_symlink()
+
+
+
+def test_safe_executor_blocks_parent_directory_symlink_swap(tmp_path, monkeypatch):
+    from core.executor import safe_executor as safe_executor_module
+    from core.executor.safe_executor import SafeExecutor
+    from core.schemas.models import Change, ChangeType
+
+    outside = tmp_path.parent / "parent_toctou_outside"
+    outside.mkdir()
+
+    parent = tmp_path / "race"
+    parent.mkdir()
+
+    real_parent = tmp_path / "race_real"
+
+    executor = SafeExecutor(root=str(tmp_path))
+
+    original_open = safe_executor_module.os.open
+    swapped = {"value": False}
+
+    def open_with_swap(candidate, flags, *args, **kwargs):
+        if (
+            not swapped["value"]
+            and Path(candidate).name == "created.py"
+            and kwargs.get("dir_fd") is not None
+        ):
+            parent.rename(real_parent)
+            parent.symlink_to(outside, target_is_directory=True)
+            swapped["value"] = True
+
+        return original_open(candidate, flags, *args, **kwargs)
+
+    monkeypatch.setattr(
+        safe_executor_module.os,
+        "open",
+        open_with_swap,
+    )
+
+    executor.execute_change(
+        Change(
+            change_type=ChangeType.CREATE,
+            path="race/created.py",
+            content="SAFE\n",
+        )
+    )
+
+    assert swapped["value"] is True
+    assert not (outside / "created.py").exists()
+    assert (real_parent / "created.py").read_text(encoding="utf-8") == "SAFE\n"
+
+def test_safe_executor_blocks_file_symlink_swap_after_validation(
+    tmp_path,
+    monkeypatch,
+):
+    from core.executor import safe_executor as safe_executor_module
+    from core.executor.safe_executor import SafeExecutor
+    from core.schemas.models import Change, ChangeType, Transaction
+
+    outside = tmp_path.parent / "toctou_outside.py"
+    outside.write_text("ORIGINAL\\n", encoding="utf-8")
+
+    target = tmp_path / "app.py"
+    target.write_text("SAFE\\n", encoding="utf-8")
+
+    executor = SafeExecutor(root=str(tmp_path))
+
+    transaction = Transaction(
+        transaction_id="tx-toctou",
+        changes=[
+            Change(
+                change_type=ChangeType.MODIFY,
+                path="app.py",
+                content="ATTACKED\\n",
+            )
+        ],
+    )
+
+    original_open = safe_executor_module.os.open
+    swapped = {"value": False}
+
+    def open_with_swap(candidate, flags, *args, **kwargs):
+        if (
+            not swapped["value"]
+            and Path(candidate).name == target.name
+        ):
+            target.unlink()
+            target.symlink_to(outside)
+            swapped["value"] = True
+
+        return original_open(candidate, flags, *args, **kwargs)
+
+    monkeypatch.setattr(
+        safe_executor_module.os,
+        "open",
+        open_with_swap,
+    )
+
+    try:
+        try:
+            executor.execute_change(transaction.changes[0])
+        except ValueError as error:
+            assert "Caminho não é um arquivo" in str(error)
+
+    except OSError:
+        pass
+
+    assert swapped["value"] is True
+    assert outside.read_text(encoding="utf-8") == "ORIGINAL\\n"
+    assert target.is_symlink()
+
+
+def test_safe_executor_delete_does_not_follow_symlink_after_validation(
+    tmp_path,
+    monkeypatch,
+):
+    from core.executor import safe_executor as safe_executor_module
+    from core.executor.safe_executor import SafeExecutor
+    from core.schemas.models import Change, ChangeType
+
+    outside = tmp_path.parent / "delete_target_outside.py"
+    target = tmp_path / "app.py"
+
+    outside.write_text("OUTSIDE\\n", encoding="utf-8")
+    target.write_text("ORIGINAL\\n", encoding="utf-8")
+
+    executor = SafeExecutor(root=str(tmp_path))
+
+    original_open = safe_executor_module.os.open
+    swapped = {"value": False}
+
+    def open_with_swap(candidate, flags, *args, **kwargs):
+        if (
+            not swapped["value"]
+            and Path(candidate).name == target.name
+            and flags & safe_executor_module.os.O_NOFOLLOW
+        ):
+            target.unlink()
+            target.symlink_to(outside)
+            swapped["value"] = True
+
+        return original_open(candidate, flags, *args, **kwargs)
+
+    monkeypatch.setattr(
+        safe_executor_module.os,
+        "open",
+        open_with_swap,
+    )
+
+    change = Change(
+        path="app.py",
+        change_type=ChangeType.DELETE,
+    )
+
+    try:
+        executor.execute_change(change)
+    except ValueError as error:
+        assert "Caminho não é um arquivo" in str(error)
+
+
+    assert swapped["value"] is True
+    assert target.is_symlink()
+    assert target.resolve() == outside.resolve()
+    assert target.is_symlink()
+    assert outside.read_text(encoding="utf-8") == "OUTSIDE\\n"
+
+
 def test_safe_executor_rejects_symlink_parent_outside_project(tmp_path):
     outside = tmp_path.parent / "outside_dir"
     outside.mkdir()
