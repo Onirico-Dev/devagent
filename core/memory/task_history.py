@@ -145,7 +145,7 @@ class TaskHistory:
         task_id = str(approval_id)
         now = self._now()
 
-        self.tasks[task_id] = {
+        task = {
             "task_id": task_id,
             "approval_id": task_id,
             "instruction": instruction,
@@ -156,9 +156,15 @@ class TaskHistory:
             "updated_at": now,
         }
 
-        self._save()
+        updated_tasks = {
+            **self.tasks,
+            task_id: task,
+        }
 
-        return self.tasks[task_id]
+        self.store.save(updated_tasks)
+        self.tasks = updated_tasks
+
+        return task
 
     def update(
         self,
@@ -174,6 +180,10 @@ class TaskHistory:
                 "Tarefa não encontrada."
             )
 
+        updated_task = {
+            **task,
+        }
+
         if status is not None:
             valid_statuses = {
                 lifecycle_status.value
@@ -184,10 +194,10 @@ class TaskHistory:
             if status not in valid_statuses:
                 raise ValueError("status inválido")
 
-            task["status"] = status
+            updated_task["status"] = status
 
         if transaction_id is not None:
-            task["transaction_id"] = transaction_id
+            updated_task["transaction_id"] = transaction_id
 
         if extra is not None:
             if not isinstance(extra, dict):
@@ -211,13 +221,19 @@ class TaskHistory:
                     "Campos estruturais não podem ser sobrescritos"
                 )
 
-            task.update(extra)
+            updated_task.update(extra)
 
-        task["updated_at"] = self._now()
+        updated_task["updated_at"] = self._now()
 
-        self._save()
+        updated_tasks = {
+            **self.tasks,
+            str(task_id): updated_task,
+        }
 
-        return task
+        self.store.save(updated_tasks)
+        self.tasks = updated_tasks
+
+        return updated_task
 
     def get(self, task_id):
         return self.tasks.get(str(task_id))

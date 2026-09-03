@@ -370,3 +370,43 @@ def test_task_history_update_rejects_invalid_status(tmp_path):
     task = history.get(created["task_id"])
 
     assert task["status"] == TaskHistoryStatus.PENDING.value
+
+def test_task_history_create_preserves_in_memory_state_on_persistence_failure(
+    tmp_path,
+):
+    path = tmp_path / "tasks.json"
+    history = TaskHistory(path)
+
+    with pytest.raises(TypeError):
+        history.create(
+            "failed-task",
+            "instruction",
+            {"invalid": object()},
+        )
+
+    assert history.get("failed-task") is None
+    assert TaskHistory(path).get("failed-task") is None
+
+
+def test_task_history_update_preserves_in_memory_state_on_persistence_failure(
+    tmp_path,
+):
+    path = tmp_path / "tasks.json"
+    history = TaskHistory(path)
+
+    original = history.create(
+        "task-1",
+        "instruction",
+        {"ok": True},
+    )
+    original_snapshot = dict(original)
+
+    with pytest.raises(TypeError):
+        history.update(
+            "task-1",
+            extra={"invalid": object()},
+        )
+
+    assert history.get("task-1") == original_snapshot
+    assert TaskHistory(path).get("task-1") == original_snapshot
+
