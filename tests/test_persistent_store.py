@@ -1,5 +1,6 @@
 import os
 import json
+import pytest
 from pathlib import Path
 
 from core.memory.persistent_store import PersistentStore
@@ -316,3 +317,35 @@ def test_persistent_store_save_ignores_cleanup_error_after_replace(
 
     assert path.exists()
     assert store.load() == {"value": 1}
+
+
+def test_persistent_store_save_preserves_previous_state_on_serialization_failure(
+    tmp_path,
+):
+    path = tmp_path / "state.json"
+    store = PersistentStore(path)
+
+    store.save({"version": 1})
+
+    with pytest.raises(TypeError):
+        store.save({"version": 2, "invalid": object()})
+
+    assert store.load() == {"version": 1}
+    assert list(tmp_path.glob(".state.json.*.tmp")) == []
+
+
+def test_persistent_store_update_preserves_state_when_updater_fails(tmp_path):
+    path = tmp_path / "state.json"
+    store = PersistentStore(path)
+
+    store.save({"count": 1})
+
+    def failing_updater(state):
+        state["count"] = 999
+        raise RuntimeError("update failure")
+
+    with pytest.raises(RuntimeError, match="update failure"):
+        store.update(failing_updater)
+
+    assert store.load() == {"count": 1}
+    assert list(tmp_path.glob(".state.json.*.tmp")) == []
