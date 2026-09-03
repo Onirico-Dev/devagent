@@ -175,6 +175,15 @@ class TaskHistory:
             )
 
         if status is not None:
+            valid_statuses = {
+                lifecycle_status.value
+                for lifecycle_status in TaskHistoryStatus
+            }
+            valid_statuses.add("completed")
+
+            if status not in valid_statuses:
+                raise ValueError("status inválido")
+
             task["status"] = status
 
         if transaction_id is not None:

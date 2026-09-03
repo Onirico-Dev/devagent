@@ -346,3 +346,27 @@ def test_task_history_update_rejects_lifecycle_fields_in_extra(tmp_path):
 
     assert task["status"] == TaskHistoryStatus.PENDING.value
     assert task["transaction_id"] is None
+
+
+def test_task_history_update_rejects_invalid_status(tmp_path):
+    path = tmp_path / "tasks.json"
+    history = TaskHistory(path)
+
+    created = history.create(
+        "approval-1",
+        "test instruction",
+        {"changes": []},
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="status inválido",
+    ):
+        history.update(
+            created["task_id"],
+            status="forged-status",
+        )
+
+    task = history.get(created["task_id"])
+
+    assert task["status"] == TaskHistoryStatus.PENDING.value
