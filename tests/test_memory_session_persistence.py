@@ -1,3 +1,4 @@
+import pytest
 import json
 import threading
 
@@ -444,3 +445,64 @@ def test_memory_save_accepts_list(tmp_path):
             "data": {"ok": True},
         }
     ]
+
+
+def test_session_save_preserves_previous_state_on_serialization_failure(
+    tmp_path,
+):
+    path = tmp_path / "session.json"
+    session = Session(path)
+
+    session.save(
+        {
+            "instructions": ["original"],
+            "plans": [{"ok": True}],
+        }
+    )
+
+    with pytest.raises(TypeError):
+        session.save(
+            {
+                "instructions": ["updated"],
+                "plans": [{"invalid": object()}],
+            }
+        )
+
+    assert Session(path).context() == {
+        "instructions": ["original"],
+        "plans": [{"ok": True}],
+    }
+
+
+def test_session_add_instruction_preserves_state_on_serialization_failure(
+    tmp_path,
+):
+    path = tmp_path / "session.json"
+    session = Session(path)
+
+    session.add_instruction("original")
+
+    with pytest.raises(TypeError):
+        session.add_instruction(object())
+
+    assert Session(path).context() == {
+        "instructions": ["original"],
+        "plans": [],
+    }
+
+
+def test_session_add_plan_preserves_state_on_serialization_failure(
+    tmp_path,
+):
+    path = tmp_path / "session.json"
+    session = Session(path)
+
+    session.add_plan({"original": True})
+
+    with pytest.raises(TypeError):
+        session.add_plan({"invalid": object()})
+
+    assert Session(path).context() == {
+        "instructions": [],
+        "plans": [{"original": True}],
+    }
