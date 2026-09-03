@@ -4317,3 +4317,157 @@ def test_git_manager_unstages_and_reraises_post_commit_failure(tmp_path):
         ("add", "--", "app.py"),
         ("rev-parse", "HEAD"),
     ]
+
+def test_safe_executor_create_fsyncs_file_and_parent_directory(
+    tmp_path,
+    monkeypatch,
+):
+    import os
+
+    from core.executor.safe_executor import SafeExecutor
+    from core.schemas.models import Change, ChangeType
+
+    target = tmp_path / "created.txt"
+    executor = SafeExecutor(tmp_path)
+
+    file_fsyncs = []
+    directory_fsyncs = []
+
+    original_fsync = os.fsync
+
+    def tracking_fsync(fd):
+        file_fsyncs.append(fd)
+        return original_fsync(fd)
+
+    def tracking_directory_fsync(fd):
+        directory_fsyncs.append(fd)
+
+    monkeypatch.setattr(os, "fsync", tracking_fsync)
+    monkeypatch.setattr(
+        SafeExecutor,
+        "_fsync_directory",
+        staticmethod(tracking_directory_fsync),
+    )
+
+    executor.execute_change(
+        Change(
+            path="created.txt",
+            change_type=ChangeType.CREATE,
+            content="durable",
+        )
+    )
+
+    assert target.read_text(encoding="utf-8") == "durable"
+    assert len(file_fsyncs) == 1
+    assert len(directory_fsyncs) == 1
+
+
+def test_safe_executor_modify_fsyncs_file_and_parent_directory(
+    tmp_path,
+    monkeypatch,
+):
+    import os
+
+    from core.executor.safe_executor import SafeExecutor
+    from core.schemas.models import Change, ChangeType
+
+    target = tmp_path / "existing.txt"
+    target.write_text("old", encoding="utf-8")
+
+    executor = SafeExecutor(tmp_path)
+
+    file_fsyncs = []
+    directory_fsyncs = []
+
+    original_fsync = os.fsync
+
+    def tracking_fsync(fd):
+        file_fsyncs.append(fd)
+        return original_fsync(fd)
+
+    def tracking_directory_fsync(fd):
+        directory_fsyncs.append(fd)
+
+    monkeypatch.setattr(os, "fsync", tracking_fsync)
+    monkeypatch.setattr(
+        SafeExecutor,
+        "_fsync_directory",
+        staticmethod(tracking_directory_fsync),
+    )
+
+    executor.execute_change(
+        Change(
+            path="existing.txt",
+            change_type=ChangeType.MODIFY,
+            content="new",
+        )
+    )
+
+    assert target.read_text(encoding="utf-8") == "new"
+    assert len(file_fsyncs) == 1
+    assert len(directory_fsyncs) == 1
+
+
+def test_safe_executor_modify_preserves_old_content_when_fsync_fails(
+    tmp_path,
+    monkeypatch,
+):
+    import os
+
+    from core.executor.safe_executor import SafeExecutor
+    from core.schemas.models import Change, ChangeType
+
+    target = tmp_path / "existing.txt"
+    target.write_text("old-content", encoding="utf-8")
+
+    executor = SafeExecutor(tmp_path)
+
+    def failing_fsync(fd):
+        raise OSError("simulated fsync failure")
+
+    monkeypatch.setattr(os, "fsync", failing_fsync)
+
+    with pytest.raises(OSError, match="simulated fsync failure"):
+        executor.execute_change(
+            Change(
+                path="existing.txt",
+                change_type=ChangeType.MODIFY,
+                content="new-content",
+            )
+        )
+
+    assert target.read_text(encoding="utf-8") == "old-content"
+
+
+def test_safe_executor_delete_fsyncs_parent_directory(
+    tmp_path,
+    monkeypatch,
+):
+    from core.executor.safe_executor import SafeExecutor
+    from core.schemas.models import Change, ChangeType
+
+    target = tmp_path / "existing.txt"
+    target.write_text("content", encoding="utf-8")
+
+    executor = SafeExecutor(tmp_path)
+
+    directory_fsyncs = []
+
+    def tracking_directory_fsync(fd):
+        directory_fsyncs.append(fd)
+
+    monkeypatch.setattr(
+        SafeExecutor,
+        "_fsync_directory",
+        staticmethod(tracking_directory_fsync),
+    )
+
+    executor.execute_change(
+        Change(
+            path="existing.txt",
+            change_type=ChangeType.DELETE,
+        )
+    )
+
+    assert not target.exists()
+    assert len(directory_fsyncs) == 1

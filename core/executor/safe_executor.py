@@ -1,6 +1,7 @@
 import errno
 import os
 import stat
+import secrets
 from pathlib import Path
 
 from core.schemas.models import ChangeType, TransactionStatus
@@ -106,6 +107,10 @@ class SafeExecutor:
             raise
 
     @staticmethod
+    def _fsync_directory(parent_fd: int) -> None:
+        os.fsync(parent_fd)
+
+    @staticmethod
     def _write_new_file_in_parent(
         parent_fd: int,
         filename: str,
@@ -129,6 +134,10 @@ class SafeExecutor:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 fd = None
                 handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+
+            SafeExecutor._fsync_directory(parent_fd)
         finally:
             if fd is not None:
                 os.close(fd)
@@ -140,12 +149,10 @@ class SafeExecutor:
         content: str,
         display_path: str,
     ) -> None:
-        flags = os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW
-
         try:
             fd = os.open(
                 filename,
-                flags,
+                os.O_RDONLY | os.O_NOFOLLOW,
                 dir_fd=parent_fd,
             )
         except FileNotFoundError as error:
@@ -168,17 +175,82 @@ class SafeExecutor:
 
         try:
             stat_result = os.fstat(fd)
+
             if not stat.S_ISREG(stat_result.st_mode):
                 raise ValueError(
                     f"Caminho não é um arquivo: {display_path}"
                 )
 
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                fd = None
-                handle.write(content)
+            mode = stat.S_IMODE(stat_result.st_mode)
         finally:
-            if fd is not None:
-                os.close(fd)
+            os.close(fd)
+
+        temporary_name = None
+        temporary_fd = None
+
+        for _ in range(32):
+            candidate = (
+                f".{filename}.devagent-"
+                f"{secrets.token_hex(12)}.tmp"
+            )
+
+            try:
+                temporary_fd = os.open(
+                    candidate,
+                    (
+                        os.O_WRONLY
+                        | os.O_CREAT
+                        | os.O_EXCL
+                        | os.O_NOFOLLOW
+                    ),
+                    mode,
+                    dir_fd=parent_fd,
+                )
+                temporary_name = candidate
+                break
+            except FileExistsError:
+                continue
+
+        if temporary_fd is None or temporary_name is None:
+            raise FileExistsError(
+                f"Não foi possível criar arquivo temporário para: "
+                f"{display_path}"
+            )
+
+        try:
+            with os.fdopen(
+                temporary_fd,
+                "w",
+                encoding="utf-8",
+            ) as handle:
+                temporary_fd = None
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+
+            os.replace(
+                temporary_name,
+                filename,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+            )
+
+            temporary_name = None
+
+            SafeExecutor._fsync_directory(parent_fd)
+
+        finally:
+            if temporary_fd is not None:
+                os.close(temporary_fd)
+
+            if temporary_name is not None:
+                try:
+                    os.unlink(
+                        temporary_name,
+                        dir_fd=parent_fd,
+                    )
+                except FileNotFoundError:
+                    pass
 
     @staticmethod
     def _verify_regular_file_in_parent(
@@ -308,6 +380,8 @@ class SafeExecutor:
                     )
 
                 os.unlink(relative.name, dir_fd=parent_fd)
+
+                self._fsync_directory(parent_fd)
             finally:
                 os.close(parent_fd)
 
