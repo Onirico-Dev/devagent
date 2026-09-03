@@ -433,3 +433,28 @@ def test_supervisor_serializes_concurrent_reject_for_same_request(
     assert supervisor.pending[approval_id]["status"] == (
         ApprovalStatus.REJECTED.value
     )
+
+
+def test_supervisor_serializes_concurrent_requests_across_instances(
+    tmp_path,
+):
+    path = tmp_path / "approvals.json"
+    supervisors = [
+        Supervisor(path),
+        Supervisor(path),
+    ]
+
+    def create_approval(index):
+        supervisor = supervisors[index % 2]
+        return supervisor.request_approval({"index": index})
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        approval_ids = list(
+            executor.map(create_approval, range(32))
+        )
+
+    assert len(approval_ids) == 32
+    assert len(set(approval_ids)) == 32
+
+    reloaded = Supervisor(path)
+    assert len(reloaded.pending) == 32
