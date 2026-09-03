@@ -86,6 +86,15 @@ class PersistentStore:
 
             os.replace(temporary, self.path)
 
+            directory_fd = os.open(
+                str(self.path.parent),
+                os.O_RDONLY,
+            )
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+
         finally:
             try:
                 if temporary.exists():

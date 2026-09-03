@@ -381,3 +381,51 @@ def test_persistent_store_serializes_concurrent_updates_across_instances(
     reloaded = PersistentStore(path)
 
     assert reloaded.load() == {"count": 32}
+
+def test_persistent_store_fsyncs_parent_directory_after_replace(
+    tmp_path,
+    monkeypatch,
+):
+    import os
+
+    path = tmp_path / "state.json"
+    store = PersistentStore(path)
+
+    fsync_calls = []
+    original_open = os.open
+    original_fsync = os.fsync
+    original_close = os.close
+
+    def tracking_open(*args, **kwargs):
+        fd = original_open(*args, **kwargs)
+        fsync_calls.append(("open", args[0], fd))
+        return fd
+
+    def tracking_fsync(fd):
+        fsync_calls.append(("fsync", fd))
+        return original_fsync(fd)
+
+    def tracking_close(fd):
+        fsync_calls.append(("close", fd))
+        return original_close(fd)
+
+    monkeypatch.setattr(os, "open", tracking_open)
+    monkeypatch.setattr(os, "fsync", tracking_fsync)
+    monkeypatch.setattr(os, "close", tracking_close)
+
+    store.save({"value": 1})
+
+    directory_fsyncs = [
+        call
+        for call in fsync_calls
+        if call[0] == "fsync"
+        and any(
+            item[0] == "open"
+            and item[2] == call[1]
+            and item[1] == str(tmp_path)
+            for item in fsync_calls
+        )
+    ]
+
+    assert directory_fsyncs
+
