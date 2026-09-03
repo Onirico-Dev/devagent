@@ -729,3 +729,38 @@ def test_project_scanner_ignores_symlink(tmp_path):
     assert "normal.py" in paths
     assert "external" not in paths
     assert str(Path("external") / "secret.py") not in paths
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, [], "invalid", 123],
+)
+def test_diagnostic_engine_rejects_non_dict_result(value):
+    engine = DiagnosticEngine()
+
+    with pytest.raises(
+        ValueError,
+        match="Resultado de testes deve ser um dicionário.",
+    ):
+        engine.diagnose(value)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["stdout", "stderr"],
+)
+def test_diagnostic_engine_rejects_non_string_output(field):
+    engine = DiagnosticEngine()
+
+    result = {
+        "success": False,
+        "stdout": "",
+        "stderr": "",
+    }
+    result[field] = 123
+
+    with pytest.raises(
+        ValueError,
+        match=rf"{field} do resultado de testes deve ser uma string.",
+    ):
+        engine.diagnose(result)

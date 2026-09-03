@@ -3,11 +3,24 @@ from pathlib import Path
 
 
 class DiagnosticEngine:
-
     def diagnose(self, test_result):
+        if not isinstance(test_result, dict):
+            raise ValueError(
+                "Resultado de testes deve ser um dicionário."
+            )
 
         stdout = test_result.get("stdout", "")
         stderr = test_result.get("stderr", "")
+
+        if not isinstance(stdout, str):
+            raise ValueError(
+                "stdout do resultado de testes deve ser uma string."
+            )
+
+        if not isinstance(stderr, str):
+            raise ValueError(
+                "stderr do resultado de testes deve ser uma string."
+            )
 
         output = "\n".join(
             part
@@ -40,13 +53,11 @@ class DiagnosticEngine:
         }
 
     def _extract_error_type(self, output):
-
         patterns = [
             r"\b([A-Za-z_][A-Za-z0-9_]*(?:Error|Exception))\b",
         ]
 
         for pattern in patterns:
-
             match = re.search(
                 pattern,
                 output,
@@ -58,14 +69,12 @@ class DiagnosticEngine:
         return "UnknownError"
 
     def _extract_file(self, output):
-
         patterns = [
             r'File "([^"]+)", line \d+',
             r"([^:\s]+\.py):\d+",
         ]
 
         for pattern in patterns:
-
             match = re.search(
                 pattern,
                 output,
@@ -79,14 +88,12 @@ class DiagnosticEngine:
         return None
 
     def _extract_line(self, output):
-
         patterns = [
             r'File "[^"]+", line (\d+)',
             r"\.py:(\d+)",
         ]
 
         for pattern in patterns:
-
             match = re.search(
                 pattern,
                 output,
@@ -100,7 +107,6 @@ class DiagnosticEngine:
         return None
 
     def _extract_message(self, output):
-
         lines = [
             line.strip()
             for line in output.splitlines()
@@ -108,13 +114,10 @@ class DiagnosticEngine:
         ]
 
         for line in reversed(lines):
-
             if "Error:" in line:
-
                 return line
 
             if "Exception:" in line:
-
                 return line
 
         if lines:
