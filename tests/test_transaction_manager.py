@@ -1028,3 +1028,30 @@ def test_transaction_manifest_lists_recoverable_transactions(tmp_path):
         "tx-one",
         "tx-two",
     }
+
+
+def test_recover_incomplete_transactions_is_idempotent(tmp_path, monkeypatch):
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Transaction, TransactionStatus
+
+    manager = TransactionManager(root=tmp_path)
+    transaction = Transaction(transaction_id="tx-idempotent")
+    manager.begin(transaction)
+
+    calls = []
+    original = manager.rollback
+
+    def track_rollback(item):
+        calls.append(item.transaction_id)
+        return original(item)
+
+    monkeypatch.setattr(manager, "rollback", track_rollback)
+
+    first = manager.recover_incomplete_transactions()
+    second = manager.recover_incomplete_transactions()
+
+    assert len(first) == 1
+    assert first[0].status == TransactionStatus.ROLLED_BACK
+    assert second == []
+    assert calls == ["tx-idempotent"]
+    assert manager.load_manifest("tx-idempotent").status == TransactionStatus.ROLLED_BACK
