@@ -506,3 +506,54 @@ def test_session_add_plan_preserves_state_on_serialization_failure(
         "instructions": [],
         "plans": [{"original": True}],
     }
+
+
+def test_memory_save_preserves_previous_state_on_serialization_failure(
+    tmp_path,
+):
+    path = tmp_path / "memory.json"
+    memory = Memory(path)
+
+    memory._save(
+        [
+            {
+                "event": "original",
+                "data": {"ok": True},
+            }
+        ]
+    )
+
+    with pytest.raises(TypeError):
+        memory._save(
+            [
+                {
+                    "event": "updated",
+                    "data": {"invalid": object()},
+                }
+            ]
+        )
+
+    assert Memory(path).all() == [
+        {
+            "event": "original",
+            "data": {"ok": True},
+        }
+    ]
+
+
+def test_memory_add_preserves_previous_state_on_serialization_failure(
+    tmp_path,
+):
+    path = tmp_path / "memory.json"
+    memory = Memory(path)
+
+    memory.add("original", {"ok": True})
+
+    with pytest.raises(TypeError):
+        memory.add("invalid", object())
+
+    entries = Memory(path).all()
+
+    assert len(entries) == 1
+    assert entries[0]["event"] == "original"
+    assert entries[0]["data"] == {"ok": True}
