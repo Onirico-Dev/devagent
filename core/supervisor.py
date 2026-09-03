@@ -97,17 +97,27 @@ class Supervisor:
         approval_id = str(next_id)
 
         snapshot = copy.deepcopy(plan)
-
         now = self._now()
 
-        self.pending[approval_id] = {
+        request = {
             "status": ApprovalStatus.PENDING.value,
             "plan": snapshot,
             "created_at": now,
             "updated_at": now,
         }
 
-        self._save()
+        previous_pending = self.pending
+        updated_pending = {
+            **previous_pending,
+            approval_id: request,
+        }
+
+        try:
+            self.pending = updated_pending
+            self._save()
+        except Exception:
+            self.pending = previous_pending
+            raise
 
         return approval_id
 
@@ -147,15 +157,26 @@ class Supervisor:
                 "Solicitação não está pendente."
             )
 
-        request["status"] = (
-            ApprovalStatus.APPROVED.value
-        )
+        updated_request = {
+            **request,
+            "status": ApprovalStatus.APPROVED.value,
+            "updated_at": self._now(),
+        }
 
-        request["updated_at"] = self._now()
+        previous_pending = self.pending
+        updated_pending = {
+            **previous_pending,
+            approval_id: updated_request,
+        }
 
-        self._save()
+        try:
+            self.pending = updated_pending
+            self._save()
+        except Exception:
+            self.pending = previous_pending
+            raise
 
-        return copy.deepcopy(request)
+        return copy.deepcopy(updated_request)
 
     def reject(self, approval_id):
         request = self.pending.get(
@@ -174,15 +195,26 @@ class Supervisor:
                 "Solicitação não está pendente."
             )
 
-        request["status"] = (
-            ApprovalStatus.REJECTED.value
-        )
+        updated_request = {
+            **request,
+            "status": ApprovalStatus.REJECTED.value,
+            "updated_at": self._now(),
+        }
 
-        request["updated_at"] = self._now()
+        previous_pending = self.pending
+        updated_pending = {
+            **previous_pending,
+            approval_id: updated_request,
+        }
 
-        self._save()
+        try:
+            self.pending = updated_pending
+            self._save()
+        except Exception:
+            self.pending = previous_pending
+            raise
 
-        return copy.deepcopy(request)
+        return copy.deepcopy(updated_request)
 
     def get(self, approval_id):
         request = self.pending.get(

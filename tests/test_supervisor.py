@@ -1,3 +1,4 @@
+import copy
 import json
 
 import pytest
@@ -295,3 +296,66 @@ def test_supervisor_list_pending_filters_non_pending(tmp_path):
 
     assert pending_id in pending
     assert approved_id not in pending
+
+def test_supervisor_request_approval_preserves_in_memory_state_on_save_failure(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "approvals.json"
+    supervisor = Supervisor(path)
+
+    def failing_save():
+        raise OSError("simulated save failure")
+
+    monkeypatch.setattr(supervisor, "_save", failing_save)
+
+    with pytest.raises(OSError, match="simulated save failure"):
+        supervisor.request_approval({"name": "new"})
+
+    assert supervisor.pending == {}
+    assert Supervisor(path).pending == {}
+
+
+def test_supervisor_approve_preserves_in_memory_state_on_save_failure(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "approvals.json"
+    supervisor = Supervisor(path)
+
+    approval_id = supervisor.request_approval({"name": "approval"})
+    original = copy.deepcopy(supervisor.pending[approval_id])
+
+    def failing_save():
+        raise OSError("simulated save failure")
+
+    monkeypatch.setattr(supervisor, "_save", failing_save)
+
+    with pytest.raises(OSError, match="simulated save failure"):
+        supervisor.approve(approval_id)
+
+    assert supervisor.pending[approval_id] == original
+    assert Supervisor(path).pending[approval_id] == original
+
+
+def test_supervisor_reject_preserves_in_memory_state_on_save_failure(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "approvals.json"
+    supervisor = Supervisor(path)
+
+    approval_id = supervisor.request_approval({"name": "approval"})
+    original = copy.deepcopy(supervisor.pending[approval_id])
+
+    def failing_save():
+        raise OSError("simulated save failure")
+
+    monkeypatch.setattr(supervisor, "_save", failing_save)
+
+    with pytest.raises(OSError, match="simulated save failure"):
+        supervisor.reject(approval_id)
+
+    assert supervisor.pending[approval_id] == original
+    assert Supervisor(path).pending[approval_id] == original
+
