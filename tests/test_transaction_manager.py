@@ -2,6 +2,153 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 
+
+
+def test_transaction_manager_copy_file_fsyncs_destination_and_parent(
+    tmp_path,
+    monkeypatch,
+):
+    from core.executor.transaction_manager import TransactionManager
+
+    source = tmp_path / "source.py"
+    destination = tmp_path / "destination.py"
+    source.write_text("BACKUP\n", encoding="utf-8")
+
+    manager = TransactionManager(root=str(tmp_path))
+
+    calls = []
+
+    original_fsync = __import__("os").fsync
+
+    def tracking_fsync(fd):
+        calls.append(fd)
+        return original_fsync(fd)
+
+    monkeypatch.setattr(
+        "core.executor.transaction_manager.os.fsync",
+        tracking_fsync,
+    )
+
+    manager._copy_file_no_follow(
+        tmp_path,
+        Path("source.py"),
+        tmp_path,
+        Path("destination.py"),
+    )
+
+    assert destination.read_text(encoding="utf-8") == "BACKUP\n"
+    assert len(calls) >= 2
+
+
+def test_transaction_manager_copy_overwrite_is_atomic_on_fsync_failure(
+    tmp_path,
+    monkeypatch,
+):
+    from core.executor.transaction_manager import TransactionManager
+
+    source = tmp_path / "source.py"
+    destination = tmp_path / "destination.py"
+
+    source.write_text("NEW\n", encoding="utf-8")
+    destination.write_text("OLD\n", encoding="utf-8")
+
+    manager = TransactionManager(root=str(tmp_path))
+
+    original_fsync = __import__("os").fsync
+    fsync_calls = {"count": 0}
+
+    def failing_fsync(fd):
+        fsync_calls["count"] += 1
+        if fsync_calls["count"] == 1:
+            raise OSError("simulated destination fsync failure")
+        return original_fsync(fd)
+
+    monkeypatch.setattr(
+        "core.executor.transaction_manager.os.fsync",
+        failing_fsync,
+    )
+
+    try:
+        manager._copy_file_no_follow(
+            tmp_path,
+            Path("source.py"),
+            tmp_path,
+            Path("destination.py"),
+            overwrite=True,
+        )
+    except OSError as error:
+        assert "simulated destination fsync failure" in str(error)
+    else:
+        raise AssertionError(
+            "A falha de fsync deveria abortar a restauração."
+        )
+
+    assert destination.read_text(encoding="utf-8") == "OLD\n"
+
+
+def test_transaction_manager_copy_overwrite_fsyncs_parent_after_replace(
+    tmp_path,
+    monkeypatch,
+):
+    from core.executor.transaction_manager import TransactionManager
+
+    source = tmp_path / "source.py"
+    destination = tmp_path / "destination.py"
+
+    source.write_text("NEW\n", encoding="utf-8")
+    destination.write_text("OLD\n", encoding="utf-8")
+
+    manager = TransactionManager(root=str(tmp_path))
+
+    fsync_calls = []
+
+    original_fsync = __import__("os").fsync
+
+    def tracking_fsync(fd):
+        fsync_calls.append(fd)
+        return original_fsync(fd)
+
+    monkeypatch.setattr(
+        "core.executor.transaction_manager.os.fsync",
+        tracking_fsync,
+    )
+
+    manager._copy_file_no_follow(
+        tmp_path,
+        Path("source.py"),
+        tmp_path,
+        Path("destination.py"),
+        overwrite=True,
+    )
+
+    assert destination.read_text(encoding="utf-8") == "NEW\n"
+    assert len(fsync_calls) >= 2
+
+
+def test_transaction_manager_copy_preserves_source_mode(
+    tmp_path,
+):
+    import os
+    import stat
+
+    from core.executor.transaction_manager import TransactionManager
+
+    source = tmp_path / "source.py"
+    destination = tmp_path / "destination.py"
+
+    source.write_text("DATA\n", encoding="utf-8")
+    os.chmod(source, 0o640)
+
+    manager = TransactionManager(root=str(tmp_path))
+
+    manager._copy_file_no_follow(
+        tmp_path,
+        Path("source.py"),
+        tmp_path,
+        Path("destination.py"),
+    )
+
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o640
 import pytest
 
 from core.executor.transaction_manager import TransactionManager
