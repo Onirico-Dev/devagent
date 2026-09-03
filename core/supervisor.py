@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -74,6 +75,7 @@ class Supervisor:
         except (
             OSError,
             json.JSONDecodeError,
+            UnicodeDecodeError,
         ):
             self.pending = {}
 
@@ -100,6 +102,7 @@ class Supervisor:
                         indent=2,
                     )
                     handle.flush()
+                    os.fsync(handle.fileno())
 
                 temporary.replace(
                     self.storage_path
