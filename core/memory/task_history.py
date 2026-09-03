@@ -1,4 +1,3 @@
-import json
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -49,22 +48,7 @@ class TaskHistory:
         ).isoformat()
 
     def _load(self):
-        if not self.storage_path.exists():
-            self.tasks = {}
-            return
-
-        try:
-            data = json.loads(
-                self.storage_path.read_text(
-                    encoding="utf-8"
-                )
-            )
-        except (
-            OSError,
-            json.JSONDecodeError,
-        ):
-            self.tasks = {}
-            return
+        data = self.store.load(default={})
 
         if not isinstance(data, dict):
             self.tasks = {}
@@ -132,9 +116,6 @@ class TaskHistory:
             valid_tasks[str(key)] = task
 
         self.tasks = valid_tasks
-
-    def _save(self):
-        self.store.save(self.tasks)
 
     def create(
         self,
