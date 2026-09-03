@@ -108,12 +108,22 @@ class Supervisor:
                     self.storage_path
                 )
 
+                directory_fd = os.open(
+                    str(self.storage_path.parent),
+                    os.O_RDONLY,
+                )
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+
             finally:
                 try:
                     if temporary.exists():
                         temporary.unlink()
                 except OSError:
                     pass
+
 
     def request_approval(self, plan):
         if not isinstance(plan, dict):

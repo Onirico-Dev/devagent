@@ -458,3 +458,73 @@ def test_supervisor_serializes_concurrent_requests_across_instances(
 
     reloaded = Supervisor(path)
     assert len(reloaded.pending) == 32
+
+def test_supervisor_save_fsyncs_storage_directory(
+    tmp_path,
+    monkeypatch,
+):
+    import os
+
+    from core.supervisor import Supervisor
+
+    storage = tmp_path / "approvals.json"
+    supervisor = Supervisor(storage_path=str(storage))
+
+    fsync_calls = []
+    original_fsync = os.fsync
+
+    def tracking_fsync(fd):
+        fsync_calls.append(fd)
+        return original_fsync(fd)
+
+    monkeypatch.setattr(
+        "core.supervisor.os.fsync",
+        tracking_fsync,
+    )
+
+    supervisor.pending = {
+        "approval-1": {
+            "status": "pending",
+        }
+    }
+    supervisor._save()
+
+    assert storage.exists()
+    assert len(fsync_calls) >= 2
+
+
+def test_supervisor_save_propagates_directory_fsync_failure(
+    tmp_path,
+    monkeypatch,
+):
+    from core.supervisor import Supervisor
+
+    storage = tmp_path / "approvals.json"
+    supervisor = Supervisor(storage_path=str(storage))
+
+    supervisor.pending = {
+        "approval-1": {
+            "status": "pending",
+        }
+    }
+
+    calls = {"count": 0}
+
+    def failing_fsync(fd):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            raise OSError("simulated directory fsync failure")
+
+    monkeypatch.setattr(
+        "core.supervisor.os.fsync",
+        failing_fsync,
+    )
+
+    try:
+        supervisor._save()
+    except OSError as error:
+        assert "simulated directory fsync failure" in str(error)
+    else:
+        raise AssertionError(
+            "A falha no fsync do diretório deveria ser propagada."
+        )
