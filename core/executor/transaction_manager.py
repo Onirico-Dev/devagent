@@ -2,11 +2,15 @@ from pathlib import Path
 import errno
 import os
 import stat
+import json
 import shutil
+import tempfile
 import uuid
 
 from core.schemas.models import (
+    Change,
     ChangeType,
+    Transaction,
     TransactionStatus,
 )
 
@@ -43,8 +47,141 @@ class TransactionManager:
 
         return target
 
+    def _manifest_path(self, transaction_id):
+        if not isinstance(transaction_id, str) or not transaction_id.strip():
+            raise ValueError("transaction_id inválido")
+        if transaction_id in (".", "..") or "/" in transaction_id or "\\" in transaction_id:
+            raise ValueError("transaction_id inválido")
+        return (
+            self.backup_dir / f"{transaction_id}.json"
+        ).resolve()
+
+    @staticmethod
+    def _serialize_change(change):
+        return {
+            "change_type": change.change_type.value,
+            "path": change.path,
+            "content": change.content,
+            "reason": change.reason,
+        }
+
+    @staticmethod
+    def _deserialize_change(data):
+        if not isinstance(data, dict):
+            raise ValueError("Change inválido no manifesto.")
+        return Change(
+            change_type=ChangeType(data["change_type"]),
+            path=data["path"],
+            content=data.get("content"),
+            reason=data.get("reason", ""),
+        )
+
+    def persist_manifest(self, transaction):
+        manifest = self._manifest_path(transaction.transaction_id)
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+
+        status = getattr(transaction, "status", None)
+        if status is None:
+            status = TransactionStatus.PENDING
+
+        data = {
+            "transaction_id": transaction.transaction_id,
+            "status": status.value,
+            "changes": [
+                self._serialize_change(change)
+                for change in getattr(transaction, "changes", [])
+            ],
+            "metadata": dict(getattr(transaction, "metadata", {})),
+            "repair_state": dict(getattr(transaction, "repair_state", {})),
+        }
+
+        fd, temporary_name = tempfile.mkstemp(
+            prefix=".transaction.",
+            suffix=".tmp",
+            dir=str(manifest.parent),
+        )
+        temporary = Path(temporary_name)
+
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(data, handle, ensure_ascii=False, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
+
+            os.replace(temporary, manifest)
+
+            parent_fd = os.open(
+                str(manifest.parent),
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            )
+            try:
+                os.fsync(parent_fd)
+            finally:
+                os.close(parent_fd)
+        finally:
+            try:
+                if temporary.exists():
+                    temporary.unlink()
+            except OSError:
+                pass
+
+    def load_manifest(self, transaction_id):
+        manifest = self._manifest_path(transaction_id)
+
+        try:
+            raw = manifest.read_text(encoding="utf-8")
+            data = json.loads(raw)
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as error:
+            raise ValueError(
+                "Manifesto de transação inválido."
+            ) from error
+
+        if data.get("transaction_id") != transaction_id:
+            raise ValueError(
+                "transaction_id inconsistente no manifesto."
+            )
+
+        return Transaction(
+            transaction_id=transaction_id,
+            status=TransactionStatus(
+                data.get("status", TransactionStatus.PENDING.value)
+            ),
+            changes=[
+                self._deserialize_change(change)
+                for change in data.get("changes", [])
+            ],
+            metadata=dict(data.get("metadata", {})),
+            repair_state=dict(data.get("repair_state", {})),
+        )
+
+    def list_recoverable_transactions(self):
+        transactions = []
+
+        if not self.backup_dir.exists():
+            return transactions
+
+        for manifest in self.backup_dir.glob("*.json"):
+            if manifest.is_symlink() or not manifest.is_file():
+                continue
+
+            transaction_id = manifest.name[:-5]
+            if not transaction_id:
+                continue
+
+            try:
+                transactions.append(
+                    self.load_manifest(transaction_id)
+                )
+            except ValueError:
+                continue
+
+        return transactions
+
     def begin(self, transaction):
-        transaction.transaction_id = str(uuid.uuid4())
+        if not getattr(transaction, "transaction_id", None) or transaction.transaction_id == "unused":
+            transaction.transaction_id = str(uuid.uuid4())
+
+        transaction.status = TransactionStatus.EXECUTING
 
         backup_relative = self.backup_dir.relative_to(self.root)
         backup_parent_relative = backup_relative.parent
@@ -64,6 +201,11 @@ class TransactionManager:
                     )
                 except FileExistsError:
                     pass
+                except OSError as error:
+                    if error.errno in (errno.ELOOP, errno.ENOTDIR):
+                        raise ValueError(
+                            "Diretório de backup inválido."
+                        ) from error
 
                 backup_parent_fd = os.open(
                     backup_name,
@@ -89,10 +231,35 @@ class TransactionManager:
                         transaction.transaction_id,
                         dir_fd=backup_parent_fd,
                     )
-                except FileExistsError as error:
-                    raise ValueError(
-                        "Diretório de backup já existe ou não é seguro."
-                    ) from error
+                except FileExistsError:
+                    if transaction.transaction_id == "unused":
+                        raise ValueError(
+                            "Diretório de backup já existe ou não é seguro."
+                        )
+
+                    transaction.transaction_id = str(uuid.uuid4())
+
+                    try:
+                        os.mkdir(
+                            transaction.transaction_id,
+                            dir_fd=backup_parent_fd,
+                        )
+                    except OSError as error:
+                        if error.errno in (
+                            errno.ELOOP,
+                            errno.ENOTDIR,
+                            errno.EEXIST,
+                        ):
+                            raise ValueError(
+                                "Diretório de backup já existe ou não é seguro."
+                            ) from error
+                        raise
+                except OSError as error:
+                    if error.errno in (errno.ELOOP, errno.ENOTDIR):
+                        raise ValueError(
+                            "Diretório de backup já existe ou não é seguro."
+                        ) from error
+                    raise
 
                 transaction_fd = os.open(
                     transaction.transaction_id,
@@ -117,11 +284,12 @@ class TransactionManager:
         backup = self.backup_dir / transaction.transaction_id
         transaction.metadata["backup"] = str(backup)
         transaction.metadata["created"] = []
+        self.persist_manifest(transaction)
         return transaction
 
     @classmethod
     def _open_directory_chain(
-    cls,
+        cls,
         root: Path,
         parts: tuple[str, ...],
         *,
@@ -492,6 +660,7 @@ class TransactionManager:
             backup_dir,
             relative,
         )
+        self.persist_manifest(transaction)
 
     def register_created(
         self,
@@ -536,6 +705,7 @@ class TransactionManager:
                 "st_dev": file_stat.st_dev,
                 "st_ino": file_stat.st_ino,
             }
+        self.persist_manifest(transaction)
 
     def rollback(self, transaction):
         expected_backup = (

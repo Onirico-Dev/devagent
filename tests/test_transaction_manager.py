@@ -949,3 +949,82 @@ def test_begin_rejects_preexisting_backup_symlink(
     assert outside.exists()
     assert outside.is_dir()
     assert malicious_backup.is_symlink()
+
+
+def test_transaction_manifest_persists_and_restores_transaction(tmp_path):
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Change, ChangeType, Transaction
+
+    manager = TransactionManager(root=tmp_path)
+    transaction = Transaction(
+        transaction_id="tx-manifest",
+        changes=[
+            Change(
+                change_type=ChangeType.MODIFY,
+                path="example.txt",
+                content="updated",
+                reason="test",
+            )
+        ],
+    )
+
+    manager.begin(transaction)
+    manager.backup_file(transaction, "example.txt")
+
+    restored = manager.load_manifest(transaction.transaction_id)
+
+    assert restored.transaction_id == transaction.transaction_id
+    assert restored.status == transaction.status
+    assert len(restored.changes) == 1
+    assert restored.changes[0].change_type == ChangeType.MODIFY
+    assert restored.changes[0].path == "example.txt"
+    assert restored.metadata["backup"] == transaction.metadata["backup"]
+
+
+def test_transaction_manifest_restores_created_identity(tmp_path):
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Change, ChangeType, Transaction
+
+    target = tmp_path / "created.txt"
+    target.write_text("preexisting", encoding="utf-8")
+
+    manager = TransactionManager(root=tmp_path)
+    transaction = Transaction(
+        transaction_id="tx-created",
+        changes=[
+            Change(
+                change_type=ChangeType.CREATE,
+                path="created.txt",
+                content="new",
+            )
+        ],
+    )
+
+    manager.begin(transaction)
+    manager.register_created(transaction, "created.txt")
+
+    restored = manager.load_manifest(transaction.transaction_id)
+
+    assert restored.metadata["created"] == ["created.txt"]
+    assert "created.txt" in restored.metadata["created_identity"]
+    assert restored.metadata["created_identity"]["created.txt"]["st_ino"] > 0
+
+
+def test_transaction_manifest_lists_recoverable_transactions(tmp_path):
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Transaction
+
+    manager = TransactionManager(root=tmp_path)
+
+    first = Transaction(transaction_id="tx-one")
+    second = Transaction(transaction_id="tx-two")
+
+    manager.begin(first)
+    manager.begin(second)
+
+    recovered = manager.list_recoverable_transactions()
+
+    assert {item.transaction_id for item in recovered} == {
+        "tx-one",
+        "tx-two",
+    }
