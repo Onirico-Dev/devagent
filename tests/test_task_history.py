@@ -410,3 +410,108 @@ def test_task_history_update_preserves_in_memory_state_on_persistence_failure(
     assert history.get("task-1") == original_snapshot
     assert TaskHistory(path).get("task-1") == original_snapshot
 
+
+
+def test_task_history_serializes_concurrent_creates_across_instances(
+    tmp_path,
+):
+    from concurrent.futures import ThreadPoolExecutor
+
+    path = tmp_path / "tasks.json"
+
+    histories = [
+        TaskHistory(path),
+        TaskHistory(path),
+    ]
+
+    def create_task(index):
+        history = histories[index % 2]
+
+        return history.create(
+            approval_id=f"approval-{index}",
+            instruction=f"instruction-{index}",
+            plan={"index": index},
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        tasks = list(
+            executor.map(create_task, range(32))
+        )
+
+    assert len(tasks) == 32
+
+    reloaded = TaskHistory(path)
+
+    assert len(reloaded.tasks) == 32
+    assert {
+        task["approval_id"]
+        for task in reloaded.tasks.values()
+    } == {
+        f"approval-{index}"
+        for index in range(32)
+    }
+
+    assert all(
+        task["transaction_id"] is None
+        for task in reloaded.tasks.values()
+    )
+
+def test_task_history_serializes_concurrent_updates_across_instances(
+    tmp_path,
+):
+    from concurrent.futures import ThreadPoolExecutor
+
+    path = tmp_path / "tasks.json"
+
+    histories = [
+        TaskHistory(path),
+        TaskHistory(path),
+    ]
+
+    for index in range(32):
+        histories[0].create(
+            approval_id=f"approval-{index}",
+            instruction=f"instruction-{index}",
+            plan={"index": index},
+        )
+
+    def update_task(index):
+        history = histories[index % 2]
+
+        return history.update(
+            f"approval-{index}",
+            transaction_id=f"transaction-{index}",
+            extra={"worker": index},
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        updated = list(
+            executor.map(update_task, range(32))
+        )
+
+    assert len(updated) == 32
+
+    reloaded = TaskHistory(path)
+
+    assert len(reloaded.tasks) == 32
+
+    assert {
+        task["approval_id"]
+        for task in reloaded.tasks.values()
+    } == {
+        f"approval-{index}"
+        for index in range(32)
+    }
+
+    assert {
+        task["transaction_id"]
+        for task in reloaded.tasks.values()
+    } == {
+        f"transaction-{index}"
+        for index in range(32)
+    }
+
+    assert {
+        task["worker"]
+        for task in reloaded.tasks.values()
+    } == set(range(32))

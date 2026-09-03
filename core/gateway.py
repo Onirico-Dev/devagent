@@ -1,4 +1,5 @@
 from pathlib import Path
+from threading import RLock
 from core.security import SecurityPolicy
 from core.supervisor import ApprovalStatus, Supervisor
 from core.executor.safe_executor import SafeExecutor
@@ -22,6 +23,22 @@ class CommitTransactionError(RuntimeError):
 
 
 class DevAgentGateway:
+    _approval_locks = {}
+    _approval_locks_guard = RLock()
+
+    @classmethod
+    def _approval_lock_for(cls, approval_id):
+        key = str(approval_id)
+
+        with cls._approval_locks_guard:
+            lock = cls._approval_locks.get(key)
+
+            if lock is None:
+                lock = RLock()
+                cls._approval_locks[key] = lock
+
+            return lock
+
     MAX_REPAIR_ATTEMPTS = 2
 
     def __init__(self, agent, root="."):
@@ -855,6 +872,19 @@ class DevAgentGateway:
     # ------------------------------------------------------------------
 
     def approve(self, approval_id):
+        # A primeira preparação permanece fora do lock para permitir
+        # concorrência entre chamadas e preservar a semântica de
+        # prepare_approval().
+        self.supervisor.prepare_approval(approval_id)
+
+        with self._approval_lock_for(approval_id):
+            # Revalida a solicitação dentro da seção crítica.
+            # A primeira thread poderá consumi-la; qualquer thread
+            # concorrente que chegar depois receberá o erro correto:
+            # "Solicitação não está pendente."
+            return self._approve_locked(approval_id)
+
+    def _approve_locked(self, approval_id):
         request = self.supervisor.prepare_approval(
             approval_id
         )
