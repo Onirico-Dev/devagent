@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from enum import Enum
+from threading import RLock
 
 
 class ApprovalStatus(str, Enum):
@@ -26,6 +27,7 @@ class Supervisor:
         )
 
         self.pending = {}
+        self._lock = RLock()
         self._load()
 
     def _now(self):
@@ -57,22 +59,23 @@ class Supervisor:
             self.pending = {}
 
     def _save(self):
-        temporary = self.storage_path.with_suffix(
-            ".tmp"
-        )
+        with self._lock:
+            temporary = self.storage_path.with_suffix(
+                ".tmp"
+            )
 
-        temporary.write_text(
-            json.dumps(
-                self.pending,
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
+            temporary.write_text(
+                json.dumps(
+                    self.pending,
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
 
-        temporary.replace(
-            self.storage_path
-        )
+            temporary.replace(
+                self.storage_path
+            )
 
     def request_approval(self, plan):
         if not isinstance(plan, dict):

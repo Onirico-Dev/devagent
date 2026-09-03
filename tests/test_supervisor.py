@@ -1,4 +1,5 @@
 import copy
+from concurrent.futures import ThreadPoolExecutor
 import json
 
 import pytest
@@ -359,3 +360,76 @@ def test_supervisor_reject_preserves_in_memory_state_on_save_failure(
     assert supervisor.pending[approval_id] == original
     assert Supervisor(path).pending[approval_id] == original
 
+
+
+def test_supervisor_serializes_concurrent_request_approval(tmp_path):
+    path = tmp_path / "approvals.json"
+    supervisor = Supervisor(path)
+
+    def create_approval(index):
+        return supervisor.request_approval({"index": index})
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        approval_ids = list(
+            executor.map(create_approval, range(32))
+        )
+
+    assert len(approval_ids) == 32
+    assert len(set(approval_ids)) == 32
+    assert sorted(map(int, approval_ids)) == list(range(1, 33))
+
+    reloaded = Supervisor(path)
+    assert len(reloaded.pending) == 32
+    assert set(reloaded.pending) == set(approval_ids)
+
+
+def test_supervisor_serializes_concurrent_approve_for_same_request(
+    tmp_path,
+):
+    path = tmp_path / "approvals.json"
+    supervisor = Supervisor(path)
+
+    approval_id = supervisor.request_approval({"name": "approval"})
+
+    def approve():
+        try:
+            return supervisor.approve(approval_id)
+        except ValueError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(lambda _: approve(), range(16)))
+
+    successful = [result for result in results if result is not None]
+
+    assert len(successful) == 1
+    assert successful[0]["status"] == ApprovalStatus.APPROVED.value
+    assert supervisor.pending[approval_id]["status"] == (
+        ApprovalStatus.APPROVED.value
+    )
+
+
+def test_supervisor_serializes_concurrent_reject_for_same_request(
+    tmp_path,
+):
+    path = tmp_path / "approvals.json"
+    supervisor = Supervisor(path)
+
+    approval_id = supervisor.request_approval({"name": "approval"})
+
+    def reject():
+        try:
+            return supervisor.reject(approval_id)
+        except ValueError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(lambda _: reject(), range(16)))
+
+    successful = [result for result in results if result is not None]
+
+    assert len(successful) == 1
+    assert successful[0]["status"] == ApprovalStatus.REJECTED.value
+    assert supervisor.pending[approval_id]["status"] == (
+        ApprovalStatus.REJECTED.value
+    )
