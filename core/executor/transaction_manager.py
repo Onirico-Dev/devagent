@@ -27,6 +27,10 @@ class TransactionManager:
                 f"Diretório de backup fora do projeto: {backup_dir}"
             ) from error
 
+    @staticmethod
+    def _fsync_directory(parent_fd: int) -> None:
+        os.fsync(parent_fd)
+
     def _safe_path(self, relative_path):
         target = (self.root / relative_path).resolve()
 
@@ -475,6 +479,7 @@ class TransactionManager:
                             filename,
                             dir_fd=parent_fd,
                         )
+                        self._fsync_directory(parent_fd)
                         continue
 
                     # Para transações novas, verificamos a identidade
@@ -495,6 +500,7 @@ class TransactionManager:
                         filename,
                         dir_fd=parent_fd,
                     )
+                    self._fsync_directory(parent_fd)
 
                 finally:
                     os.close(file_fd)
