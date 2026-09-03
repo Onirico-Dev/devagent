@@ -872,5 +872,6 @@ class TransactionManager:
         transaction.status = (
             TransactionStatus.ROLLED_BACK
         )
+        self.persist_manifest(transaction)
 
         return transaction

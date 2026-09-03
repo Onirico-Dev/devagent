@@ -733,6 +733,7 @@ class DevAgentGateway:
 
         transaction.status = TransactionStatus.COMMITTED
         repair_state.mark_committed()
+        self.transactions.persist_manifest(transaction)
         repair_state.persist(transaction)
 
         attempts = repair_state.attempts
@@ -802,6 +803,7 @@ class DevAgentGateway:
                 error or ""
             )
 
+        self.transactions.persist_manifest(transaction)
         repair_state.persist(transaction)
 
         attempts = repair_state.attempts
