@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from core.memory.task_history import TaskHistory
+from core.memory.task_history import TaskHistory, TaskHistoryStatus
 
 
 def test_task_history_starts_empty_when_file_is_missing(tmp_path):
@@ -312,3 +312,37 @@ def test_task_history_load_preserves_valid_task_records(tmp_path):
         "created_at": "2026-09-02T00:00:00+00:00",
         "updated_at": "2026-09-02T00:00:00+00:00",
     }
+
+
+def test_task_history_update_rejects_lifecycle_fields_in_extra(tmp_path):
+    path = tmp_path / "tasks.json"
+    history = TaskHistory(path)
+
+    created = history.create(
+        "approval-1",
+        "test instruction",
+        {"changes": []},
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Campos estruturais não podem ser sobrescritos",
+    ):
+        history.update(
+            created["task_id"],
+            extra={"status": TaskHistoryStatus.FAILED.value},
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="Campos estruturais não podem ser sobrescritos",
+    ):
+        history.update(
+            created["task_id"],
+            extra={"transaction_id": "forged-transaction"},
+        )
+
+    task = history.get(created["task_id"])
+
+    assert task["status"] == TaskHistoryStatus.PENDING.value
+    assert task["transaction_id"] is None

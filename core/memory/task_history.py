@@ -191,6 +191,8 @@ class TaskHistory:
                 "approval_id",
                 "instruction",
                 "plan",
+                "status",
+                "transaction_id",
                 "created_at",
                 "updated_at",
             }
