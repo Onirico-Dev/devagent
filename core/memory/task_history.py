@@ -1,7 +1,7 @@
 import json
 from datetime import datetime, timezone
-from pathlib import Path
 from enum import Enum
+from pathlib import Path
 
 from core.memory.persistent_store import PersistentStore
 
@@ -18,23 +18,28 @@ class TaskHistoryStatus(str, Enum):
 
 
 class TaskHistory:
+    REQUIRED_FIELDS = {
+        "task_id",
+        "approval_id",
+        "instruction",
+        "plan",
+        "status",
+        "transaction_id",
+        "created_at",
+        "updated_at",
+    }
+
     def __init__(
         self,
         storage_path="transactions/tasks.json",
     ):
-        self.storage_path = Path(
-            storage_path
-        ).resolve()
-
+        self.storage_path = Path(storage_path).resolve()
         self.storage_path.parent.mkdir(
             parents=True,
             exist_ok=True,
         )
 
-        self.store = PersistentStore(
-            self.storage_path
-        )
-
+        self.store = PersistentStore(self.storage_path)
         self.tasks = {}
         self._load()
 
@@ -54,18 +59,79 @@ class TaskHistory:
                     encoding="utf-8"
                 )
             )
-
-            self.tasks = (
-                data
-                if isinstance(data, dict)
-                else {}
-            )
-
         except (
             OSError,
             json.JSONDecodeError,
         ):
             self.tasks = {}
+            return
+
+        if not isinstance(data, dict):
+            self.tasks = {}
+            return
+
+        valid_statuses = {
+            status.value
+            for status in TaskHistoryStatus
+        }
+        legacy_completed_status = "completed"
+        accepted_statuses = valid_statuses | {legacy_completed_status}
+
+        valid_tasks = {}
+
+        for key, task in data.items():
+            if not isinstance(task, dict):
+                continue
+
+            status = task.get("status")
+
+            if status not in accepted_statuses:
+                continue
+
+            task_id = task.get("task_id")
+            updated_at = task.get("updated_at")
+
+            if not isinstance(task_id, str) or not task_id.strip():
+                continue
+
+            if not isinstance(updated_at, str) or not updated_at.strip():
+                continue
+
+            # Registros antigos concluídos podem possuir somente
+            # task_id, status e updated_at.
+            if status == legacy_completed_status:
+                valid_tasks[str(key)] = task
+                continue
+
+            if not self.REQUIRED_FIELDS.issubset(task):
+                continue
+
+            if str(task_id) != str(key):
+                continue
+
+            if not isinstance(task.get("approval_id"), str):
+                continue
+
+            if not isinstance(task.get("instruction"), str):
+                continue
+
+            if not isinstance(task.get("plan"), dict):
+                continue
+
+            if task.get("transaction_id") is not None and not isinstance(
+                task.get("transaction_id"),
+                str,
+            ):
+                continue
+
+            created_at = task.get("created_at")
+
+            if not isinstance(created_at, str) or not created_at.strip():
+                continue
+
+            valid_tasks[str(key)] = task
+
+        self.tasks = valid_tasks
 
     def _save(self):
         self.store.save(self.tasks)
@@ -76,10 +142,7 @@ class TaskHistory:
         instruction,
         plan,
     ):
-        task_id = str(
-            approval_id
-        )
-
+        task_id = str(approval_id)
         now = self._now()
 
         self.tasks[task_id] = {
@@ -104,9 +167,7 @@ class TaskHistory:
         transaction_id=None,
         extra=None,
     ):
-        task = self.tasks.get(
-            str(task_id)
-        )
+        task = self.tasks.get(str(task_id))
 
         if task is None:
             raise KeyError(
@@ -117,11 +178,28 @@ class TaskHistory:
             task["status"] = status
 
         if transaction_id is not None:
-            task["transaction_id"] = (
-                transaction_id
-            )
+            task["transaction_id"] = transaction_id
 
-        if extra:
+        if extra is not None:
+            if not isinstance(extra, dict):
+                raise TypeError(
+                    "extra deve ser um dicionário"
+                )
+
+            structural_fields = {
+                "task_id",
+                "approval_id",
+                "instruction",
+                "plan",
+                "created_at",
+                "updated_at",
+            }
+
+            if structural_fields.intersection(extra):
+                raise ValueError(
+                    "Campos estruturais não podem ser sobrescritos"
+                )
+
             task.update(extra)
 
         task["updated_at"] = self._now()
@@ -131,14 +209,10 @@ class TaskHistory:
         return task
 
     def get(self, task_id):
-        return self.tasks.get(
-            str(task_id)
-        )
+        return self.tasks.get(str(task_id))
 
     def list_all(self):
-        return list(
-            self.tasks.values()
-        )
+        return list(self.tasks.values())
 
     def list_pending(self):
         return [

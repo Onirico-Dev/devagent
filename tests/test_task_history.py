@@ -209,3 +209,106 @@ def test_task_history_latest_uses_empty_string_for_missing_updated_at(tmp_path):
     }
 
     assert history.latest()["task_id"] == "1"
+
+
+@pytest.mark.parametrize("extra", [None, [], "invalid", 123])
+def test_task_history_update_rejects_non_dict_extra(tmp_path, extra):
+    history = TaskHistory(tmp_path / "tasks.json")
+    history.create("1", "teste", {})
+
+    if extra is None:
+        result = history.update("1", extra=extra)
+        assert result["task_id"] == "1"
+        return
+
+    with pytest.raises(TypeError, match="extra deve ser um dicionário"):
+        history.update("1", extra=extra)
+
+
+def test_task_history_update_rejects_structural_extra_fields(tmp_path):
+    history = TaskHistory(tmp_path / "tasks.json")
+    history.create("1", "teste", {})
+
+    with pytest.raises(
+        ValueError,
+        match="Campos estruturais não podem ser sobrescritos",
+    ):
+        history.update(
+            "1",
+            extra={"task_id": "attacker"},
+        )
+
+
+def test_task_history_load_discards_non_dict_task_records(tmp_path):
+    path = tmp_path / "tasks.json"
+    path.write_text(
+        '{"1": "invalid", "2": 123, "3": null}',
+        encoding="utf-8",
+    )
+
+    history = TaskHistory(path)
+
+    assert history.tasks == {}
+
+
+def test_task_history_load_discards_task_with_missing_required_fields(tmp_path):
+    path = tmp_path / "tasks.json"
+    path.write_text(
+        '{"1": {"task_id": "1", "status": "pending"}}',
+        encoding="utf-8",
+    )
+
+    history = TaskHistory(path)
+
+    assert history.tasks == {}
+
+
+def test_task_history_load_discards_task_with_invalid_status(tmp_path):
+    path = tmp_path / "tasks.json"
+    path.write_text(
+        '{"1": {'
+        '"task_id": "1", '
+        '"approval_id": "1", '
+        '"instruction": "teste", '
+        '"plan": {}, '
+        '"status": "invalid", '
+        '"transaction_id": null, '
+        '"created_at": "2026-09-02T00:00:00+00:00", '
+        '"updated_at": "2026-09-02T00:00:00+00:00"'
+        '}}',
+        encoding="utf-8",
+    )
+
+    history = TaskHistory(path)
+
+    assert history.tasks == {}
+
+
+def test_task_history_load_preserves_valid_task_records(tmp_path):
+    path = tmp_path / "tasks.json"
+    path.write_text(
+        '{"1": {'
+        '"task_id": "1", '
+        '"approval_id": "1", '
+        '"instruction": "teste", '
+        '"plan": {}, '
+        '"status": "pending", '
+        '"transaction_id": null, '
+        '"created_at": "2026-09-02T00:00:00+00:00", '
+        '"updated_at": "2026-09-02T00:00:00+00:00"'
+        '}}',
+        encoding="utf-8",
+    )
+
+    history = TaskHistory(path)
+
+    assert history.get("1") == {
+        "task_id": "1",
+        "approval_id": "1",
+        "instruction": "teste",
+        "plan": {},
+        "status": "pending",
+        "transaction_id": None,
+        "created_at": "2026-09-02T00:00:00+00:00",
+        "updated_at": "2026-09-02T00:00:00+00:00",
+    }
