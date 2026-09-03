@@ -6,6 +6,22 @@ from threading import RLock
 
 
 class PersistentStore:
+    _locks = {}
+    _locks_guard = RLock()
+
+    @classmethod
+    def _lock_for_path(cls, path):
+        key = str(path)
+
+        with cls._locks_guard:
+            lock = cls._locks.get(key)
+
+            if lock is None:
+                lock = RLock()
+                cls._locks[key] = lock
+
+            return lock
+
     """
     Armazenamento JSON simples, atômico e protegido contra concorrência
     dentro do processo.
@@ -20,7 +36,7 @@ class PersistentStore:
     def __init__(self, path):
         self.path = Path(path).resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = RLock()
+        self._lock = self._lock_for_path(self.path)
 
     def load(self, default=None):
         with self._lock:

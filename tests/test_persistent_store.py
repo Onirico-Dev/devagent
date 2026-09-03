@@ -349,3 +349,35 @@ def test_persistent_store_update_preserves_state_when_updater_fails(tmp_path):
 
     assert store.load() == {"count": 1}
     assert list(tmp_path.glob(".state.json.*.tmp")) == []
+
+
+def test_persistent_store_serializes_concurrent_updates_across_instances(
+    tmp_path,
+):
+    from concurrent.futures import ThreadPoolExecutor
+
+    path = tmp_path / "state.json"
+
+    stores = [
+        PersistentStore(path),
+        PersistentStore(path),
+    ]
+
+    stores[0].save({"count": 0})
+
+    def increment(index):
+        store = stores[index % 2]
+
+        def updater(state):
+            return {
+                "count": state["count"] + 1,
+            }
+
+        store.update(updater)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(increment, range(32)))
+
+    reloaded = PersistentStore(path)
+
+    assert reloaded.load() == {"count": 32}
