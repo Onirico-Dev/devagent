@@ -764,3 +764,21 @@ def test_diagnostic_engine_rejects_non_string_output(field):
         match=rf"{field} do resultado de testes deve ser uma string.",
     ):
         engine.diagnose(result)
+
+
+def test_planner_rejects_non_command():
+    with pytest.raises(TypeError, match="Planner exige uma instância de Command"):
+        Planner().create_plan({})
+
+
+@pytest.mark.parametrize("action", ["create", "modify", "delete"])
+def test_planner_rejects_empty_target(action):
+    command = Command(
+        raw="operação",
+        action=action,
+        target="",
+        instruction="conteúdo",
+    )
+
+    with pytest.raises(ValueError, match="Operação exige um alvo textual"):
+        Planner().create_plan(command)

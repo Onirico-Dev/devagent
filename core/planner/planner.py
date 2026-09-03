@@ -3,8 +3,19 @@ from core.schemas.models import Change, ChangeType, Plan
 
 
 class Planner:
-
     def create_plan(self, command: Command) -> Plan:
+        if not isinstance(command, Command):
+            raise TypeError(
+                "Planner exige uma instância de Command"
+            )
+
+        if command.action in {"create", "modify", "delete"}:
+            target = command.target
+
+            if not isinstance(target, str) or not target.strip():
+                raise ValueError(
+                    "Operação exige um alvo textual"
+                )
 
         if command.action == "create":
             content = command.instruction
