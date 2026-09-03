@@ -29,16 +29,22 @@ class Session:
         data = self.store.load(default=self._default_state())
 
         if not isinstance(data, dict):
-            return self._default_state()
+            raise ValueError(
+                "A sessão persistida deve ser um objeto JSON."
+            )
 
         instructions = data.get("instructions", [])
         plans = data.get("plans", [])
 
         if not isinstance(instructions, list):
-            instructions = []
+            raise ValueError(
+                "instructions persistido deve ser uma lista."
+            )
 
         if not isinstance(plans, list):
-            plans = []
+            raise ValueError(
+                "plans persistido deve ser uma lista."
+            )
 
         return {
             **data,
@@ -67,12 +73,16 @@ class Session:
     def add_instruction(self, instruction):
         def append_instruction(data):
             if not isinstance(data, dict):
-                data = self._default_state()
+                raise ValueError(
+                    "A sessão persistida deve ser um objeto JSON."
+                )
 
             instructions = data.get("instructions", [])
 
             if not isinstance(instructions, list):
-                instructions = []
+                raise ValueError(
+                    "instructions persistido deve ser uma lista."
+                )
 
             data = {
                 **data,
@@ -92,12 +102,16 @@ class Session:
     def add_plan(self, plan):
         def append_plan(data):
             if not isinstance(data, dict):
-                data = self._default_state()
+                raise ValueError(
+                    "A sessão persistida deve ser um objeto JSON."
+                )
 
             plans = data.get("plans", [])
 
             if not isinstance(plans, list):
-                plans = []
+                raise ValueError(
+                    "plans persistido deve ser uma lista."
+                )
 
             data = {
                 **data,

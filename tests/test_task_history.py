@@ -68,16 +68,15 @@ def test_task_history_loads_non_dict_as_empty(tmp_path):
     assert history.list_all() == []
 
 
-def test_task_history_recovers_from_corrupt_json(tmp_path):
+def test_task_history_rejects_corrupt_json(tmp_path):
     path = tmp_path / "tasks.json"
     path.write_text("{invalid", encoding="utf-8")
 
-    history = TaskHistory(path)
+    with pytest.raises(ValueError, match="Estado persistido inválido"):
+        TaskHistory(path)
 
-    assert history.list_all() == []
 
-
-def test_task_history_recovers_from_os_error(tmp_path, monkeypatch):
+def test_task_history_propagates_os_error(tmp_path, monkeypatch):
     path = tmp_path / "tasks.json"
     path.write_text("{}", encoding="utf-8")
 
@@ -90,9 +89,8 @@ def test_task_history_recovers_from_os_error(tmp_path, monkeypatch):
 
     monkeypatch.setattr(type(path), "read_text", failing_read_text)
 
-    history = TaskHistory(path)
-
-    assert history.list_all() == []
+    with pytest.raises(OSError, match="read failure"):
+        TaskHistory(path)
 
 
 def test_task_history_update_changes_status(tmp_path):

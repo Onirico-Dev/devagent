@@ -46,17 +46,14 @@ class PersistentStore:
         if not self.path.exists():
             return default
 
-        try:
-            raw = self.path.read_text(encoding="utf-8")
-            data = json.loads(raw)
-        except (
-            OSError,
-            json.JSONDecodeError,
-            UnicodeDecodeError,
-        ):
-            return default
+        raw = self.path.read_text(encoding="utf-8")
 
-        return data
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as error:
+            raise ValueError(
+                f"Estado persistido inválido: {self.path}"
+            ) from error
 
     def save(self, data):
         with self._lock:

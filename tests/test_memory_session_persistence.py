@@ -110,16 +110,14 @@ def test_session_preserves_extra_fields(tmp_path):
     assert loaded.context()["metadata"] == {"version": 1}
 
 
-def test_session_recovers_invalid_root_json(tmp_path):
+def test_session_rejects_invalid_root_json(tmp_path):
     path = tmp_path / "session.json"
     path.write_text("not json", encoding="utf-8")
 
     session = Session(path)
 
-    assert session.context() == {
-        "instructions": [],
-        "plans": [],
-    }
+    with pytest.raises(ValueError, match="Estado persistido inválido"):
+        session.context()
 
 
 def test_memory_file_is_valid_json_after_save(tmp_path):
@@ -209,35 +207,30 @@ def test_session_concurrent_writes_remain_valid(tmp_path):
     assert len(data["instructions"]) == 20
 
 
-def test_session_load_normalizes_non_dict_root(tmp_path):
+def test_session_load_rejects_non_dict_root(tmp_path):
     path = tmp_path / "session.json"
     session = Session(path)
-
     session.store.load = lambda default=None: ["invalid"]
 
-    assert session.load() == {
-        "instructions": [],
-        "plans": [],
-    }
-
-
-def test_session_load_normalizes_invalid_collections(tmp_path):
+    with pytest.raises(
+        ValueError,
+        match="A sessão persistida deve ser um objeto JSON",
+    ):
+        session.load()
+def test_session_load_rejects_invalid_collections(tmp_path):
     path = tmp_path / "session.json"
     session = Session(path)
-
     session.store.load = lambda default=None: {
         "instructions": "invalid",
         "plans": {"invalid": True},
         "metadata": {"version": 2},
     }
 
-    assert session.load() == {
-        "instructions": [],
-        "plans": [],
-        "metadata": {"version": 2},
-    }
-
-
+    with pytest.raises(
+        ValueError,
+        match="instructions persistido deve ser uma lista",
+    ):
+        session.load()
 def test_session_save_rejects_non_dict(tmp_path):
     session = Session(tmp_path / "session.json")
 
@@ -274,62 +267,56 @@ def test_session_save_rejects_invalid_plans(tmp_path):
         assert str(exc) == "plans deve ser uma lista."
 
 
-def test_session_add_instruction_recovers_invalid_root(tmp_path):
+def test_session_add_instruction_rejects_invalid_root(tmp_path):
     session = Session(tmp_path / "session.json")
-
     session.store.update = lambda updater, default=None: updater([])
 
-    session.add_instruction("teste")
-
-    assert True
-
-
-def test_session_add_instruction_recovers_invalid_collection(tmp_path):
+    with pytest.raises(
+        ValueError,
+        match="A sessão persistida deve ser um objeto JSON",
+    ):
+        session.add_instruction("teste")
+def test_session_add_instruction_rejects_invalid_collection(tmp_path):
     session = Session(tmp_path / "session.json")
 
-    captured = {}
-
     def fake_update(updater, default=None):
-        captured["result"] = updater({
+        updater({
             "instructions": "invalid",
             "plans": [],
         })
 
     session.store.update = fake_update
 
-    session.add_instruction("teste")
-
-    assert captured["result"]["instructions"] == ["teste"]
-
-
-def test_session_add_plan_recovers_invalid_root(tmp_path):
+    with pytest.raises(
+        ValueError,
+        match="instructions persistido deve ser uma lista",
+    ):
+        session.add_instruction("teste")
+def test_session_add_plan_rejects_invalid_root(tmp_path):
     session = Session(tmp_path / "session.json")
-
     session.store.update = lambda updater, default=None: updater([])
 
-    session.add_plan({"changes": []})
-
-    assert True
-
-
-def test_session_add_plan_recovers_invalid_collection(tmp_path):
+    with pytest.raises(
+        ValueError,
+        match="A sessão persistida deve ser um objeto JSON",
+    ):
+        session.add_plan({"changes": []})
+def test_session_add_plan_rejects_invalid_collection(tmp_path):
     session = Session(tmp_path / "session.json")
 
-    captured = {}
-
     def fake_update(updater, default=None):
-        captured["result"] = updater({
+        updater({
             "instructions": [],
             "plans": "invalid",
         })
 
     session.store.update = fake_update
 
-    session.add_plan({"changes": []})
-
-    assert captured["result"]["plans"] == [{"changes": []}]
-
-
+    with pytest.raises(
+        ValueError,
+        match="plans persistido deve ser uma lista",
+    ):
+        session.add_plan({"changes": []})
 def test_memory_load_recovers_non_list_data(tmp_path, monkeypatch):
     memory = Memory(tmp_path / "memory.json")
 

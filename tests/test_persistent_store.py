@@ -49,18 +49,18 @@ def test_persistent_store_replaces_previous_state_atomically(tmp_path):
     assert store.load() == {"version": 2}
 
 
-def test_persistent_store_corrupt_json_returns_default(tmp_path):
+def test_persistent_store_corrupt_json_raises_value_error(tmp_path):
     path = tmp_path / "state.json"
     path.write_text("{invalid", encoding="utf-8")
 
     store = PersistentStore(path)
 
-    assert store.load(default={"recovered": True}) == {
-        "recovered": True
-    }
+    with pytest.raises(ValueError, match="Estado persistido inválido"):
+        store.load(default={"recovered": True})
 
-def test_persistent_store_load_returns_default_on_os_error(tmp_path, monkeypatch):
+def test_persistent_store_load_propagates_os_error(tmp_path, monkeypatch):
     path = tmp_path / "state.json"
+    path.write_text("{}", encoding="utf-8")
     store = PersistentStore(path)
 
     def fake_read_text(*args, **kwargs):
@@ -68,11 +68,13 @@ def test_persistent_store_load_returns_default_on_os_error(tmp_path, monkeypatch
 
     monkeypatch.setattr(Path, "read_text", fake_read_text)
 
-    assert store.load(default={"fallback": True}) == {"fallback": True}
+    with pytest.raises(OSError, match="read failure"):
+        store.load(default={"fallback": True})
 
 
-def test_persistent_store_load_returns_default_on_unicode_error(tmp_path, monkeypatch):
+def test_persistent_store_load_propagates_unicode_error(tmp_path, monkeypatch):
     path = tmp_path / "state.json"
+    path.write_text("{}", encoding="utf-8")
     store = PersistentStore(path)
 
     def fake_read_text(*args, **kwargs):
@@ -80,7 +82,8 @@ def test_persistent_store_load_returns_default_on_unicode_error(tmp_path, monkey
 
     monkeypatch.setattr(Path, "read_text", fake_read_text)
 
-    assert store.load(default={"fallback": True}) == {"fallback": True}
+    with pytest.raises(UnicodeDecodeError):
+        store.load(default={"fallback": True})
 
 
 def test_persistent_store_update_rejects_non_callable(tmp_path):
