@@ -55,6 +55,7 @@ class DevAgentGateway:
         self.security = SecurityPolicy(root)
         self.executor = SafeExecutor(root)
         self.transactions = TransactionManager(root)
+        self.transactions.recover_incomplete_transactions()
         self.tests = TestRunner(root)
         self.git = GitManager(root)
 

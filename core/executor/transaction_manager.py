@@ -177,6 +177,27 @@ class TransactionManager:
 
         return transactions
 
+    def recover_incomplete_transactions(self):
+        recovered = []
+
+        for transaction in self.list_recoverable_transactions():
+            if transaction.status not in (
+                TransactionStatus.EXECUTING,
+                TransactionStatus.TESTING,
+            ):
+                continue
+
+            try:
+                self.rollback(transaction)
+            except Exception as error:
+                transaction.status = TransactionStatus.FAILED
+                transaction.metadata["recovery_error"] = str(error)
+                self.persist_manifest(transaction)
+
+            recovered.append(transaction)
+
+        return recovered
+
     def begin(self, transaction):
         if not getattr(transaction, "transaction_id", None) or transaction.transaction_id == "unused":
             transaction.transaction_id = str(uuid.uuid4())

@@ -4685,3 +4685,29 @@ def test_gateway_commit_rejects_invalid_git_result(
     assert "Resultado de commit Git inválido." in str(
         exc_info.value
     )
+
+def test_gateway_recovers_incomplete_transactions_on_startup(tmp_path, monkeypatch):
+    import core.gateway as gateway_module
+
+    calls = []
+    original = gateway_module.TransactionManager.recover_incomplete_transactions
+
+    def track_recovery(self):
+        calls.append(self.root)
+        return []
+
+    monkeypatch.setattr(
+        gateway_module.TransactionManager,
+        "recover_incomplete_transactions",
+        track_recovery,
+    )
+
+    gateway_module.DevAgentGateway(None, root=str(tmp_path))
+
+    assert calls == [tmp_path.resolve()]
+    assert gateway_module.TransactionManager.recover_incomplete_transactions is track_recovery
+    monkeypatch.setattr(
+        gateway_module.TransactionManager,
+        "recover_incomplete_transactions",
+        original,
+    )
