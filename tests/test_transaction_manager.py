@@ -1,4 +1,7 @@
 import os
+from core.schemas.models import Change, ChangeType
+import stat
+import errno
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1055,3 +1058,1534 @@ def test_recover_incomplete_transactions_is_idempotent(tmp_path, monkeypatch):
     assert second == []
     assert calls == ["tx-idempotent"]
     assert manager.load_manifest("tx-idempotent").status == TransactionStatus.ROLLED_BACK
+def test_load_manifest_rejects_corrupt_json(tmp_path):
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Transaction
+
+    manager = TransactionManager(root=tmp_path)
+    transaction = Transaction(transaction_id="tx-corrupt")
+    manager.begin(transaction)
+
+    manifest = manager._manifest_path(transaction.transaction_id)
+    manifest.write_text("{invalid-json", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Manifesto de transação inválido"):
+        manager.load_manifest(transaction.transaction_id)
+
+
+def test_load_manifest_rejects_inconsistent_transaction_id(tmp_path):
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Transaction
+
+    manager = TransactionManager(root=tmp_path)
+    transaction = Transaction(transaction_id="tx-inconsistent")
+    manager.begin(transaction)
+
+    manifest = manager._manifest_path(transaction.transaction_id)
+    manifest.write_text(
+        '{"transaction_id": "tx-other", "status": "EXECUTING", "changes": [], "metadata": {}, "repair_state": {}}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="transaction_id inconsistente"):
+        manager.load_manifest(transaction.transaction_id)
+
+
+def test_load_manifest_rejects_read_oserror(tmp_path, monkeypatch):
+    from pathlib import Path
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Transaction
+
+    manager = TransactionManager(root=tmp_path)
+    transaction = Transaction(transaction_id="tx-read-error")
+    manager.begin(transaction)
+
+    manifest = manager._manifest_path(transaction.transaction_id)
+    original_read_text = Path.read_text
+
+    def fail_read_text(self, *args, **kwargs):
+        if self == manifest:
+            raise OSError("simulated read failure")
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_read_text)
+
+    with pytest.raises(ValueError, match="Manifesto de transação inválido"):
+        manager.load_manifest(transaction.transaction_id)
+
+
+def test_recover_incomplete_transactions_marks_failed_when_rollback_fails(
+    tmp_path,
+    monkeypatch,
+):
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Transaction, TransactionStatus
+
+    manager = TransactionManager(root=tmp_path)
+    transaction = Transaction(transaction_id="tx-recovery-failure")
+    manager.begin(transaction)
+
+    def fail_rollback(item):
+        raise RuntimeError("simulated rollback failure")
+
+    monkeypatch.setattr(manager, "rollback", fail_rollback)
+
+    recovered = manager.recover_incomplete_transactions()
+
+    assert len(recovered) == 1
+    assert recovered[0].transaction_id == "tx-recovery-failure"
+    assert recovered[0].status == TransactionStatus.FAILED
+    assert recovered[0].metadata["recovery_error"] == "simulated rollback failure"
+
+    persisted = manager.load_manifest("tx-recovery-failure")
+    assert persisted.status == TransactionStatus.FAILED
+    assert persisted.metadata["recovery_error"] == "simulated rollback failure"
+
+def test_manifest_path_rejects_invalid_transaction_id(tmp_path):
+    from core.executor.transaction_manager import TransactionManager
+
+    manager = TransactionManager(root=tmp_path)
+
+    invalid_ids = [
+        None,
+        "",
+        "   ",
+        ".",
+        "..",
+        "tx/escape",
+        "tx\\escape",
+    ]
+
+    for transaction_id in invalid_ids:
+        with pytest.raises(ValueError, match="transaction_id inválido"):
+            manager._manifest_path(transaction_id)
+
+
+def test_deserialize_change_rejects_non_dict():
+    from core.executor.transaction_manager import TransactionManager
+
+    with pytest.raises(ValueError, match="Change inválido no manifesto"):
+        TransactionManager._deserialize_change(["invalid"])
+
+
+def test_list_recoverable_transactions_returns_empty_without_backup_dir(
+    tmp_path,
+):
+    from core.executor.transaction_manager import TransactionManager
+
+    manager = TransactionManager(root=tmp_path)
+
+    assert manager.list_recoverable_transactions() == []
+
+
+def test_list_recoverable_transactions_ignores_manifest_symlink(tmp_path):
+    from core.executor.transaction_manager import TransactionManager
+
+    manager = TransactionManager(root=tmp_path)
+    manager.backup_dir.mkdir(parents=True, exist_ok=True)
+
+    target = tmp_path / "outside.json"
+    target.write_text(
+        '{"transaction_id": "tx-symlink", "status": "EXECUTING", "changes": [], "metadata": {}, "repair_state": {}}',
+        encoding="utf-8",
+    )
+
+    symlink = manager.backup_dir / "tx-symlink.json"
+
+    try:
+        symlink.symlink_to(target)
+    except OSError:
+        pytest.skip("symlink não suportado neste ambiente")
+
+    assert manager.list_recoverable_transactions() == []
+
+
+def test_open_parent_directory_rejects_absolute_path(tmp_path):
+    from pathlib import Path
+    from core.executor.transaction_manager import TransactionManager
+
+    with pytest.raises(
+        ValueError,
+        match="Caminho absoluto não permitido",
+    ):
+        TransactionManager._open_parent_directory(
+            Path(tmp_path),
+            Path("/absolute/file.txt"),
+        )
+
+
+def test_open_parent_directory_rejects_invalid_path(tmp_path):
+    from pathlib import Path
+    from core.executor.transaction_manager import TransactionManager
+
+    for relative_path in (
+        Path(""),
+        Path("."),
+        Path(".."),
+        Path("dir/.."),
+    ):
+        with pytest.raises(ValueError, match="Caminho inválido"):
+            TransactionManager._open_parent_directory(
+                Path(tmp_path),
+                relative_path,
+            )
+
+def test_persist_manifest_uses_pending_when_transaction_has_no_status(
+    tmp_path,
+):
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import TransactionStatus
+
+    manager = TransactionManager(root=tmp_path)
+
+    transaction = SimpleNamespace(
+        transaction_id="tx-no-status",
+        changes=[],
+        metadata={},
+        repair_state={},
+    )
+
+    manager.persist_manifest(transaction)
+
+    restored = manager.load_manifest("tx-no-status")
+
+    assert restored.status == TransactionStatus.PENDING
+
+
+def test_list_recoverable_transactions_ignores_empty_manifest_name(
+    tmp_path,
+):
+    manager = TransactionManager(root=tmp_path)
+
+    manager.backup_dir.mkdir(parents=True, exist_ok=True)
+    (manager.backup_dir / ".json").write_text(
+        "{}",
+        encoding="utf-8",
+    )
+
+    assert manager.list_recoverable_transactions() == []
+
+
+def test_list_recoverable_transactions_ignores_invalid_manifest(
+    tmp_path,
+):
+    manager = TransactionManager(root=tmp_path)
+
+    manager.backup_dir.mkdir(parents=True, exist_ok=True)
+    (manager.backup_dir / "invalid.json").write_text(
+        "{invalid",
+        encoding="utf-8",
+    )
+
+    assert manager.list_recoverable_transactions() == []
+
+
+def test_begin_rejects_invalid_backup_directory_on_mkdir(
+    tmp_path,
+    monkeypatch,
+):
+    from core.executor.transaction_manager import TransactionManager
+
+    manager = TransactionManager(root=tmp_path)
+    transaction = make_transaction(tmp_path)
+
+    original_mkdir = os.mkdir
+
+    def fail_backup_mkdir(path, *args, **kwargs):
+        if path == "transactions":
+            error = OSError()
+            error.errno = errno.ELOOP
+            raise error
+        return original_mkdir(path, *args, **kwargs)
+
+    import core.executor.transaction_manager as module
+
+    monkeypatch.setattr(
+        module.os,
+        "mkdir",
+        fail_backup_mkdir,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Diretório de backup inválido",
+    ):
+        manager.begin(transaction)
+
+
+def test_begin_rejects_backup_directory_open_error(
+    tmp_path,
+    monkeypatch,
+):
+    from core.executor.transaction_manager import TransactionManager
+
+    manager = TransactionManager(root=tmp_path)
+    transaction = make_transaction(tmp_path)
+
+    manager.backup_dir.mkdir(parents=True, exist_ok=True)
+
+    original_open = os.open
+
+    def fail_backup_open(path, flags, *args, **kwargs):
+        if path == "transactions":
+            raise OSError("simulated backup open failure")
+        return original_open(path, flags, *args, **kwargs)
+
+    import core.executor.transaction_manager as module
+
+    monkeypatch.setattr(
+        module.os,
+        "open",
+        fail_backup_open,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Diretório de backup inválido",
+    ):
+        manager.begin(transaction)
+
+
+def test_begin_rejects_backup_parent_that_is_not_directory(
+    tmp_path,
+    monkeypatch,
+):
+    from core.executor.transaction_manager import TransactionManager
+
+    manager = TransactionManager(root=tmp_path)
+    transaction = make_transaction(tmp_path)
+
+    manager.backup_dir.mkdir(parents=True, exist_ok=True)
+
+    import core.executor.transaction_manager as module
+
+    monkeypatch.setattr(
+        module.os,
+        "fstat",
+        lambda fd: SimpleNamespace(st_mode=0),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Diretório de backup inválido",
+    ):
+        manager.begin(transaction)
+
+
+def test_begin_rejects_existing_transaction_directory_for_unused_id(
+    tmp_path,
+    monkeypatch,
+):
+    from core.executor.transaction_manager import TransactionManager
+
+    manager = TransactionManager(root=tmp_path)
+
+    transaction = make_transaction(tmp_path)
+
+    manager.backup_dir.mkdir(parents=True, exist_ok=True)
+
+    import core.executor.transaction_manager as module
+
+    monkeypatch.setattr(
+        module.uuid,
+        "uuid4",
+        lambda: "unused",
+    )
+
+    original_mkdir = module.os.mkdir
+
+    def fail_transaction_mkdir(path, *args, **kwargs):
+        if path == "unused":
+            raise FileExistsError("simulated existing transaction")
+        return original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(
+        module.os,
+        "mkdir",
+        fail_transaction_mkdir,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Diretório de backup já existe ou não é seguro",
+    ):
+        manager.begin(transaction)
+
+
+def test_begin_rejects_transaction_directory_race(
+    tmp_path,
+    monkeypatch,
+):
+    from core.executor.transaction_manager import TransactionManager
+
+    manager = TransactionManager(root=tmp_path)
+    transaction = make_transaction(tmp_path)
+
+    manager.backup_dir.mkdir(parents=True, exist_ok=True)
+
+    import core.executor.transaction_manager as module
+
+    original_mkdir = module.os.mkdir
+
+    def fail_transaction_mkdir(path, *args, **kwargs):
+        if path == transaction.transaction_id:
+            error = OSError()
+            error.errno = errno.ELOOP
+            raise error
+
+        return original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(
+        module.os,
+        "mkdir",
+        fail_transaction_mkdir,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Diretório de backup já existe ou não é seguro",
+    ):
+        manager.begin(transaction)
+
+
+def test_open_directory_chain_rejects_invalid_component(
+    tmp_path,
+):
+    from core.executor.transaction_manager import TransactionManager
+
+    with pytest.raises(
+        ValueError,
+        match="Caminho inválido",
+    ):
+        TransactionManager._open_directory_chain(
+            tmp_path,
+            ("..",),
+        )
+
+
+def test_copy_file_rejects_source_symlink(monkeypatch, tmp_path):
+    from core.executor.transaction_manager import TransactionManager
+
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    source_root.mkdir()
+    destination_root.mkdir()
+
+    source = source_root / "source.txt"
+    source.write_text("content", encoding="utf-8")
+
+    original_open = os.open
+
+    def reject_source(*args, **kwargs):
+        filename = args[0] if args else None
+        if filename == "source.txt" and kwargs.get("dir_fd") is not None:
+            error = OSError()
+            error.errno = errno.ELOOP
+            raise error
+        return original_open(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "core.executor.transaction_manager.os.open",
+        reject_source,
+    )
+
+    with pytest.raises(ValueError, match="Caminho não é um arquivo regular"):
+        TransactionManager._copy_file_no_follow(
+            source_root,
+            Path("source.txt"),
+            destination_root,
+            Path("copy.txt"),
+        )
+
+
+def test_copy_file_rejects_non_regular_source(tmp_path):
+    from core.executor.transaction_manager import TransactionManager
+
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    source_root.mkdir()
+    destination_root.mkdir()
+
+    (source_root / "source.txt").mkdir()
+
+    with pytest.raises(ValueError, match="Caminho não é um arquivo regular"):
+        TransactionManager._copy_file_no_follow(
+            source_root,
+            Path("source.txt"),
+            destination_root,
+            Path("copy.txt"),
+        )
+
+
+def test_copy_file_overwrite_rejects_destination_directory(tmp_path):
+    from core.executor.transaction_manager import TransactionManager
+
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    source_root.mkdir()
+    destination_root.mkdir()
+
+    (source_root / "source.txt").write_text(
+        "content",
+        encoding="utf-8",
+    )
+    (destination_root / "copy.txt").mkdir()
+
+    with pytest.raises(ValueError, match="Caminho de destino"):
+        TransactionManager._copy_file_no_follow(
+            source_root,
+            Path("source.txt"),
+            destination_root,
+            Path("copy.txt"),
+            overwrite=True,
+        )
+
+
+def test_copy_file_overwrite_rejects_destination_symlink(tmp_path):
+    from core.executor.transaction_manager import TransactionManager
+
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    source_root.mkdir()
+    destination_root.mkdir()
+
+    (source_root / "source.txt").write_text(
+        "content",
+        encoding="utf-8",
+    )
+
+    target = tmp_path / "target.txt"
+    target.write_text("target", encoding="utf-8")
+    (destination_root / "copy.txt").symlink_to(target)
+
+    with pytest.raises(ValueError, match="Caminho de destino não é seguro"):
+        TransactionManager._copy_file_no_follow(
+            source_root,
+            Path("source.txt"),
+            destination_root,
+            Path("copy.txt"),
+            overwrite=True,
+        )
+
+
+def test_copy_file_without_overwrite_rejects_existing_destination(
+    tmp_path,
+):
+    from core.executor.transaction_manager import TransactionManager
+
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    source_root.mkdir()
+    destination_root.mkdir()
+
+    (source_root / "source.txt").write_text(
+        "content",
+        encoding="utf-8",
+    )
+    (destination_root / "copy.txt").write_text(
+        "existing",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FileExistsError):
+        TransactionManager._copy_file_no_follow(
+            source_root,
+            Path("source.txt"),
+            destination_root,
+            Path("copy.txt"),
+        )
+
+
+def test_copy_file_without_overwrite_rejects_destination_symlink(
+    tmp_path,
+):
+    from core.executor.transaction_manager import TransactionManager
+
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    source_root.mkdir()
+    destination_root.mkdir()
+
+    (source_root / "source.txt").write_text(
+        "content",
+        encoding="utf-8",
+    )
+
+    target = tmp_path / "target.txt"
+    target.write_text("target", encoding="utf-8")
+    (destination_root / "copy.txt").symlink_to(target)
+
+    with pytest.raises(FileExistsError):
+        TransactionManager._copy_file_no_follow(
+            source_root,
+            Path("source.txt"),
+            destination_root,
+            Path("copy.txt"),
+        )
+
+
+def test_copy_file_rejects_zero_byte_write(monkeypatch, tmp_path):
+    from core.executor.transaction_manager import TransactionManager
+
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    source_root.mkdir()
+    destination_root.mkdir()
+
+    (source_root / "source.txt").write_text(
+        "content",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "core.executor.transaction_manager.os.write",
+        lambda fd, data: 0,
+    )
+
+    with pytest.raises(
+        OSError,
+        match="Falha ao escrever arquivo de destino",
+    ):
+        TransactionManager._copy_file_no_follow(
+            source_root,
+            Path("source.txt"),
+            destination_root,
+            Path("copy.txt"),
+        )
+
+
+def test_copy_file_overwrite_detects_destination_removed(
+    monkeypatch,
+    tmp_path,
+):
+    from core.executor.transaction_manager import TransactionManager
+
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    source_root.mkdir()
+    destination_root.mkdir()
+
+    (source_root / "source.txt").write_text(
+        "replacement",
+        encoding="utf-8",
+    )
+    (destination_root / "copy.txt").write_text(
+        "original",
+        encoding="utf-8",
+    )
+
+    original_open = os.open
+    destination_opens = 0
+
+    def remove_destination_on_second_open(*args, **kwargs):
+        nonlocal destination_opens
+
+        filename = args[0] if args else None
+
+        if filename == "copy.txt" and kwargs.get("dir_fd") is not None:
+            destination_opens += 1
+            if destination_opens == 2:
+                raise FileNotFoundError("destination disappeared")
+
+        return original_open(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "core.executor.transaction_manager.os.open",
+        remove_destination_on_second_open,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Destino foi removido durante a restauração",
+    ):
+        TransactionManager._copy_file_no_follow(
+            source_root,
+            Path("source.txt"),
+            destination_root,
+            Path("copy.txt"),
+            overwrite=True,
+        )
+
+
+def test_copy_file_overwrite_detects_destination_symlink_race(
+    monkeypatch,
+    tmp_path,
+):
+    from core.executor.transaction_manager import TransactionManager
+
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    source_root.mkdir()
+    destination_root.mkdir()
+
+    (source_root / "source.txt").write_text(
+        "replacement",
+        encoding="utf-8",
+    )
+    (destination_root / "copy.txt").write_text(
+        "original",
+        encoding="utf-8",
+    )
+
+    original_open = os.open
+    destination_opens = 0
+
+    def symlink_race(*args, **kwargs):
+        nonlocal destination_opens
+
+        filename = args[0] if args else None
+
+        if filename == "copy.txt" and kwargs.get("dir_fd") is not None:
+            destination_opens += 1
+            if destination_opens == 2:
+                error = OSError()
+                error.errno = errno.ELOOP
+                raise error
+
+        return original_open(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "core.executor.transaction_manager.os.open",
+        symlink_race,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Destino foi alterado para um caminho inseguro",
+    ):
+        TransactionManager._copy_file_no_follow(
+            source_root,
+            Path("source.txt"),
+            destination_root,
+            Path("copy.txt"),
+            overwrite=True,
+        )
+
+
+def test_copy_file_overwrite_detects_destination_becoming_non_regular(
+    monkeypatch,
+    tmp_path,
+):
+    from core.executor.transaction_manager import TransactionManager
+
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    source_root.mkdir()
+    destination_root.mkdir()
+
+    (source_root / "source.txt").write_text(
+        "replacement",
+        encoding="utf-8",
+    )
+    (destination_root / "copy.txt").write_text(
+        "original",
+        encoding="utf-8",
+    )
+
+    original_open = os.open
+    destination_opens = 0
+
+    def directory_race(*args, **kwargs):
+        nonlocal destination_opens
+
+        filename = args[0] if args else None
+
+        if filename == "copy.txt" and kwargs.get("dir_fd") is not None:
+            destination_opens += 1
+            if destination_opens == 2:
+                return original_open(
+                    destination_root,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                )
+
+        return original_open(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "core.executor.transaction_manager.os.open",
+        directory_race,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Destino deixou de ser um arquivo regular",
+    ):
+        TransactionManager._copy_file_no_follow(
+            source_root,
+            Path("source.txt"),
+            destination_root,
+            Path("copy.txt"),
+            overwrite=True,
+        )
+
+
+def test_copy_file_overwrite_detects_destination_identity_change(
+    monkeypatch,
+    tmp_path,
+):
+    from core.executor.transaction_manager import TransactionManager
+
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    source_root.mkdir()
+    destination_root.mkdir()
+
+    (source_root / "source.txt").write_text(
+        "replacement",
+        encoding="utf-8",
+    )
+    (destination_root / "copy.txt").write_text(
+        "original",
+        encoding="utf-8",
+    )
+    alternate = destination_root / "alternate.txt"
+    alternate.write_text(
+        "alternate",
+        encoding="utf-8",
+    )
+
+    original_open = os.open
+    destination_opens = 0
+
+    def identity_race(*args, **kwargs):
+        nonlocal destination_opens
+
+        filename = args[0] if args else None
+
+        if filename == "copy.txt" and kwargs.get("dir_fd") is not None:
+            destination_opens += 1
+            if destination_opens == 2:
+                return original_open(
+                    alternate,
+                    os.O_RDONLY | os.O_NOFOLLOW,
+                )
+
+        return original_open(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "core.executor.transaction_manager.os.open",
+        identity_race,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Destino foi alterado durante a restauração",
+    ):
+        TransactionManager._copy_file_no_follow(
+            source_root,
+            Path("source.txt"),
+            destination_root,
+            Path("copy.txt"),
+            overwrite=True,
+        )
+
+
+def test_copy_file_suppresses_missing_temporary_during_cleanup(
+    monkeypatch,
+    tmp_path,
+):
+    from core.executor.transaction_manager import TransactionManager
+
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    source_root.mkdir()
+    destination_root.mkdir()
+
+    (source_root / "source.txt").write_text(
+        "replacement",
+        encoding="utf-8",
+    )
+    (destination_root / "copy.txt").write_text(
+        "original",
+        encoding="utf-8",
+    )
+
+    def fail_replace(*args, **kwargs):
+        raise RuntimeError("simulated replace failure")
+
+    original_unlink = os.unlink
+    unlink_calls = 0
+
+    def missing_temporary(*args, **kwargs):
+        nonlocal unlink_calls
+
+        filename = args[0] if args else None
+
+        if isinstance(filename, str) and ".devagent-" in filename:
+            unlink_calls += 1
+            raise FileNotFoundError("temporary already gone")
+
+        return original_unlink(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "core.executor.transaction_manager.os.replace",
+        fail_replace,
+    )
+    monkeypatch.setattr(
+        "core.executor.transaction_manager.os.unlink",
+        missing_temporary,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="simulated replace failure",
+    ):
+        TransactionManager._copy_file_no_follow(
+            source_root,
+            Path("source.txt"),
+            destination_root,
+            Path("copy.txt"),
+            overwrite=True,
+        )
+
+    assert unlink_calls == 1
+
+def test_persist_manifest_suppresses_temporary_cleanup_error(
+    monkeypatch,
+    tmp_path,
+):
+    from core.executor.transaction_manager import TransactionManager
+
+    manager = TransactionManager(tmp_path)
+    transaction = make_transaction(tmp_path)
+    transaction.transaction_id = "cleanup-error"
+
+    original_replace = os.replace
+    original_unlink = Path.unlink
+
+    def keep_temporary(*args, **kwargs):
+        # Impede que o manifesto seja efetivamente substituído,
+        # mantendo o arquivo temporário existente para o finally.
+        return None
+
+    def fail_unlink(self, *args, **kwargs):
+        raise OSError("simulated cleanup failure")
+
+    monkeypatch.setattr(
+        "core.executor.transaction_manager.os.replace",
+        keep_temporary,
+    )
+    monkeypatch.setattr(
+        Path,
+        "unlink",
+        fail_unlink,
+    )
+
+    manager.persist_manifest(transaction)
+
+    # Mantém as referências utilizadas para deixar explícito
+    # que o monkeypatch não depende delas.
+    assert original_replace is not None
+    assert original_unlink is not None
+
+
+def test_begin_reraises_unexpected_transaction_directory_mkdir_error(
+    monkeypatch,
+    tmp_path,
+):
+    from core.executor.transaction_manager import TransactionManager
+
+    manager = TransactionManager(tmp_path)
+    transaction = make_transaction(tmp_path)
+
+    original_mkdir = os.mkdir
+
+    def fail_transaction_directory(*args, **kwargs):
+        name = args[0] if args else None
+
+        if isinstance(name, str) and len(name) == 36 and name.count("-") == 4:
+            raise OSError("simulated transaction mkdir failure")
+
+        return original_mkdir(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "core.executor.transaction_manager.os.mkdir",
+        fail_transaction_directory,
+    )
+
+    with pytest.raises(OSError, match="simulated transaction mkdir failure"):
+        manager.begin(transaction)
+
+
+def test_begin_reraises_unexpected_backup_transaction_directory_error(
+    monkeypatch,
+    tmp_path,
+):
+    from core.executor.transaction_manager import TransactionManager
+    import core.executor.transaction_manager as transaction_manager_module
+
+    manager = TransactionManager(tmp_path)
+    transaction = make_transaction(tmp_path)
+
+    transaction_id = "11111111-1111-4111-8111-111111111111"
+    monkeypatch.setattr(
+        transaction_manager_module.uuid,
+        "uuid4",
+        lambda: transaction_id,
+    )
+
+    original_mkdir = os.mkdir
+    transaction_mkdir_attempts = 0
+
+    def fail_transaction_mkdir(*args, **kwargs):
+        nonlocal transaction_mkdir_attempts
+
+        name = args[0] if args else None
+
+        if name == transaction_id:
+            transaction_mkdir_attempts += 1
+
+            if transaction_mkdir_attempts == 1:
+                raise FileExistsError(
+                    "simulated existing transaction directory"
+                )
+
+            raise OSError(
+                "simulated second transaction mkdir failure"
+            )
+
+        return original_mkdir(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "core.executor.transaction_manager.os.mkdir",
+        fail_transaction_mkdir,
+    )
+
+    with pytest.raises(
+        OSError,
+        match="simulated second transaction mkdir failure",
+    ):
+        manager.begin(transaction)
+
+    assert transaction_mkdir_attempts == 2
+
+
+def test_open_directory_chain_without_create_reraises_missing_component(
+    tmp_path,
+):
+    from core.executor.transaction_manager import TransactionManager
+
+    root = tmp_path / "root"
+    root.mkdir()
+
+    with pytest.raises(FileNotFoundError):
+        TransactionManager._open_directory_chain(
+            root,
+            ("missing",),
+            create=False,
+        )
+
+
+def test_copy_file_reraises_unexpected_source_open_error(
+    monkeypatch,
+    tmp_path,
+):
+    from core.executor.transaction_manager import TransactionManager
+
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    source_root.mkdir()
+    destination_root.mkdir()
+
+    (source_root / "source.txt").write_text(
+        "content",
+        encoding="utf-8",
+    )
+
+    original_open = os.open
+
+    def fail_source_open(*args, **kwargs):
+        filename = args[0] if args else None
+
+        if filename == "source.txt":
+            error = OSError("simulated source open failure")
+            error.errno = errno.EACCES
+            raise error
+
+        return original_open(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "core.executor.transaction_manager.os.open",
+        fail_source_open,
+    )
+
+    with pytest.raises(OSError, match="simulated source open failure"):
+        TransactionManager._copy_file_no_follow(
+            source_root,
+            Path("source.txt"),
+            destination_root,
+            Path("copy.txt"),
+        )
+
+
+
+def test_begin_rejects_transaction_backup_path_that_is_not_directory(
+    monkeypatch,
+    tmp_path,
+):
+    import core.executor.transaction_manager as transaction_manager_module
+
+    manager = TransactionManager(tmp_path)
+    transaction = make_transaction(tmp_path)
+
+    transaction.transaction_id = "11111111-1111-4111-8111-111111111111"
+
+    original_fstat = os.fstat
+
+    def fake_fstat(fd):
+        result = original_fstat(fd)
+
+        if stat.S_ISDIR(result.st_mode):
+            return SimpleNamespace(
+                st_mode=stat.S_IFREG,
+                st_dev=result.st_dev,
+                st_ino=result.st_ino,
+            )
+
+        return result
+
+    monkeypatch.setattr(
+        transaction_manager_module.os,
+        "fstat",
+        fake_fstat,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Diretório de backup inválido",
+    ):
+        manager.begin(transaction)
+
+
+def test_copy_file_overwrite_treats_missing_destination_as_new(
+    tmp_path,
+):
+    manager = TransactionManager(tmp_path)
+
+    source = tmp_path / "source.txt"
+    source.write_text("content", encoding="utf-8")
+
+    destination = tmp_path / "destination.txt"
+
+    manager._copy_file_no_follow(
+        tmp_path,
+        Path("source.txt"),
+        tmp_path,
+        Path("destination.txt"),
+        overwrite=True,
+    )
+
+    assert destination.read_text(encoding="utf-8") == "content"
+
+
+def test_copy_file_overwrite_reraises_unexpected_destination_open_error(
+    monkeypatch,
+    tmp_path,
+):
+    import core.executor.transaction_manager as transaction_manager_module
+
+    manager = TransactionManager(tmp_path)
+
+    source = tmp_path / "source.txt"
+    source.write_text("content", encoding="utf-8")
+
+    destination = tmp_path / "destination.txt"
+    destination.write_text("old", encoding="utf-8")
+
+    original_open = os.open
+
+    def fail_destination_open(*args, **kwargs):
+        name = args[0] if args else None
+
+        if name == "destination.txt":
+            raise OSError(
+                errno.EACCES,
+                "simulated destination open failure",
+            )
+
+        return original_open(*args, **kwargs)
+
+    monkeypatch.setattr(
+        transaction_manager_module.os,
+        "open",
+        fail_destination_open,
+    )
+
+    with pytest.raises(
+        OSError,
+        match="simulated destination open failure",
+    ):
+        manager._copy_file_no_follow(
+            tmp_path,
+            Path("source.txt"),
+            tmp_path,
+            Path("destination.txt"),
+            overwrite=True,
+        )
+
+
+def test_copy_file_overwrite_fails_after_temporary_name_collisions(
+    monkeypatch,
+    tmp_path,
+):
+    import core.executor.transaction_manager as transaction_manager_module
+
+    manager = TransactionManager(tmp_path)
+
+    source = tmp_path / "source.txt"
+    source.write_text("content", encoding="utf-8")
+
+    destination = tmp_path / "destination.txt"
+    destination.write_text("old", encoding="utf-8")
+
+    original_open = os.open
+    attempts = 0
+
+    def collide_temporary_files(*args, **kwargs):
+        nonlocal attempts
+
+        name = args[0] if args else None
+
+        if isinstance(name, str) and ".devagent-" in name:
+            attempts += 1
+            raise FileExistsError("simulated temporary collision")
+
+        return original_open(*args, **kwargs)
+
+    monkeypatch.setattr(
+        transaction_manager_module.os,
+        "open",
+        collide_temporary_files,
+    )
+
+    with pytest.raises(
+        FileExistsError,
+        match="Não foi possível criar arquivo temporário",
+    ):
+        manager._copy_file_no_follow(
+            tmp_path,
+            Path("source.txt"),
+            tmp_path,
+            Path("destination.txt"),
+            overwrite=True,
+        )
+
+    assert attempts == 32
+
+
+def test_copy_file_without_overwrite_rejects_destination_symlink_with_eloop(
+    monkeypatch,
+    tmp_path,
+):
+    import core.executor.transaction_manager as transaction_manager_module
+
+    manager = TransactionManager(tmp_path)
+
+    source = tmp_path / "source.txt"
+    source.write_text("content", encoding="utf-8")
+
+    destination = tmp_path / "destination.txt"
+    destination_target = tmp_path / "target.txt"
+    destination_target.write_text("target", encoding="utf-8")
+    destination.symlink_to(destination_target)
+
+    original_open = os.open
+
+    def fail_with_eloop(*args, **kwargs):
+        name = args[0] if args else None
+
+        if name == "destination.txt":
+            raise OSError(
+                errno.ELOOP,
+                "simulated symlink",
+            )
+
+        return original_open(*args, **kwargs)
+
+    monkeypatch.setattr(
+        transaction_manager_module.os,
+        "open",
+        fail_with_eloop,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Caminho de destino não é seguro",
+    ):
+        manager._copy_file_no_follow(
+            tmp_path,
+            Path("source.txt"),
+            tmp_path,
+            Path("destination.txt"),
+            overwrite=False,
+        )
+
+def test_begin_rejects_transaction_backup_path_that_is_not_directory(
+    monkeypatch,
+    tmp_path,
+):
+    import core.executor.transaction_manager as transaction_manager_module
+
+    manager = TransactionManager(tmp_path)
+    transaction = make_transaction(tmp_path)
+
+    transaction.transaction_id = "11111111-1111-4111-8111-111111111111"
+
+    original_fstat = os.fstat
+    fstat_calls = 0
+
+    def fake_fstat(fd):
+        nonlocal fstat_calls
+
+        result = original_fstat(fd)
+        fstat_calls += 1
+
+        # O primeiro fstat valida o diretório transactions.
+        # O segundo valida o diretório da transação.
+        if fstat_calls == 2:
+            return SimpleNamespace(
+                st_mode=stat.S_IFREG,
+                st_dev=result.st_dev,
+                st_ino=result.st_ino,
+            )
+
+        return result
+
+    monkeypatch.setattr(
+        transaction_manager_module.os,
+        "fstat",
+        fake_fstat,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Diretório de backup inválido",
+    ):
+        manager.begin(transaction)
+
+
+def test_copy_file_overwrite_reraises_unexpected_current_destination_error(
+    monkeypatch,
+    tmp_path,
+):
+    import core.executor.transaction_manager as transaction_manager_module
+
+    manager = TransactionManager(tmp_path)
+
+    source = tmp_path / "source.txt"
+    source.write_text("content", encoding="utf-8")
+
+    destination = tmp_path / "destination.txt"
+    destination.write_text("old", encoding="utf-8")
+
+    original_open = os.open
+    destination_opens = 0
+
+    def fail_current_destination_open(*args, **kwargs):
+        nonlocal destination_opens
+
+        name = args[0] if args else None
+
+        if name == "destination.txt":
+            destination_opens += 1
+
+            # Primeira abertura: captura a identidade existente.
+            if destination_opens == 1:
+                return original_open(*args, **kwargs)
+
+            # Segunda abertura: valida o destino antes do replace.
+            raise OSError(
+                errno.EACCES,
+                "simulated current destination open failure",
+            )
+
+        return original_open(*args, **kwargs)
+
+    monkeypatch.setattr(
+        transaction_manager_module.os,
+        "open",
+        fail_current_destination_open,
+    )
+
+    with pytest.raises(
+        OSError,
+        match="simulated current destination open failure",
+    ):
+        manager._copy_file_no_follow(
+            tmp_path,
+            Path("source.txt"),
+            tmp_path,
+            Path("destination.txt"),
+            overwrite=True,
+        )
+
+
+def test_backup_file_rejects_missing_backup_metadata(
+    tmp_path,
+):
+    manager = TransactionManager(tmp_path)
+    transaction = make_transaction(tmp_path)
+
+    transaction.metadata.pop("backup")
+
+    with pytest.raises(
+        ValueError,
+        match="Diretório de backup não configurado",
+    ):
+        manager.backup_file(
+            transaction,
+            "file.txt",
+        )
+
+
+def test_backup_file_rejects_backup_path_mismatch(
+    tmp_path,
+):
+    manager = TransactionManager(tmp_path)
+    transaction = make_transaction(tmp_path)
+
+    transaction.transaction_id = "11111111-1111-4111-8111-111111111111"
+    transaction.metadata["backup"] = str(
+        tmp_path / "transactions" / "different"
+    )
+
+    source = tmp_path / "file.txt"
+    source.write_text("content", encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match="Caminho de backup inválido",
+    ):
+        manager.backup_file(
+            transaction,
+            "file.txt",
+        )
+
+
+def test_backup_file_rejects_destination_symlink(
+    monkeypatch,
+    tmp_path,
+):
+    import core.executor.transaction_manager as transaction_manager_module
+
+    manager, transaction = make_started_transaction(tmp_path)
+
+    source = tmp_path / "file.txt"
+    source.write_text("content", encoding="utf-8")
+
+    backup_dir = Path(transaction.metadata["backup"])
+    destination = backup_dir / "file.txt"
+
+    target = tmp_path / "target.txt"
+    target.write_text("target", encoding="utf-8")
+    destination.symlink_to(target)
+
+    original_resolve = transaction_manager_module.Path.resolve
+
+    def preserve_destination_symlink(self, *args, **kwargs):
+        if self == destination:
+            return self
+        return original_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(
+        transaction_manager_module.Path,
+        "resolve",
+        preserve_destination_symlink,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Caminho de backup inválido",
+    ):
+        manager.backup_file(
+            transaction,
+            "file.txt",
+        )
+
+
+def test_rollback_reraises_unexpected_created_file_open_error(
+    monkeypatch,
+    tmp_path,
+):
+    import core.executor.transaction_manager as transaction_manager_module
+
+    manager, transaction = make_started_transaction(tmp_path)
+
+    created = tmp_path / "created.txt"
+    created.write_text("created", encoding="utf-8")
+
+    manager.register_created(transaction, "created.txt")
+
+    original_open = os.open
+
+    def fail_created_open(*args, **kwargs):
+        name = args[0] if args else None
+
+        if name == "created.txt":
+            raise OSError(
+                errno.EACCES,
+                "simulated created file open failure",
+            )
+
+        return original_open(*args, **kwargs)
+
+    monkeypatch.setattr(
+        transaction_manager_module.os,
+        "open",
+        fail_created_open,
+    )
+
+    with pytest.raises(
+        OSError,
+        match="simulated created file open failure",
+    ):
+        manager.rollback(transaction)
+
+
+def test_rollback_rejects_created_path_that_is_not_regular_file(
+    tmp_path,
+):
+    manager, transaction = make_started_transaction(tmp_path)
+
+    created_dir = tmp_path / "created"
+    created_dir.mkdir()
+
+    stat_result = created_dir.stat()
+
+    transaction.metadata["created"] = ["created"]
+    transaction.metadata["created_identity"] = {
+        "created": {
+            "st_dev": stat_result.st_dev,
+            "st_ino": stat_result.st_ino,
+        }
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="Caminho criado não é um arquivo regular",
+    ):
+        manager.rollback(transaction)
+
+
+def test_rollback_rejects_created_file_identity_change(
+    tmp_path,
+):
+    manager, transaction = make_started_transaction(tmp_path)
+
+    created = tmp_path / "created.txt"
+    created.write_text("created", encoding="utf-8")
+
+    stat_result = created.stat()
+
+    transaction.metadata["created"] = ["created.txt"]
+    transaction.metadata["created_identity"] = {
+        "created.txt": {
+            "st_dev": stat_result.st_dev,
+            "st_ino": stat_result.st_ino + 1,
+        }
+    }
+
+    with pytest.raises(
+        RuntimeError,
+        match="Arquivo criado foi alterado durante a transação",
+    ):
+        manager.rollback(transaction)
