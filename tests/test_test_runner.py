@@ -402,3 +402,102 @@ def test_run_combines_stderr_from_failed_results(
     assert result["stdout"] == "pytest output"
     assert "compile failure" in result["stderr"]
     assert "pytest failure" in result["stderr"]
+
+
+def test_compile_file_rejects_path_outside_root(tmp_path):
+    root = tmp_path / "project"
+    outside = tmp_path / "outside.py"
+
+    root.mkdir()
+    outside.write_text("x = 1\n", encoding="utf-8")
+
+    runner = Runner(root)
+
+    result = runner._compile_file("../outside.py")
+
+    assert result["success"] is False
+    assert result["returncode"] == 1
+    assert "fora do projeto" in result["stderr"]
+
+
+def test_run_rejects_path_outside_root(tmp_path):
+    root = tmp_path / "project"
+    outside = tmp_path / "outside.py"
+
+    root.mkdir()
+    outside.write_text("x = 1\n", encoding="utf-8")
+
+    runner = Runner(root)
+
+    result = runner.run(["../outside.py"])
+
+    assert result["success"] is False
+    assert result["returncode"] == 1
+    assert "fora do projeto" in result["stderr"]
+
+
+def test_compile_file_rejects_absolute_path(tmp_path):
+    root = tmp_path / "project"
+    outside = tmp_path / "outside.py"
+
+    root.mkdir()
+    outside.write_text("x = 1\n", encoding="utf-8")
+
+    runner = Runner(root)
+
+    result = runner._compile_file(str(outside))
+
+    assert result["success"] is False
+    assert result["returncode"] == 1
+    assert "absoluto" in result["stderr"]
+
+
+def test_safe_path_rejects_invalid_type(tmp_path):
+    runner = Runner(tmp_path)
+
+    with pytest.raises(ValueError, match="Caminho de teste inválido"):
+        runner._safe_path(123)
+
+
+def test_run_pytest_rejects_invalid_path(tmp_path):
+    runner = Runner(tmp_path)
+
+    result = runner._run_pytest(["../outside.py"])
+
+    assert result["success"] is False
+    assert result["returncode"] == 1
+    assert "fora do projeto" in result["stderr"]
+
+
+def test_run_pytest_rejects_absolute_path(tmp_path):
+    runner = Runner(tmp_path)
+    outside = tmp_path.parent / "outside_test.py"
+
+    result = runner._run_pytest([outside])
+
+    assert result["success"] is False
+    assert result["returncode"] == 1
+    assert "absoluto" in result["stderr"]
+
+
+def test_run_pytest_rejects_relative_path_escape_after_resolution(
+    tmp_path,
+    monkeypatch,
+):
+    runner = Runner(tmp_path)
+
+    class FakeTarget:
+        def relative_to(self, root):
+            raise ValueError("forced containment failure")
+
+    monkeypatch.setattr(
+        runner,
+        "_safe_path",
+        lambda _: FakeTarget(),
+    )
+
+    result = runner._run_pytest(["test_fake.py"])
+
+    assert result["success"] is False
+    assert result["returncode"] == 1
+    assert "fora do projeto" in result["stderr"]
