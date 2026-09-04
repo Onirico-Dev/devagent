@@ -4864,3 +4864,121 @@ def test_api_main_invokes_run(monkeypatch):
         ("serve_forever",),
         ("server_close",),
     ]
+
+
+def test_api_rejects_invalid_content_length():
+    server, _ = start_server()
+
+    try:
+        connection = HTTPConnection(
+            "127.0.0.1",
+            server.server_port,
+            timeout=5,
+        )
+
+        connection.request(
+            "POST",
+            "/plan",
+            body='{"instruction":"teste"}',
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": "abc",
+            },
+        )
+
+        response = connection.getresponse()
+        raw = response.read()
+        data = json.loads(raw.decode("utf-8"))
+        connection.close()
+
+        assert response.status == 400
+        assert "error" in data
+
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_api_rejects_negative_content_length():
+    server, _ = start_server()
+
+    try:
+        connection = HTTPConnection(
+            "127.0.0.1",
+            server.server_port,
+            timeout=5,
+        )
+
+        connection.request(
+            "POST",
+            "/plan",
+            body='{"instruction":"teste"}',
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": "-1",
+            },
+        )
+
+        response = connection.getresponse()
+        raw = response.read()
+        data = json.loads(raw.decode("utf-8"))
+        connection.close()
+
+        assert response.status == 400
+        assert "error" in data
+
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+
+def test_api_rejects_missing_content_length():
+    import socket
+
+    server, _ = start_server()
+
+    try:
+        request = (
+            b"POST /plan HTTP/1.1"
+            + bytes([13, 10])
+            + b"Host: 127.0.0.1"
+            + bytes([13, 10])
+            + b"Connection: close"
+            + bytes([13, 10])
+            + b"Content-Type: application/json"
+            + bytes([13, 10, 13, 10])
+        )
+
+        with socket.create_connection(
+            ("127.0.0.1", server.server_port),
+            timeout=5,
+        ) as connection:
+            connection.sendall(request)
+
+            chunks = []
+            while True:
+                chunk = connection.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+
+        response = b"".join(chunks)
+
+        header, body = response.split(
+            bytes([13, 10, 13, 10]),
+            1,
+        )
+        status_line = header.split(
+            bytes([13, 10]),
+            1,
+        )[0]
+        status = int(status_line.split()[1])
+        data = json.loads(body.decode("utf-8"))
+
+        assert status == 400
+        assert data["error"] == "JSON inválido"
+
+    finally:
+        server.shutdown()
+        server.server_close()

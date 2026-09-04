@@ -143,12 +143,36 @@ class APIHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path == "/plan":
             try:
-                length = int(
-                    self.headers.get(
-                        "Content-Length",
-                        0
-                    )
+                content_length = self.headers.get(
+                    "Content-Length"
                 )
+
+                if content_length is None:
+                    length = 0
+                else:
+                    try:
+                        length = int(content_length)
+                    except (TypeError, ValueError):
+                        self.send_json(
+                            400,
+                            {
+                                "error": (
+                                    "Content-Length inválido"
+                                )
+                            }
+                        )
+                        return
+
+                    if length < 0:
+                        self.send_json(
+                            400,
+                            {
+                                "error": (
+                                    "Content-Length inválido"
+                                )
+                            }
+                        )
+                        return
 
                 raw = self.rfile.read(length)
 
