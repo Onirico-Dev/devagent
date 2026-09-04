@@ -4711,3 +4711,156 @@ def test_gateway_recovers_incomplete_transactions_on_startup(tmp_path, monkeypat
         "recover_incomplete_transactions",
         original,
     )
+
+
+def test_api_rejects_non_object_json_body():
+    import json
+    from http.client import HTTPConnection
+    from threading import Thread
+
+    from api import HTTPServer, APIHandler
+
+    server = HTTPServer(("127.0.0.1", 0), APIHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        connection = HTTPConnection(
+            "127.0.0.1",
+            server.server_port,
+            timeout=5,
+        )
+        connection.request(
+            "POST",
+            "/plan",
+            body=json.dumps(["invalid"]),
+            headers={"Content-Type": "application/json"},
+        )
+        response = connection.getresponse()
+        body = json.loads(response.read())
+
+        assert response.status == 400
+        assert body["error"] == "O corpo da requisição deve ser um objeto JSON"
+        connection.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_api_put_returns_method_not_allowed():
+    from api import HTTPServer, APIHandler
+    from http.client import HTTPConnection
+    from threading import Thread
+
+    server = HTTPServer(("127.0.0.1", 0), APIHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        connection = HTTPConnection(
+            "127.0.0.1",
+            server.server_port,
+            timeout=5,
+        )
+        connection.request("PUT", "/")
+        response = connection.getresponse()
+        body = response.read()
+
+        assert response.status == 405
+        assert "Método não permitido" in body.decode("utf-8")
+        connection.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_api_patch_returns_method_not_allowed():
+    from api import HTTPServer, APIHandler
+    from http.client import HTTPConnection
+    from threading import Thread
+
+    server = HTTPServer(("127.0.0.1", 0), APIHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        connection = HTTPConnection(
+            "127.0.0.1",
+            server.server_port,
+            timeout=5,
+        )
+        connection.request("PATCH", "/")
+        response = connection.getresponse()
+        body = response.read()
+
+        assert response.status == 405
+        assert "Método não permitido" in body.decode("utf-8")
+        connection.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_api_run_handles_keyboard_interrupt(monkeypatch, capsys):
+    import api
+
+    class FakeServer:
+        def __init__(self, *args):
+            self.args = args
+            self.closed = False
+
+        def serve_forever(self):
+            raise KeyboardInterrupt
+
+        def server_close(self):
+            self.closed = True
+
+    monkeypatch.setattr(api, "HTTPServer", FakeServer)
+
+    api.run()
+
+    output = capsys.readouterr().out
+
+    assert "DevAgent API em http://127.0.0.1:8765" in output
+    assert "Servidor encerrado." in output
+
+
+def test_api_main_invokes_run(monkeypatch):
+    import http.server
+    import runpy
+
+    called = []
+
+    class FakeServer:
+        def __init__(self, *args, **kwargs):
+            called.append(("init", args, kwargs))
+
+        def serve_forever(self):
+            called.append(("serve_forever",))
+
+        def server_close(self):
+            called.append(("server_close",))
+
+    monkeypatch.setattr(
+        http.server,
+        "HTTPServer",
+        FakeServer,
+    )
+
+    runpy.run_path(
+        "api.py",
+        run_name="__main__",
+    )
+
+    assert called[0][0] == "init"
+    assert called[0][1][0] == ("127.0.0.1", 8765)
+    assert called[0][1][1].__name__ == "APIHandler"
+    assert called[0][2] == {}
+
+    assert called[1:] == [
+        ("serve_forever",),
+        ("server_close",),
+    ]

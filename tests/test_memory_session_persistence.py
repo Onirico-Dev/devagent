@@ -544,3 +544,24 @@ def test_memory_add_preserves_previous_state_on_serialization_failure(
     assert len(entries) == 1
     assert entries[0]["event"] == "original"
     assert entries[0]["data"] == {"ok": True}
+
+def test_session_rejects_persisted_plans_with_invalid_type(
+    tmp_path,
+):
+    path = tmp_path / "session.json"
+
+    path.write_text(
+        json.dumps(
+            {
+                "instructions": [],
+                "plans": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="plans persistido deve ser uma lista",
+    ):
+        Session(path).load()

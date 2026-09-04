@@ -513,3 +513,231 @@ def test_task_history_serializes_concurrent_updates_across_instances(
         task["worker"]
         for task in reloaded.tasks.values()
     } == set(range(32))
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("task_id", ""),
+        ("task_id", 123),
+        ("updated_at", ""),
+        ("updated_at", 123),
+        ("approval_id", 123),
+        ("instruction", 123),
+        ("plan", []),
+        ("transaction_id", 123),
+        ("created_at", ""),
+        ("created_at", 123),
+    ],
+)
+def test_task_history_rejects_invalid_persisted_field_types(
+    tmp_path,
+    field,
+    value,
+):
+    path = tmp_path / "tasks.json"
+
+    task = {
+        "task_id": "1",
+        "approval_id": "1",
+        "instruction": "teste",
+        "plan": {},
+        "status": "pending",
+        "transaction_id": None,
+        "created_at": "2026-09-02T00:00:00+00:00",
+        "updated_at": "2026-09-02T00:00:00+00:00",
+    }
+    task[field] = value
+
+    path.write_text(
+        json.dumps({"1": task}),
+        encoding="utf-8",
+    )
+
+    history = TaskHistory(path)
+
+    assert history.tasks == {}
+
+
+def test_task_history_rejects_persisted_task_id_mismatch(tmp_path):
+    path = tmp_path / "tasks.json"
+
+    task = {
+        "task_id": "different-id",
+        "approval_id": "different-id",
+        "instruction": "teste",
+        "plan": {},
+        "status": "pending",
+        "transaction_id": None,
+        "created_at": "2026-09-02T00:00:00+00:00",
+        "updated_at": "2026-09-02T00:00:00+00:00",
+    }
+
+    path.write_text(
+        json.dumps({"1": task}),
+        encoding="utf-8",
+    )
+
+    history = TaskHistory(path)
+
+    assert history.tasks == {}
+
+
+def test_task_history_create_handles_non_dict_store_state(
+    tmp_path,
+    monkeypatch,
+):
+    history = TaskHistory(tmp_path / "tasks.json")
+
+    def fake_update(callback, default=None):
+        callback([])
+
+        return {}
+
+    monkeypatch.setattr(history.store, "update", fake_update)
+
+    task = history.create(
+        "approval-1",
+        "teste",
+        {},
+    )
+
+    assert task["task_id"] == "approval-1"
+    assert history.tasks == {}
+
+
+def test_task_history_create_rejects_duplicate_task(tmp_path):
+    history = TaskHistory(tmp_path / "tasks.json")
+
+    history.create(
+        "approval-1",
+        "teste",
+        {},
+    )
+
+    with pytest.raises(ValueError, match="Tarefa já existe"):
+        history.create(
+            "approval-1",
+            "outra instrução",
+            {},
+        )
+
+
+def test_task_history_update_handles_non_dict_store_state(
+    tmp_path,
+    monkeypatch,
+):
+    history = TaskHistory(tmp_path / "tasks.json")
+
+    def fake_update(callback, default=None):
+        callback([])
+
+        return {}
+
+    monkeypatch.setattr(history.store, "update", fake_update)
+
+    with pytest.raises(KeyError, match="Tarefa não encontrada"):
+        history.update(
+            "missing",
+            status="failed",
+        )
+
+
+def test_task_history_update_rejects_non_dict_persisted_result(
+    tmp_path,
+    monkeypatch,
+):
+    history = TaskHistory(tmp_path / "tasks.json")
+
+    history.create(
+        "approval-1",
+        "teste",
+        {},
+    )
+
+    def fake_update(callback, default=None):
+        return []
+
+    monkeypatch.setattr(history.store, "update", fake_update)
+
+    with pytest.raises(
+        RuntimeError,
+        match="Estado persistido de tarefas inválido",
+    ):
+        history.update(
+            "approval-1",
+            status="completed",
+        )
+
+def test_task_history_create_rejects_non_dict_persisted_result(
+    tmp_path,
+    monkeypatch,
+):
+    history = TaskHistory(tmp_path / "tasks.json")
+
+    def fake_update(callback, default=None):
+        return []
+
+    monkeypatch.setattr(history.store, "update", fake_update)
+
+    with pytest.raises(
+        RuntimeError,
+        match="Estado persistido de tarefas inválido",
+    ):
+        history.create(
+            "approval-1",
+            "teste",
+            {},
+        )
+
+
+def test_task_history_rejects_persisted_task_id_mismatch_explicitly(
+    tmp_path,
+):
+    path = tmp_path / "tasks.json"
+
+    task = {
+        "task_id": "different-id",
+        "approval_id": "different-id",
+        "instruction": "teste",
+        "plan": {},
+        "status": "pending",
+        "transaction_id": None,
+        "created_at": "2026-09-02T00:00:00+00:00",
+        "updated_at": "2026-09-02T00:00:00+00:00",
+    }
+
+    path.write_text(
+        json.dumps({"expected-id": task}),
+        encoding="utf-8",
+    )
+
+    history = TaskHistory(path)
+
+    assert history.tasks == {}
+
+def test_task_history_rejects_persisted_task_missing_required_field(
+    tmp_path,
+):
+    path = tmp_path / "tasks.json"
+
+    task = {
+        "task_id": "1",
+        "approval_id": "1",
+        "instruction": "teste",
+        "plan": {},
+        "status": "pending",
+        "transaction_id": None,
+        "created_at": "2026-09-02T00:00:00+00:00",
+        "updated_at": "2026-09-02T00:00:00+00:00",
+    }
+
+    del task["plan"]
+
+    path.write_text(
+        json.dumps({"1": task}),
+        encoding="utf-8",
+    )
+
+    history = TaskHistory(path)
+
+    assert history.tasks == {}

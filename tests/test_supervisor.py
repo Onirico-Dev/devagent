@@ -1,6 +1,7 @@
 import copy
 from concurrent.futures import ThreadPoolExecutor
 import json
+from pathlib import Path
 
 import pytest
 
@@ -528,3 +529,117 @@ def test_supervisor_save_propagates_directory_fsync_failure(
         raise AssertionError(
             "A falha no fsync do diretório deveria ser propagada."
         )
+
+def test_supervisor_save_cleans_temporary_file_after_replace_failure(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "approvals.json"
+    supervisor = Supervisor(path)
+
+    original_replace = Path.replace
+
+    def fail_replace(self, target):
+        if self.parent == path.parent and self.name != path.name:
+            raise OSError("replace failed")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="replace failed"):
+        supervisor._save()
+
+    temporary_files = list(tmp_path.glob(".approvals.json.*.tmp"))
+
+    assert temporary_files == []
+
+
+def test_supervisor_save_ignores_temporary_unlink_oserror(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "approvals.json"
+    supervisor = Supervisor(path)
+
+    original_replace = Path.replace
+
+    def keep_temporary(self, target):
+        if self.parent == path.parent and self.name != path.name:
+            return None
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", keep_temporary)
+
+    original_unlink = Path.unlink
+
+    def fail_unlink(self, *args, **kwargs):
+        if self.parent == path.parent and self.name != path.name:
+            raise OSError("unlink failed")
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_unlink)
+
+    supervisor._save()
+
+    temporary_files = list(tmp_path.glob(".approvals.json.*.tmp"))
+
+    assert len(temporary_files) == 1
+
+    original_unlink(temporary_files[0])
+
+def test_supervisor_prepare_approval_returns_pending_copy(tmp_path):
+    supervisor = Supervisor(tmp_path / "approvals.json")
+
+    approval_id = supervisor.request_approval(
+        {"changes": []}
+    )
+
+    result = supervisor.prepare_approval(approval_id)
+
+    assert result["status"] == ApprovalStatus.PENDING.value
+    assert result["plan"] == {"changes": []}
+
+    result["plan"]["changes"].append({"path": "mutated"})
+
+    assert supervisor.get(approval_id)["plan"] == {"changes": []}
+
+
+def test_supervisor_prepare_approval_missing_request_raises_key_error(
+    tmp_path,
+):
+    supervisor = Supervisor(tmp_path / "approvals.json")
+
+    with pytest.raises(
+        KeyError,
+        match="Tarefa não encontrada",
+    ):
+        supervisor.prepare_approval("999")
+
+
+def test_supervisor_prepare_approval_rejects_non_pending_request(
+    tmp_path,
+):
+    supervisor = Supervisor(tmp_path / "approvals.json")
+
+    approval_id = supervisor.request_approval(
+        {"changes": []}
+    )
+    supervisor.approve(approval_id)
+
+    with pytest.raises(
+        ValueError,
+        match="Solicitação não está pendente",
+    ):
+        supervisor.prepare_approval(approval_id)
+
+
+def test_supervisor_reject_missing_request_raises_key_error(
+    tmp_path,
+):
+    supervisor = Supervisor(tmp_path / "approvals.json")
+
+    with pytest.raises(
+        KeyError,
+        match="Solicitação não encontrada",
+    ):
+        supervisor.reject("999")

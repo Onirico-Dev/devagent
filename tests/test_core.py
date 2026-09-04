@@ -907,3 +907,180 @@ def test_repair_engine_rejects_oversized_content():
     assert result["risk"] == "alto"
     assert result["path"] == ""
     assert result["content"] == ""
+
+def test_agent_module_main_executes(capsys):
+    import runpy
+
+    runpy.run_module("agent", run_name="__main__")
+
+    output = capsys.readouterr().out
+    assert output.strip()
+
+def test_build_transaction_from_approved_plan_rejects_non_dict():
+    from agent import DevAgent
+    from core.adapters.mock import MockAdapter
+
+    agent = DevAgent(ai_adapter=MockAdapter())
+
+    with pytest.raises(ValueError, match="Plano aprovado inválido"):
+        agent.build_transaction_from_approved_plan(None)
+
+
+def test_build_transaction_from_approved_plan_rejects_invalid_instruction():
+    from agent import DevAgent
+    from core.adapters.mock import MockAdapter
+
+    agent = DevAgent(ai_adapter=MockAdapter())
+
+    with pytest.raises(
+        ValueError,
+        match="Plano aprovado não possui instrução válida",
+    ):
+        agent.build_transaction_from_approved_plan({
+            "instruction": "   ",
+            "changes": [{"change_type": "create", "path": "app.py", "content": "x"}],
+        })
+
+
+def test_build_transaction_from_approved_plan_rejects_missing_changes():
+    from agent import DevAgent
+    from core.adapters.mock import MockAdapter
+
+    agent = DevAgent(ai_adapter=MockAdapter())
+
+    with pytest.raises(
+        ValueError,
+        match="Plano aprovado não possui alterações",
+    ):
+        agent.build_transaction_from_approved_plan({
+            "instruction": "Crie app.py",
+            "changes": [],
+        })
+
+
+def test_build_transaction_from_approved_plan_rejects_non_dict_change():
+    from agent import DevAgent
+    from core.adapters.mock import MockAdapter
+
+    agent = DevAgent(ai_adapter=MockAdapter())
+
+    with pytest.raises(
+        ValueError,
+        match="Alteração inválida no plano aprovado",
+    ):
+        agent.build_transaction_from_approved_plan({
+            "instruction": "Crie app.py",
+            "changes": ["invalid"],
+        })
+
+
+def test_build_transaction_from_approved_plan_rejects_non_string_change_type():
+    from agent import DevAgent
+    from core.adapters.mock import MockAdapter
+
+    agent = DevAgent(ai_adapter=MockAdapter())
+
+    with pytest.raises(
+        ValueError,
+        match="Tipo de alteração inválido",
+    ):
+        agent.build_transaction_from_approved_plan({
+            "instruction": "Crie app.py",
+            "changes": [{
+                "change_type": 123,
+                "path": "app.py",
+                "content": "x",
+            }],
+        })
+
+
+def test_build_transaction_from_approved_plan_rejects_unknown_change_type():
+    from agent import DevAgent
+    from core.adapters.mock import MockAdapter
+
+    agent = DevAgent(ai_adapter=MockAdapter())
+
+    with pytest.raises(
+        ValueError,
+        match="Tipo de alteração desconhecido",
+    ):
+        agent.build_transaction_from_approved_plan({
+            "instruction": "Crie app.py",
+            "changes": [{
+                "change_type": "unknown",
+                "path": "app.py",
+                "content": "x",
+            }],
+        })
+
+
+def test_build_transaction_from_approved_plan_rejects_invalid_content():
+    from agent import DevAgent
+    from core.adapters.mock import MockAdapter
+
+    agent = DevAgent(ai_adapter=MockAdapter())
+
+    with pytest.raises(
+        ValueError,
+        match="Conteúdo inválido para alteração",
+    ):
+        agent.build_transaction_from_approved_plan({
+            "instruction": "Crie app.py",
+            "changes": [{
+                "change_type": "create",
+                "path": "app.py",
+                "content": None,
+            }],
+        })
+
+
+def test_transaction_from_plan_rejects_empty_changes():
+    from agent import DevAgent
+    from core.adapters.mock import MockAdapter
+    from types import SimpleNamespace
+
+    agent = DevAgent(ai_adapter=MockAdapter())
+
+    plan = SimpleNamespace(changes=[])
+
+    with pytest.raises(
+        ValueError,
+        match="Não é possível criar uma transação sem alterações",
+    ):
+        agent._transaction_from_plan(plan)
+
+
+def test_transaction_from_plan_creates_transaction():
+    from agent import DevAgent
+    from core.adapters.mock import MockAdapter
+    from types import SimpleNamespace
+
+    agent = DevAgent(ai_adapter=MockAdapter())
+
+    changes = ["change-1", "change-2"]
+    plan = SimpleNamespace(changes=changes)
+
+    transaction = agent._transaction_from_plan(plan)
+
+    assert transaction.transaction_id == ""
+    assert transaction.changes == changes
+
+
+def test_ask_ai_delegates_to_adapter():
+    from agent import DevAgent
+    from core.adapters.mock import MockAdapter
+
+    agent = DevAgent(ai_adapter=MockAdapter())
+
+    captured = {}
+
+    def fake_generate(prompt):
+        captured["prompt"] = prompt
+        return "resposta"
+
+    agent.ai.generate = fake_generate
+
+    result = agent.ask_ai("teste")
+
+    assert result == "resposta"
+    assert captured["prompt"] == "teste"
