@@ -56,7 +56,7 @@ def test_task_history_loads_valid_dict(tmp_path):
     assert history.get("1")["status"] == "completed"
 
 
-def test_task_history_loads_non_dict_as_empty(tmp_path):
+def test_task_history_rejects_non_dict_root(tmp_path):
     path = tmp_path / "tasks.json"
     path.write_text(
         json.dumps(["invalid", "shape"]),
@@ -237,7 +237,7 @@ def test_task_history_update_rejects_structural_extra_fields(tmp_path):
         )
 
 
-def test_task_history_load_discards_non_dict_task_records(tmp_path):
+def test_task_history_rejects_non_dict_task_records(tmp_path):
     path = tmp_path / "tasks.json"
     path.write_text(
         '{"1": "invalid", "2": 123, "3": null}',
@@ -249,7 +249,7 @@ def test_task_history_load_discards_non_dict_task_records(tmp_path):
     assert history.tasks == {}
 
 
-def test_task_history_load_discards_task_with_missing_required_fields(tmp_path):
+def test_task_history_rejects_task_with_missing_required_fields(tmp_path):
     path = tmp_path / "tasks.json"
     path.write_text(
         '{"1": {"task_id": "1", "status": "pending"}}',
@@ -261,7 +261,7 @@ def test_task_history_load_discards_task_with_missing_required_fields(tmp_path):
     assert history.tasks == {}
 
 
-def test_task_history_load_discards_task_with_invalid_status(tmp_path):
+def test_task_history_rejects_task_with_invalid_status(tmp_path):
     path = tmp_path / "tasks.json"
     path.write_text(
         '{"1": {'

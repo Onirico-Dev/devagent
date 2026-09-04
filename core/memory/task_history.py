@@ -58,8 +58,12 @@ class TaskHistory:
             status.value
             for status in TaskHistoryStatus
         }
+
         legacy_completed_status = "completed"
-        accepted_statuses = valid_statuses | {legacy_completed_status}
+        accepted_statuses = valid_statuses | {
+            "completed",
+            "approved",
+        }
 
         valid_tasks = {}
 
@@ -68,7 +72,6 @@ class TaskHistory:
                 continue
 
             status = task.get("status")
-
             if status not in accepted_statuses:
                 continue
 
@@ -81,8 +84,6 @@ class TaskHistory:
             if not isinstance(updated_at, str) or not updated_at.strip():
                 continue
 
-            # Registros antigos concluídos podem possuir somente
-            # task_id, status e updated_at.
             if status == legacy_completed_status:
                 valid_tasks[str(key)] = task
                 continue
@@ -102,14 +103,14 @@ class TaskHistory:
             if not isinstance(task.get("plan"), dict):
                 continue
 
-            if task.get("transaction_id") is not None and not isinstance(
-                task.get("transaction_id"),
-                str,
+            transaction_id = task.get("transaction_id")
+            if (
+                transaction_id is not None
+                and not isinstance(transaction_id, str)
             ):
                 continue
 
             created_at = task.get("created_at")
-
             if not isinstance(created_at, str) or not created_at.strip():
                 continue
 
