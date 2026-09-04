@@ -68,7 +68,18 @@ class Supervisor:
             )
 
             if isinstance(data, dict):
-                self.pending = data
+                valid_statuses = {
+                    ApprovalStatus.PENDING.value,
+                    ApprovalStatus.APPROVED.value,
+                    ApprovalStatus.REJECTED.value,
+                }
+
+                self.pending = {
+                    approval_id: request
+                    for approval_id, request in data.items()
+                    if isinstance(request, dict)
+                    and request.get("status") in valid_statuses
+                }
             else:
                 self.pending = {}
 

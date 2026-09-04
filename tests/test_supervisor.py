@@ -643,3 +643,90 @@ def test_supervisor_reject_missing_request_raises_key_error(
         match="Solicitação não encontrada",
     ):
         supervisor.reject("999")
+
+def test_supervisor_ignores_non_dict_approval_entries(tmp_path):
+    path = tmp_path / "approvals.json"
+    path.write_text(
+        json.dumps(
+            {
+                "1": ["entrada inválida"],
+                "2": {
+                    "status": ApprovalStatus.PENDING.value,
+                    "plan": {"changes": []},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    supervisor = Supervisor(path)
+
+    assert "1" not in supervisor.list_all()
+    assert "2" in supervisor.list_all()
+
+
+def test_supervisor_list_pending_ignores_malformed_approval_entries(
+    tmp_path,
+):
+    path = tmp_path / "approvals.json"
+    path.write_text(
+        json.dumps(
+            {
+                "1": ["entrada inválida"],
+                "2": {
+                    "status": ApprovalStatus.PENDING.value,
+                    "plan": {"changes": []},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    supervisor = Supervisor(path)
+
+    assert supervisor.list_pending() == {
+        "2": {
+            "status": ApprovalStatus.PENDING.value,
+            "plan": {"changes": []},
+        }
+    }
+
+
+def test_supervisor_get_malformed_approval_entry_returns_none(
+    tmp_path,
+):
+    path = tmp_path / "approvals.json"
+    path.write_text(
+        json.dumps(
+            {
+                "1": ["entrada inválida"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    supervisor = Supervisor(path)
+
+    assert supervisor.get("1") is None
+
+
+def test_supervisor_prepare_malformed_approval_entry_raises_key_error(
+    tmp_path,
+):
+    path = tmp_path / "approvals.json"
+    path.write_text(
+        json.dumps(
+            {
+                "1": ["entrada inválida"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    supervisor = Supervisor(path)
+
+    with pytest.raises(
+        KeyError,
+        match="Tarefa não encontrada",
+    ):
+        supervisor.prepare_approval("1")
