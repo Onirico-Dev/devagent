@@ -6,3 +6,8 @@ logs/*
 transactions/*
 workspace/*
 .coverage
+
+# Packaging artifacts
+build/
+dist/
+*.egg-info/
