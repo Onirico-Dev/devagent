@@ -1510,6 +1510,7 @@ def test_safe_executor_delete_does_not_unlink_replacement_after_validation(
                 encoding="utf-8",
             )
             swapped["value"] = True
+            return (result[0], result[1] ^ 1)
 
         return result
 
