@@ -69,12 +69,16 @@ class TransactionManager:
     def _deserialize_change(data):
         if not isinstance(data, dict):
             raise ValueError("Change inválido no manifesto.")
-        return Change(
-            change_type=ChangeType(data["change_type"]),
-            path=data["path"],
-            content=data.get("content"),
-            reason=data.get("reason", ""),
-        )
+
+        try:
+            return Change(
+                change_type=ChangeType(data["change_type"]),
+                path=data["path"],
+                content=data.get("content"),
+                reason=data.get("reason", ""),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("Change inválido no manifesto.") from error
 
     def persist_manifest(self, transaction):
         manifest = self._manifest_path(transaction.transaction_id)
@@ -136,9 +140,26 @@ class TransactionManager:
                 "Manifesto de transação inválido."
             ) from error
 
+        if not isinstance(data, dict):
+            raise ValueError("Manifesto de transação inválido.")
+
         if data.get("transaction_id") != transaction_id:
             raise ValueError(
                 "transaction_id inconsistente no manifesto."
+            )
+
+        changes = data.get("changes", [])
+        if not isinstance(changes, list):
+            raise ValueError("Campo 'changes' inválido no manifesto.")
+
+        metadata = data.get("metadata", {})
+        if not isinstance(metadata, dict):
+            raise ValueError("Campo 'metadata' inválido no manifesto.")
+
+        repair_state = data.get("repair_state", {})
+        if not isinstance(repair_state, dict):
+            raise ValueError(
+                "Campo 'repair_state' inválido no manifesto."
             )
 
         return Transaction(
@@ -148,10 +169,10 @@ class TransactionManager:
             ),
             changes=[
                 self._deserialize_change(change)
-                for change in data.get("changes", [])
+                for change in changes
             ],
-            metadata=dict(data.get("metadata", {})),
-            repair_state=dict(data.get("repair_state", {})),
+            metadata=dict(metadata),
+            repair_state=dict(repair_state),
         )
 
     def list_recoverable_transactions(self):

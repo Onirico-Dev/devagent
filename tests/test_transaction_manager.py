@@ -2589,3 +2589,110 @@ def test_rollback_rejects_created_file_identity_change(
         match="Arquivo criado foi alterado durante a transação",
     ):
         manager.rollback(transaction)
+
+def test_list_recoverable_transactions_ignores_manifest_with_non_dict_root(
+    tmp_path,
+):
+    manager = TransactionManager(root=tmp_path)
+    backup_dir = tmp_path / "transactions"
+    backup_dir.mkdir(parents=True)
+
+    (backup_dir / "tx-invalid-root.json").write_text(
+        '[{"invalid": "manifest"}]',
+        encoding="utf-8",
+    )
+
+    assert manager.list_recoverable_transactions() == []
+
+
+def test_list_recoverable_transactions_ignores_manifest_with_invalid_change(
+    tmp_path,
+):
+    manager = TransactionManager(root=tmp_path)
+    backup_dir = tmp_path / "transactions"
+    backup_dir.mkdir(parents=True)
+
+    (backup_dir / "tx-invalid-change.json").write_text(
+        """
+{
+    "transaction_id": "tx-invalid-change",
+    "status": "executing",
+    "changes": [
+        {
+            "path": "missing-change-type.py"
+        }
+    ],
+    "metadata": {},
+    "repair_state": {}
+}
+""",
+        encoding="utf-8",
+    )
+
+    assert manager.list_recoverable_transactions() == []
+
+
+def test_load_manifest_rejects_non_list_changes(tmp_path):
+    manager = TransactionManager(root=tmp_path)
+    backup_dir = tmp_path / "transactions"
+    backup_dir.mkdir(parents=True)
+
+    (backup_dir / "tx-invalid-changes.json").write_text(
+        """
+{
+    "transaction_id": "tx-invalid-changes",
+    "status": "executing",
+    "changes": {},
+    "metadata": {},
+    "repair_state": {}
+}
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="changes"):
+        manager.load_manifest("tx-invalid-changes")
+
+
+def test_load_manifest_rejects_non_dict_metadata(tmp_path):
+    manager = TransactionManager(root=tmp_path)
+    backup_dir = tmp_path / "transactions"
+    backup_dir.mkdir(parents=True)
+
+    (backup_dir / "tx-invalid-metadata.json").write_text(
+        """
+{
+    "transaction_id": "tx-invalid-metadata",
+    "status": "executing",
+    "changes": [],
+    "metadata": [],
+    "repair_state": {}
+}
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="metadata"):
+        manager.load_manifest("tx-invalid-metadata")
+
+
+def test_load_manifest_rejects_non_dict_repair_state(tmp_path):
+    manager = TransactionManager(root=tmp_path)
+    backup_dir = tmp_path / "transactions"
+    backup_dir.mkdir(parents=True)
+
+    (backup_dir / "tx-invalid-repair-state.json").write_text(
+        """
+{
+    "transaction_id": "tx-invalid-repair-state",
+    "status": "executing",
+    "changes": [],
+    "metadata": {},
+    "repair_state": []
+}
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="repair_state"):
+        manager.load_manifest("tx-invalid-repair-state")
