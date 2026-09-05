@@ -2,6 +2,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 
 from agent import DevAgent
+from core.api.service import APIService
 from core.gateway import (
     CommitTransactionError,
     DevAgentGateway,
@@ -13,6 +14,8 @@ gateway = DevAgentGateway(agent, ".")
 
 
 class APIHandler(BaseHTTPRequestHandler):
+    def _service(self):
+        return APIService(agent, gateway)
 
     def send_json(self, status, data):
         body = json.dumps(
@@ -77,13 +80,12 @@ class APIHandler(BaseHTTPRequestHandler):
         )
 
     def do_GET(self):
+        service = self._service()
+
         if self.path == "/health":
             self.send_json(
                 200,
-                {
-                    "status": "ok",
-                    "service": "devagent"
-                }
+                service.health(),
             )
             return
 
@@ -91,13 +93,13 @@ class APIHandler(BaseHTTPRequestHandler):
             self.send_json(
                 200,
                 {
-                    "tasks": gateway.list_tasks()
+                    "tasks": service.list_tasks()
                 }
             )
             return
 
         if self.path == "/tasks/latest":
-            task = gateway.latest_task()
+            task = service.latest_task()
 
             if task is None:
                 self.send_json(
@@ -119,7 +121,7 @@ class APIHandler(BaseHTTPRequestHandler):
             and task_route[2]
         ):
             task_id = task_route[2]
-            task = gateway.get_task(task_id)
+            task = service.get_task(task_id)
 
             if task is None:
                 self.send_json(
@@ -141,6 +143,8 @@ class APIHandler(BaseHTTPRequestHandler):
         )
 
     def do_POST(self):
+        service = self._service()
+
         if self.path == "/plan":
             try:
                 content_length = self.headers.get(
@@ -178,7 +182,10 @@ class APIHandler(BaseHTTPRequestHandler):
 
                 try:
                     data = json.loads(raw)
-                except (json.JSONDecodeError, UnicodeDecodeError):
+                except (
+                    json.JSONDecodeError,
+                    UnicodeDecodeError,
+                ):
                     self.send_json(
                         400,
                         {
@@ -215,8 +222,7 @@ class APIHandler(BaseHTTPRequestHandler):
                     )
                     return
 
-                gateway.agent = agent
-                result = gateway.create_task(instruction)
+                result = service.create_task(instruction)
 
                 self.send_json(
                     200,
@@ -238,7 +244,7 @@ class APIHandler(BaseHTTPRequestHandler):
             approval_id = approval_route[2]
 
             try:
-                result = gateway.approve(approval_id)
+                result = service.approve(approval_id)
 
                 self.send_json(
                     200,
@@ -260,7 +266,7 @@ class APIHandler(BaseHTTPRequestHandler):
             approval_id = reject_route[2]
 
             try:
-                result = gateway.reject(approval_id)
+                result = service.reject(approval_id)
 
                 self.send_json(
                     200,
