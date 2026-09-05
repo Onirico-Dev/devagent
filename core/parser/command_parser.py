@@ -51,6 +51,157 @@ class CommandParser:
         # Ex.: '"teste.py",   conteúdo' -> 'conteúdo'
         return value.lstrip(" \t.,;:").strip()
 
+    @staticmethod
+    def _clear_instruction_for_delete(action: str, instruction: str) -> str:
+        if action == "delete":
+            return ""
+        return instruction
+
+    @classmethod
+    def _extract_explicit_target(
+        cls,
+        remainder: str,
+        action: str,
+    ) -> tuple[str, str] | None:
+        patterns = [
+            r"^um\s+arquivo\s+chamado\s+([^\s\"'`]+)(?:\s+(.*))?$",
+            r"^um\s+arquivo\s+de\s+nome\s+([^\s\"'`]+)(?:\s+(.*))?$",
+            r"^arquivo\s+chamado\s+([^\s\"'`]+)(?:\s+(.*))?$",
+            r"^arquivo\s+de\s+nome\s+([^\s\"'`]+)(?:\s+(.*))?$",
+        ]
+
+        for pattern in patterns:
+            match = re.match(
+                pattern,
+                remainder,
+                flags=re.IGNORECASE,
+            )
+
+            if not match:
+                continue
+
+            target = cls._clean(match.group(1))
+            instruction = cls._clean_instruction(
+                match.group(2) or ""
+            )
+            instruction = cls._clear_instruction_for_delete(
+                action,
+                instruction,
+            )
+            return target, instruction
+
+        return None
+
+    @classmethod
+    def _extract_quoted_target(
+        cls,
+        remainder: str,
+        action: str,
+    ) -> tuple[str, str] | None:
+        patterns = [
+            r'^arquivo\s+[\"\']([^\"\']+)[\"\']\s*,?\s*(.*)?$',
+            r"^arquivo\s+`([^`]+)`\s*,?\s*(.*)?$",
+        ]
+
+        for pattern in patterns:
+            match = re.match(
+                pattern,
+                remainder,
+                flags=re.IGNORECASE,
+            )
+
+            if not match:
+                continue
+
+            target = cls._clean(match.group(1))
+            instruction = cls._clean_instruction(
+                match.group(2) or ""
+            )
+            instruction = cls._clear_instruction_for_delete(
+                action,
+                instruction,
+            )
+            return target, instruction
+
+        return None
+
+    @classmethod
+    def _extract_reserved_after_arquivo(
+        cls,
+        remainder: str,
+        action: str,
+    ) -> tuple[str, str] | None:
+        pattern = (
+            r"^arquivo\s+"
+            r"(de|do|da|dos|das|para|por|com|contendo)"
+            r"(?:\s+(.*))?$"
+        )
+
+        match = re.match(
+            pattern,
+            remainder,
+            flags=re.IGNORECASE,
+        )
+
+        if not match:
+            return None
+
+        target = cls._clean(match.group(1))
+        instruction = cls._clean_instruction(
+            match.group(2) or ""
+        )
+        instruction = cls._clear_instruction_for_delete(
+            action,
+            instruction,
+        )
+        return target, instruction
+
+    @classmethod
+    def _extract_generic_file_target(
+        cls,
+        remainder: str,
+        action: str,
+    ) -> tuple[str, str] | None:
+        match = re.match(
+            r"^arquivo\s+([^\s\"'`]+)(?:\s+(.*))?$",
+            remainder,
+            flags=re.IGNORECASE,
+        )
+
+        if not match:
+            return None
+
+        target = cls._clean(match.group(1))
+        instruction = cls._clean_instruction(
+            match.group(2) or ""
+        )
+        instruction = cls._clear_instruction_for_delete(
+            action,
+            instruction,
+        )
+        return target, instruction
+
+    @classmethod
+    def _extract_fallback_target(
+        cls,
+        remainder: str,
+        action: str,
+    ) -> tuple[str, str]:
+        words = remainder.split(maxsplit=1)
+
+        target = cls._clean(words[0])
+
+        if len(words) > 1:
+            instruction = cls._clean_instruction(words[1])
+        else:
+            instruction = ""
+
+        instruction = cls._clear_instruction_for_delete(
+            action,
+            instruction,
+        )
+        return target, instruction
+
     def parse(self, text: str) -> Command:
         if not isinstance(text, str):
             raise ValueError("Comando deve ser uma string.")
@@ -63,9 +214,7 @@ class CommandParser:
         words = text.split(maxsplit=1)
         first = words[0].lower()
 
-        # ---------------------------------------------------------
         # ANÁLISE
-        # ---------------------------------------------------------
         if first in self.ANALYZE_WORDS:
             if len(words) == 1:
                 return Command(
@@ -82,9 +231,7 @@ class CommandParser:
                 instruction=text,
             )
 
-        # ---------------------------------------------------------
         # OPERAÇÃO
-        # ---------------------------------------------------------
         action = self.ACTIONS.get(first)
 
         if action is None:
@@ -131,144 +278,35 @@ class CommandParser:
         remainder: str,
         action: str,
     ) -> tuple[str, str]:
-
-        # ---------------------------------------------------------
-        # 1. Formas explícitas com "chamado" / "de nome"
-        #
-        # Essas regras precisam vir ANTES de qualquer interpretação
-        # genérica de "arquivo <palavra>".
-        # ---------------------------------------------------------
-        explicit_patterns = [
-            r"^um\s+arquivo\s+chamado\s+([^\s\"'`]+)(?:\s+(.*))?$",
-            r"^um\s+arquivo\s+de\s+nome\s+([^\s\"'`]+)(?:\s+(.*))?$",
-            r"^arquivo\s+chamado\s+([^\s\"'`]+)(?:\s+(.*))?$",
-            r"^arquivo\s+de\s+nome\s+([^\s\"'`]+)(?:\s+(.*))?$",
-        ]
-
-        for pattern in explicit_patterns:
-            match = re.match(
-                pattern,
-                remainder,
-                flags=re.IGNORECASE,
-            )
-
-            if match:
-                target = cls._clean(match.group(1))
-                instruction = cls._clean_instruction(
-                    match.group(2) or ""
-                )
-
-                if action == "delete":
-                    instruction = ""
-
-                return target, instruction
-
-        # ---------------------------------------------------------
-        # 2. Alvo entre aspas/crases
-        #
-        # Ex.:
-        #   arquivo "teste.py", conteúdo
-        # ---------------------------------------------------------
-        quoted_patterns = [
-            r'^arquivo\s+["\']([^"\']+)["\']\s*,?\s*(.*)?$',
-            r"^arquivo\s+`([^`]+)`\s*,?\s*(.*)?$",
-        ]
-
-        for pattern in quoted_patterns:
-            match = re.match(
-                pattern,
-                remainder,
-                flags=re.IGNORECASE,
-            )
-
-            if match:
-                target = cls._clean(match.group(1))
-                instruction = cls._clean_instruction(
-                    match.group(2) or ""
-                )
-
-                if action == "delete":
-                    instruction = ""
-
-                return target, instruction
-
-        # ---------------------------------------------------------
-        # 3. Forma especial preservada pelos testes:
-        #
-        #   "arquivo de arquivo.py conteúdo"
-        #
-        # Aqui o "de" é tratado como alvo literal.
-        #
-        # Importante: esta regra vem DEPOIS de "arquivo de nome",
-        # portanto não captura:
-        #
-        #   arquivo de nome teste.py
-        # ---------------------------------------------------------
-        reserved_after_arquivo = re.match(
-            r"^arquivo\s+"
-            r"(de|do|da|dos|das|para|por|com|contendo)"
-            r"(?:\s+(.*))?$",
+        result = cls._extract_explicit_target(
             remainder,
-            flags=re.IGNORECASE,
+            action,
         )
+        if result is not None:
+            return result
 
-        if reserved_after_arquivo:
-            target = cls._clean(
-                reserved_after_arquivo.group(1)
-            )
-            instruction = cls._clean_instruction(
-                reserved_after_arquivo.group(2) or ""
-            )
-
-            if action == "delete":
-                instruction = ""
-
-            return target, instruction
-
-        # ---------------------------------------------------------
-        # 4. Forma genérica:
-        #
-        #   arquivo teste.py conteúdo
-        #
-        # "arquivo" é apenas o marcador linguístico; o segundo
-        # token é o alvo.
-        # ---------------------------------------------------------
-        generic_file = re.match(
-            r"^arquivo\s+([^\s\"'`]+)(?:\s+(.*))?$",
+        result = cls._extract_quoted_target(
             remainder,
-            flags=re.IGNORECASE,
+            action,
         )
+        if result is not None:
+            return result
 
-        if generic_file:
-            target = cls._clean(generic_file.group(1))
-            instruction = cls._clean_instruction(
-                generic_file.group(2) or ""
-            )
+        result = cls._extract_reserved_after_arquivo(
+            remainder,
+            action,
+        )
+        if result is not None:
+            return result
 
-            if action == "delete":
-                instruction = ""
+        result = cls._extract_generic_file_target(
+            remainder,
+            action,
+        )
+        if result is not None:
+            return result
 
-            return target, instruction
-
-        # ---------------------------------------------------------
-        # 5. Forma iniciada diretamente por uma palavra reservada.
-        #
-        # Ex.:
-        #   de arquivo.py conteúdo
-        #
-        # O comportamento esperado pelos testes é preservar a
-        # palavra reservada como alvo.
-        # ---------------------------------------------------------
-        words = remainder.split(maxsplit=1)
-
-        target = cls._clean(words[0])
-
-        if len(words) > 1:
-            instruction = cls._clean_instruction(words[1])
-        else:
-            instruction = ""
-
-        if action == "delete":
-            instruction = ""
-
-        return target, instruction
+        return cls._extract_fallback_target(
+            remainder,
+            action,
+        )
