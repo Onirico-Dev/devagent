@@ -123,7 +123,7 @@ class RepairExecutor:
             ),
         )
 
-    def execute_repair(
+    def _prepare_repair_change(
         self,
         repair,
         instruction,
@@ -131,16 +131,20 @@ class RepairExecutor:
     ):
         change = self.build_change(repair)
         self.security.validate_path(change.path)
+
         target = self.security.root / change.path
+
         if target.exists() and target.is_symlink():
             raise PermissionError(
                 "Reparo recusado em caminho simbólico: "
                 f"{change.path}"
             )
+
         existing_paths = {
             existing.path
             for existing in transaction.changes
         }
+
         if (
             change.path in existing_paths
             and change.change_type == ChangeType.CREATE
@@ -149,6 +153,7 @@ class RepairExecutor:
                 "Arquivo já está registrado na transação: "
                 f"{change.path}"
             )
+
         if change.path not in existing_paths:
             if change.change_type == ChangeType.MODIFY:
                 self.transaction_manager.backup_file(
@@ -160,7 +165,9 @@ class RepairExecutor:
                     transaction,
                     change.path,
                 )
-            transaction.changes.append(change)
+
+        transaction.changes.append(change)
+
         transaction.metadata.setdefault(
             "repairs",
             [],
@@ -174,19 +181,14 @@ class RepairExecutor:
                 "risk": repair.get("risk", "baixo"),
             }
         )
-        try:
-            self.executor.execute_change(change)
-        except Exception as exc:
-            transaction.status = TransactionStatus.FAILED
-            return {
-                "success": False,
-                "status": RepairExecutorStatus.FAILED.value,
-                "transaction_id": transaction.transaction_id,
-                "error": str(exc),
-                "instruction": instruction,
-                "repair": repair,
-            }
 
+        return change
+
+    def _run_repair_tests(
+        self,
+        change,
+        transaction,
+    ):
         transaction.status = TransactionStatus.TESTING
 
         if self.test_runner is None:
@@ -194,24 +196,13 @@ class RepairExecutor:
                 "success": True,
                 "status": RepairExecutorStatus.REPAIR_APPLIED.value,
                 "transaction_id": transaction.transaction_id,
-                "instruction": instruction,
-                "repair": repair,
+                "instruction": "",
+                "repair": None,
             }
 
-        try:
-            test_result = self.test_runner.run(
-                [change.path]
-            )
-        except Exception as exc:
-            transaction.status = TransactionStatus.FAILED
-            return {
-                "success": False,
-                "status": RepairExecutorStatus.FAILED.value,
-                "transaction_id": transaction.transaction_id,
-                "error": str(exc),
-                "instruction": instruction,
-                "repair": repair,
-            }
+        test_result = self.test_runner.run(
+            [change.path]
+        )
 
         if (
             isinstance(test_result, dict)
@@ -223,26 +214,9 @@ class RepairExecutor:
             )
 
             if declared_tests:
-                try:
-                    semantic_result = (
-                        self.test_runner.run_tests(
-                            declared_tests,
-                        )
-                    )
-                except Exception as exc:
-                    transaction.status = TransactionStatus.FAILED
-                    return {
-                        "success": False,
-                        "status": (
-                            RepairExecutorStatus.FAILED.value
-                        ),
-                        "transaction_id": (
-                            transaction.transaction_id
-                        ),
-                        "error": str(exc),
-                        "instruction": instruction,
-                        "repair": repair,
-                    }
+                semantic_result = self.test_runner.run_tests(
+                    declared_tests,
+                )
 
                 test_result = {
                     "success": (
@@ -324,7 +298,62 @@ class RepairExecutor:
                 "stdout": "",
             }
 
-        test_success = test_result.get("success", False)
+        return test_result
+
+    def execute_repair(
+        self,
+        repair,
+        instruction,
+        transaction,
+    ):
+        change = self._prepare_repair_change(
+            repair,
+            instruction,
+            transaction,
+        )
+
+        try:
+            self.executor.execute_change(change)
+        except Exception as exc:
+            transaction.status = TransactionStatus.FAILED
+            return {
+                "success": False,
+                "status": RepairExecutorStatus.FAILED.value,
+                "transaction_id": transaction.transaction_id,
+                "error": str(exc),
+                "instruction": instruction,
+                "repair": repair,
+            }
+
+        try:
+            test_result = self._run_repair_tests(
+                change,
+                transaction,
+            )
+        except Exception as exc:
+            transaction.status = TransactionStatus.FAILED
+            return {
+                "success": False,
+                "status": RepairExecutorStatus.FAILED.value,
+                "transaction_id": transaction.transaction_id,
+                "error": str(exc),
+                "instruction": instruction,
+                "repair": repair,
+            }
+
+        if self.test_runner is None:
+            return {
+                "success": True,
+                "status": RepairExecutorStatus.REPAIR_APPLIED.value,
+                "transaction_id": transaction.transaction_id,
+                "instruction": instruction,
+                "repair": repair,
+            }
+
+        test_success = test_result.get(
+            "success",
+            False,
+        )
 
         return {
             "success": test_success,
