@@ -103,8 +103,10 @@ class RepairFlow:
 
         diagnosis = self.repair_engine.analyze_failure(
             instruction=instruction,
-            error=test_result.get("stderr", ""),
-            test_output=test_result.get("stdout", ""),
+            error=test_result.get("stderr")
+            or test_result.get("output", ""),
+            test_output=test_result.get("stdout")
+            or test_result.get("output", ""),
         )
 
         if not isinstance(diagnosis, dict):

@@ -216,12 +216,14 @@ class TransactionFlow:
         )
 
         if not isinstance(git_result, dict):
-            raise RuntimeError(
+            error = self.commit_error_type(
                 "Resultado de commit Git inválido."
             )
+            error.result = git_result
+            raise error
 
         if git_result.get("status") != GitStatus.COMMITTED.value:
-            raise RuntimeError(
+            error = self.commit_error_type(
                 "Commit Git não foi concluído: "
                 f"{git_result.get('status', 'desconhecido')}"
                 + (
@@ -230,6 +232,8 @@ class TransactionFlow:
                     else ""
                 )
             )
+            error.result = git_result
+            raise error
 
         transaction.status = TransactionStatus.COMMITTED
         repair_state.mark_committed()

@@ -2865,6 +2865,32 @@ def test_gateway_commit_failure_and_rollback_failure_propagates_rollback_error(
     )
 
 
+def test_gateway_sync_repair_controller_delegates_to_repair_flow():
+    from core.gateway import DevAgentGateway
+
+    gateway = object.__new__(DevAgentGateway)
+
+    calls = []
+
+    class FakeRepairFlow:
+        def sync_controller(self, transaction, state):
+            calls.append((transaction, state))
+            return "synced"
+
+    gateway.repair_flow = FakeRepairFlow()
+
+    transaction = object()
+    state = object()
+
+    result = gateway._sync_repair_controller(
+        transaction,
+        state,
+    )
+
+    assert result == "synced"
+    assert calls == [(transaction, state)]
+
+
 def test_gateway_keeps_approval_pending_when_post_begin_setup_fails(
     tmp_path,
     monkeypatch,
