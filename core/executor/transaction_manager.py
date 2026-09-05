@@ -484,10 +484,9 @@ class TransactionManager:
             }
         self.persist_manifest(transaction)
 
-    def rollback(self, transaction):
+    def _validate_backup_root(self, transaction):
         expected_backup = (
-            self.backup_dir /
-            transaction.transaction_id
+            self.backup_dir / transaction.transaction_id
         ).resolve()
 
         backup_root = Path(
@@ -504,10 +503,12 @@ class TransactionManager:
                 "Diretório de backup inválido."
             )
 
-        # Remove arquivos criados durante a transação.
+        return backup_root
+
+    def _remove_created_files(self, transaction):
         for relative_path in transaction.metadata.get(
             "created",
-            []
+            [],
         ):
             expected_identity = transaction.metadata.get(
                 "created_identity",
@@ -564,7 +565,7 @@ class TransactionManager:
 
                     if not stat.S_ISREG(file_stat.st_mode):
                         raise ValueError(
-                            f"Caminho criado não é um arquivo regular: "
+                            "Caminho criado não é um arquivo regular: "
                             f"{relative_path}"
                         )
 
@@ -600,15 +601,13 @@ class TransactionManager:
                         dir_fd=parent_fd,
                     )
                     self._fsync_directory(parent_fd)
-
                 finally:
                     os.close(file_fd)
             finally:
                 os.close(parent_fd)
 
-        # Restaura arquivos antigos.
+    def _restore_backup_files(self, backup_root):
         for backup_file in backup_root.rglob("*"):
-
             # Nunca seguir symlinks encontrados no backup.
             if backup_file.is_symlink():
                 raise ValueError(
@@ -635,7 +634,7 @@ class TransactionManager:
 
             destination.parent.mkdir(
                 parents=True,
-                exist_ok=True
+                exist_ok=True,
             )
 
             self._copy_file_no_follow(
@@ -645,6 +644,14 @@ class TransactionManager:
                 relative,
                 overwrite=True,
             )
+
+    def rollback(self, transaction):
+        backup_root = self._validate_backup_root(transaction)
+
+        self._remove_created_files(transaction)
+        self._restore_backup_files(
+            backup_root,
+        )
 
         transaction.status = (
             TransactionStatus.ROLLED_BACK
