@@ -300,3 +300,20 @@ def test_plan_validator_rejects_delete_with_content(tmp_path):
         match="DELETE não pode possuir conteúdo.",
     ):
         validator.validate(plan)
+
+
+def test_plan_validator_rejects_empty_test_reference():
+    validator = PlanValidator()
+
+    plan = Plan(
+        objective="teste",
+        changes=[],
+        tests=[""],
+        risks=[],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Cada teste deve ser um caminho de arquivo pytest",
+    ):
+        validator.validate(plan)

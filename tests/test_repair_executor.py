@@ -625,3 +625,46 @@ def test_validate_risk_rejects_medium_when_assessed_risk_is_medium(
                 "content": "conteudo de risco medio",
             }
         )
+
+
+def test_execute_repair_marks_failed_when_semantic_test_runner_raises(
+    tmp_path,
+):
+    class RaisingSemanticTestRunner:
+        def run(self, paths):
+            return {
+                "success": True,
+                "returncode": 0,
+                "stdout": "syntax ok",
+                "stderr": "",
+            }
+
+        def run_tests(self, test_files):
+            raise RuntimeError("falha nos testes semânticos")
+
+    fake_executor = FakeExecutor()
+    repair_executor = make_executor(
+        tmp_path,
+        executor=fake_executor,
+        test_runner=RaisingSemanticTestRunner(),
+    )
+    transaction = make_transaction(tmp_path)
+    transaction.metadata["tests"] = [
+        "tests/test_version.py",
+    ]
+
+    result = repair_executor.execute_repair(
+        repair={
+            "action": "create",
+            "path": "arquivo.py",
+            "content": "VALUE = 1\n",
+            "risk": "baixo",
+        },
+        instruction="reparar",
+        transaction=transaction,
+    )
+
+    assert result["success"] is False
+    assert result["status"] == "failed"
+    assert result["error"] == "falha nos testes semânticos"
+    assert transaction.status == TransactionStatus.FAILED

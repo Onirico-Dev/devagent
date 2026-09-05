@@ -17,7 +17,7 @@ def test_process_serializes_plan_and_updates_session(tmp_path):
                         "reason": "Criar aplicação"
                     }
                 ],
-                "tests": ["pytest"],
+                "tests": ["tests/test_agent.py"],
                 "risks": []
             }"""
 
@@ -27,7 +27,7 @@ def test_process_serializes_plan_and_updates_session(tmp_path):
 
     assert result["instruction"] == "criar app.py"
     assert result["objective"] == "Criar app.py"
-    assert result["tests"] == ["pytest"]
+    assert result["tests"] == ["tests/test_agent.py"]
     assert result["risks"] == []
     assert result["changes"] == [
         {

@@ -213,6 +213,95 @@ class RepairExecutor:
                 "repair": repair,
             }
 
+        if (
+            isinstance(test_result, dict)
+            and test_result.get("success")
+        ):
+            declared_tests = transaction.metadata.get(
+                "tests",
+                [],
+            )
+
+            if declared_tests:
+                try:
+                    semantic_result = (
+                        self.test_runner.run_tests(
+                            declared_tests,
+                        )
+                    )
+                except Exception as exc:
+                    transaction.status = TransactionStatus.FAILED
+                    return {
+                        "success": False,
+                        "status": (
+                            RepairExecutorStatus.FAILED.value
+                        ),
+                        "transaction_id": (
+                            transaction.transaction_id
+                        ),
+                        "error": str(exc),
+                        "instruction": instruction,
+                        "repair": repair,
+                    }
+
+                test_result = {
+                    "success": (
+                        test_result.get(
+                            "success",
+                            False,
+                        )
+                        and semantic_result.get(
+                            "success",
+                            False,
+                        )
+                    ),
+                    "returncode": (
+                        semantic_result.get(
+                            "returncode",
+                            test_result.get(
+                                "returncode",
+                                1,
+                            ),
+                        )
+                        if not semantic_result.get(
+                            "success",
+                            False,
+                        )
+                        else test_result.get(
+                            "returncode",
+                            0,
+                        )
+                    ),
+                    "stdout": "\n".join(
+                        part
+                        for part in (
+                            test_result.get(
+                                "stdout",
+                                "",
+                            ),
+                            semantic_result.get(
+                                "stdout",
+                                "",
+                            ),
+                        )
+                        if part
+                    ),
+                    "stderr": "\n".join(
+                        part
+                        for part in (
+                            test_result.get(
+                                "stderr",
+                                "",
+                            ),
+                            semantic_result.get(
+                                "stderr",
+                                "",
+                            ),
+                        )
+                        if part
+                    ),
+                }
+
         if not isinstance(test_result, dict):
             test_result = {
                 "success": False,

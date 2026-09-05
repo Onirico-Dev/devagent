@@ -1,3 +1,4 @@
+from core.executor.test_runner import TestRunner
 import py_compile
 import subprocess
 import sys
@@ -501,3 +502,168 @@ def test_run_pytest_rejects_relative_path_escape_after_resolution(
     assert result["success"] is False
     assert result["returncode"] == 1
     assert "fora do projeto" in result["stderr"]
+
+
+def test_run_tests_executes_declared_pytest_files(tmp_path):
+    test_file = tmp_path / "tests" / "test_version.py"
+    test_file.parent.mkdir()
+    test_file.write_text(
+        """
+def test_version():
+    assert 1 + 1 == 2
+""",
+        encoding="utf-8",
+    )
+
+    runner = TestRunner(tmp_path)
+
+    result = runner.run_tests(["tests/test_version.py"])
+
+    assert result["success"] is True
+    assert result["returncode"] == 0
+
+
+def test_run_tests_reports_pytest_failure(tmp_path):
+    test_file = tmp_path / "tests" / "test_version.py"
+    test_file.parent.mkdir()
+    test_file.write_text(
+        """
+def test_version():
+    assert "invalid" == "0.2"
+""",
+        encoding="utf-8",
+    )
+
+    runner = TestRunner(tmp_path)
+
+    result = runner.run_tests(["tests/test_version.py"])
+
+    assert result["success"] is False
+    assert result["returncode"] != 0
+
+
+def test_run_tests_rejects_absolute_path(tmp_path):
+    runner = TestRunner(tmp_path)
+
+    with pytest.raises(ValueError, match="Caminho absoluto não permitido"):
+        runner.run_tests([str(tmp_path / "tests" / "test_version.py")])
+
+
+def test_run_tests_rejects_path_escape(tmp_path):
+    runner = TestRunner(tmp_path)
+
+    with pytest.raises(ValueError, match="Caminho fora do projeto"):
+        runner.run_tests(["../tests/test_version.py"])
+
+
+def test_run_tests_rejects_non_pytest_reference(tmp_path):
+    runner = TestRunner(tmp_path)
+
+    with pytest.raises(ValueError, match="Teste inválido"):
+        runner.run_tests(["pytest -q"])
+
+
+def test_run_tests_rejects_missing_test_file(tmp_path):
+    runner = TestRunner(tmp_path)
+
+    result = runner.run_tests(["tests/test_missing.py"])
+
+    assert result["success"] is False
+    assert result["returncode"] == 1
+    assert "Arquivo não encontrado" in result["stderr"]
+
+
+def test_run_tests_executes_multiple_declared_files(tmp_path):
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+
+    (tests_dir / "test_one.py").write_text(
+        """
+def test_one():
+    assert 1 == 1
+""",
+        encoding="utf-8",
+    )
+
+    (tests_dir / "test_two.py").write_text(
+        """
+def test_two():
+    assert 2 == 2
+""",
+        encoding="utf-8",
+    )
+
+    runner = TestRunner(tmp_path)
+
+    result = runner.run_tests(
+        [
+            "tests/test_one.py",
+            "tests/test_two.py",
+        ]
+    )
+
+    assert result["success"] is True
+    assert result["returncode"] == 0
+
+
+def test_run_tests_rejects_non_list(tmp_path):
+    runner = TestRunner(tmp_path)
+
+    with pytest.raises(
+        ValueError,
+        match="Os testes devem ser fornecidos como uma lista",
+    ):
+        runner.run_tests("tests/test_version.py")
+
+
+def test_run_tests_rejects_empty_list(tmp_path):
+    runner = TestRunner(tmp_path)
+
+    with pytest.raises(
+        ValueError,
+        match="A lista de testes não pode ser vazia",
+    ):
+        runner.run_tests([])
+
+
+def test_run_tests_rejects_non_string_reference(tmp_path):
+    runner = TestRunner(tmp_path)
+
+    with pytest.raises(
+        ValueError,
+        match="Cada teste deve ser um caminho de arquivo pytest",
+    ):
+        runner.run_tests([123])
+
+
+def test_run_tests_rejects_non_python_file(tmp_path):
+    runner = TestRunner(tmp_path)
+
+    with pytest.raises(
+        ValueError,
+        match="O teste deve ser um arquivo Python",
+    ):
+        runner.run_tests(["tests/test_version.txt"])
+
+
+def test_run_tests_rejects_directory(tmp_path):
+    tests_dir = tmp_path / "tests" / "test_version.py"
+    tests_dir.mkdir(parents=True)
+
+    runner = TestRunner(tmp_path)
+
+    result = runner.run_tests(["tests/test_version.py"])
+
+    assert result["success"] is False
+    assert result["returncode"] == 1
+    assert "Arquivo de teste inválido" in result["stderr"]
+
+
+def test_run_tests_rejects_invalid_pytest_filename(tmp_path):
+    runner = TestRunner(tmp_path)
+
+    with pytest.raises(
+        ValueError,
+        match=r"test_\*\.py ou \*_test\.py",
+    ):
+        runner.run_tests(["tests/version.py"])

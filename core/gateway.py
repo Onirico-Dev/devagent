@@ -978,6 +978,71 @@ class DevAgentGateway:
                 ]
             )
 
+            declared_tests = transaction.metadata.get(
+                "tests",
+                [],
+            )
+
+            if test_result.get("success") and declared_tests:
+                semantic_result = self.tests.run_tests(
+                    declared_tests,
+                )
+
+                test_result = {
+                    "success": (
+                        test_result.get("success", False)
+                        and semantic_result.get(
+                            "success",
+                            False,
+                        )
+                    ),
+                    "returncode": (
+                        semantic_result.get(
+                            "returncode",
+                            test_result.get(
+                                "returncode",
+                                1,
+                            ),
+                        )
+                        if not semantic_result.get(
+                            "success",
+                            False,
+                        )
+                        else test_result.get(
+                            "returncode",
+                            0,
+                        )
+                    ),
+                    "stdout": "\n".join(
+                        part
+                        for part in (
+                            test_result.get(
+                                "stdout",
+                                "",
+                            ),
+                            semantic_result.get(
+                                "stdout",
+                                "",
+                            ),
+                        )
+                        if part
+                    ),
+                    "stderr": "\n".join(
+                        part
+                        for part in (
+                            test_result.get(
+                                "stderr",
+                                "",
+                            ),
+                            semantic_result.get(
+                                "stderr",
+                                "",
+                            ),
+                        )
+                        if part
+                    ),
+                }
+
             # ----------------------------------------------------------
             # SUCESSO INICIAL
             # ----------------------------------------------------------

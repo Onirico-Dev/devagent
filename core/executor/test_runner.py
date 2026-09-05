@@ -7,6 +7,8 @@ __test__ = False
 
 
 class TestRunner:
+    __test__ = False
+
     def __init__(self, root="."):
         self.root = Path(root).resolve()
 
@@ -122,6 +124,87 @@ class TestRunner:
             "stderr": result.stderr,
         }
 
+    def run_tests(self, test_files):
+        if not isinstance(test_files, list):
+            raise ValueError(
+                "Os testes devem ser fornecidos como uma lista."
+            )
+
+        if not test_files:
+            raise ValueError(
+                "A lista de testes não pode ser vazia."
+            )
+
+        safe_files = []
+
+        for file in test_files:
+            if not isinstance(file, (str, Path)):
+                raise ValueError(
+                    "Cada teste deve ser um caminho de arquivo pytest."
+                )
+
+            target = self._safe_path(file)
+            relative = target.relative_to(self.root)
+            name = relative.name
+
+            if not name.endswith(".py"):
+                raise ValueError(
+                    f"Teste inválido: {file}. "
+                    "O teste deve ser um arquivo Python."
+                )
+
+            if not (
+                name.startswith("test_")
+                or name.endswith("_test.py")
+            ):
+                raise ValueError(
+                    f"Teste inválido: {file}. "
+                    "O arquivo deve seguir o padrão "
+                    "test_*.py ou *_test.py."
+                )
+
+            if not target.exists():
+                return {
+                    "success": False,
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": (
+                        f"Arquivo não encontrado: {file}"
+                    ),
+                }
+
+            if not target.is_file():
+                return {
+                    "success": False,
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": (
+                        f"Arquivo de teste inválido: {file}"
+                    ),
+                }
+
+            safe_files.append(relative.as_posix())
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                *safe_files,
+            ],
+            cwd=str(self.root),
+            capture_output=True,
+            text=True,
+        )
+
+        return {
+            "success": result.returncode == 0,
+            "returncode": result.returncode,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+        }
+
     def run(self, files=None):
         if not files:
             result = subprocess.run(
@@ -185,7 +268,6 @@ class TestRunner:
             for result in results
             if result["stdout"]
         )
-
         stderr = "\n".join(
             result["stderr"]
             for result in results

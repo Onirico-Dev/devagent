@@ -28,7 +28,7 @@ def test_ai_planner_creates_plan_from_valid_json():
                 "reason": "Criar arquivo principal",
             }
         ],
-        "tests": ["python -m pytest"],
+        "tests": ["tests/test_ai_planner.py"],
         "risks": ["Baixo"],
     })
 
@@ -46,7 +46,7 @@ def test_ai_planner_creates_plan_from_valid_json():
     assert plan.changes[0].path == "app.py"
     assert plan.changes[0].content == "print('hello')"
     assert plan.changes[0].reason == "Criar arquivo principal"
-    assert plan.tests == ["python -m pytest"]
+    assert plan.tests == ["tests/test_ai_planner.py"]
     assert plan.risks == ["Baixo"]
 
 
@@ -441,3 +441,79 @@ def test_ai_planner_rejects_required_change_without_changes():
         match="A solicitação exige alteração no projeto",
     ):
         planner.create_plan("criar o arquivo novo.py")
+
+
+def test_ai_planner_rejects_empty_test_reference():
+    response = {
+        "objective": "teste",
+        "changes": [],
+        "tests": [""],
+        "risks": [],
+    }
+
+    class FixedAdapter:
+        def generate(self, prompt):
+            return json.dumps(response)
+
+    with pytest.raises(
+        ValueError,
+        match="Cada teste deve ser um caminho de arquivo pytest",
+    ):
+        AIPlanner(FixedAdapter()).create_plan("teste")
+
+
+def test_ai_planner_rejects_absolute_test_reference():
+    response = {
+        "objective": "teste",
+        "changes": [],
+        "tests": ["/tmp/test_version.py"],
+        "risks": [],
+    }
+
+    class FixedAdapter:
+        def generate(self, prompt):
+            return json.dumps(response)
+
+    with pytest.raises(
+        ValueError,
+        match="Caminho absoluto não permitido",
+    ):
+        AIPlanner(FixedAdapter()).create_plan("teste")
+
+
+def test_ai_planner_rejects_test_path_escape():
+    response = {
+        "objective": "teste",
+        "changes": [],
+        "tests": ["../tests/test_version.py"],
+        "risks": [],
+    }
+
+    class FixedAdapter:
+        def generate(self, prompt):
+            return json.dumps(response)
+
+    with pytest.raises(
+        ValueError,
+        match="Caminho fora do projeto",
+    ):
+        AIPlanner(FixedAdapter()).create_plan("teste")
+
+
+def test_ai_planner_rejects_invalid_test_filename():
+    response = {
+        "objective": "teste",
+        "changes": [],
+        "tests": ["tests/version.py"],
+        "risks": [],
+    }
+
+    class FixedAdapter:
+        def generate(self, prompt):
+            return json.dumps(response)
+
+    with pytest.raises(
+        ValueError,
+        match="test_\\*\\.py ou \\*_test\\.py",
+    ):
+        AIPlanner(FixedAdapter()).create_plan("teste")

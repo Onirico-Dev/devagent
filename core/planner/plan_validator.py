@@ -1,15 +1,56 @@
 from pathlib import Path
 
-from core.schemas.models import (
-    Change,
-    ChangeType,
-    Plan,
-)
+from core.schemas.models import Change, ChangeType, Plan
 
 
 class PlanValidator:
     def __init__(self, root="."):
         self.root = Path(root).resolve()
+
+    def _validate_test_path(self, test):
+        if not isinstance(test, str):
+            raise ValueError(
+                "Cada teste deve ser uma string."
+            )
+
+        if not test.strip():
+            raise ValueError(
+                "Cada teste deve ser um caminho de arquivo pytest."
+            )
+
+        relative_path = Path(test)
+
+        if relative_path.is_absolute():
+            raise ValueError(
+                f"Caminho absoluto não permitido: {test}"
+            )
+
+        target = (self.root / relative_path).resolve()
+
+        try:
+            target.relative_to(self.root)
+        except ValueError as error:
+            raise ValueError(
+                f"Caminho fora do projeto: {test}"
+            ) from error
+
+        name = relative_path.name
+
+        if not name.endswith(".py"):
+            raise ValueError(
+                f"Teste inválido: {test}. "
+                "O teste deve ser um arquivo Python."
+            )
+
+        if not (
+            name.startswith("test_")
+            or name.endswith("_test.py")
+        ):
+            raise ValueError(
+                f"Teste inválido: {test}. "
+                "O arquivo deve seguir o padrão "
+                "test_*.py ou *_test.py."
+            )
 
     def validate(self, plan: Plan):
         if not isinstance(plan, Plan):
@@ -43,10 +84,7 @@ class PlanValidator:
             )
 
         for test in plan.tests:
-            if not isinstance(test, str):
-                raise ValueError(
-                    "Cada teste deve ser uma string."
-                )
+            self._validate_test_path(test)
 
         for risk in plan.risks:
             if not isinstance(risk, str):
@@ -87,7 +125,9 @@ class PlanValidator:
                     f"Caminho absoluto não permitido: {change.path}"
                 )
 
-            target = (self.root / relative_path).resolve()
+            target = (
+                self.root / relative_path
+            ).resolve()
 
             try:
                 target.relative_to(self.root)

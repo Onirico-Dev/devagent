@@ -570,7 +570,7 @@ def test_plan_validator_rejects_non_string_test(tmp_path):
     plan = Plan(
         objective="teste",
         changes=[],
-        tests=["pytest", 123],
+        tests=["tests/test_plan.py", 123],
     )
 
     with pytest.raises(

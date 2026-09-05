@@ -115,7 +115,7 @@ def test_pipeline_with_ai_planner_accepts_multiple_changes(tmp_path):
                     },
                 ],
                 "tests": [
-                    "python -m pytest"
+                    "tests/test_ai_pipeline.py"
                 ],
                 "risks": [],
             })

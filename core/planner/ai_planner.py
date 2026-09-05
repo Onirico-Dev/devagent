@@ -52,7 +52,7 @@ Formato obrigatório:
         }}
     ],
     "tests": [
-        "teste que deve ser executado"
+        "caminho relativo de um arquivo pytest"
     ],
     "risks": [
         "risco identificado"
@@ -76,6 +76,12 @@ Regras:
 12. Retorne somente o JSON.
 13. Se a solicitação exigir uma alteração no projeto,
     "changes" NÃO pode ser uma lista vazia.
+14. O campo "tests" deve conter somente caminhos relativos de arquivos
+    Python destinados ao pytest.
+15. Cada teste deve seguir o padrão test_*.py ou *_test.py.
+16. Não coloque comandos como "pytest -q" ou "python -m pytest" em "tests".
+17. Não coloque asserções, expressões ou código Python em "tests".
+18. Nunca use caminhos absolutos ou caminhos contendo ../ em "tests".
 """
 
         response = self.ai.generate(prompt)
@@ -148,10 +154,7 @@ Regras:
             )
 
         for test in tests:
-            if not isinstance(test, str):
-                raise ValueError(
-                    "Cada teste deve ser uma string."
-                )
+            self._validate_test_reference(test)
 
         for risk in risks:
             if not isinstance(risk, str):
@@ -168,6 +171,7 @@ Regras:
                 )
 
             change_type = item.get("change_type")
+
             if change_type is None:
                 change_type = item.get("type")
 
@@ -200,6 +204,7 @@ Regras:
                     raise ValueError(
                         "DELETE não pode possuir conteúdo."
                     )
+
             elif change_type in (
                 ChangeType.CREATE,
                 ChangeType.MODIFY,
@@ -237,7 +242,56 @@ Regras:
             risks=risks,
         )
 
-    def _requires_change(self, instruction: str) -> bool:
+    def _validate_test_reference(
+        self,
+        test,
+    ):
+        if not isinstance(test, str):
+            raise ValueError(
+                "Cada teste deve ser uma string."
+            )
+
+        if not test.strip():
+            raise ValueError(
+                "Cada teste deve ser um caminho de arquivo pytest."
+            )
+
+        normalized = test.replace("\\", "/")
+
+        if normalized.startswith("/"):
+            raise ValueError(
+                f"Caminho absoluto não permitido: {test}"
+            )
+
+        parts = normalized.split("/")
+
+        if ".." in parts:
+            raise ValueError(
+                f"Caminho fora do projeto: {test}"
+            )
+
+        name = parts[-1]
+
+        if not name.endswith(".py"):
+            raise ValueError(
+                f"Teste inválido: {test}. "
+                "O teste deve ser um arquivo Python."
+            )
+
+        if not (
+            name.startswith("test_")
+            or name.endswith("_test.py")
+        ):
+            raise ValueError(
+                f"Teste inválido: {test}. "
+                "O arquivo deve seguir o padrão "
+                "test_*.py ou *_test.py."
+            )
+
+    def _requires_change(
+        self,
+        instruction: str,
+    ) -> bool:
         operational_terms = (
             "criar",
             "crie",
