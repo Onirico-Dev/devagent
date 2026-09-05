@@ -44,7 +44,7 @@ class DevAgentPipeline:
                 command
             )
 
-        self.validator.validate(
+        self.validator.validate_project_coherence(
             plan
         )
 

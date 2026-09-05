@@ -332,3 +332,51 @@ def test_build_skips_file_when_section_exceeds_context_limit(tmp_path):
     assert "=== ARQUIVO: first.py ===" in result
     assert "=== ARQUIVO: second.py ===" not in result
     assert "ARQUIVOS INCLUÍDOS NO CONTEXTO: 1" in result
+
+def test_project_context_build_includes_python_metadata(tmp_path):
+    (tmp_path / "example.py").write_text(
+        "import os\n"
+        "from pathlib import Path\n"
+        "\n"
+        "def hello():\n"
+        "    pass\n"
+        "\n"
+        "class Service:\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+
+    context = ProjectContext(tmp_path).build()
+
+    assert "=== ANÁLISE PYTHON ===" in context
+    assert "IMPORTS:" in context
+    assert "FUNÇÕES:" in context
+    assert "CLASSES:" in context
+    assert "hello" in context
+    assert "Service" in context
+    assert "os" in context
+    assert "pathlib.Path" in context
+
+
+def test_project_context_build_reports_invalid_python_metadata(tmp_path):
+    (tmp_path / "broken.py").write_text(
+        "def broken(:\n",
+        encoding="utf-8",
+    )
+
+    context = ProjectContext(tmp_path).build()
+
+    assert "=== ANÁLISE PYTHON ===" in context
+    assert "ERRO: Código Python inválido:" in context
+
+
+def test_project_context_build_does_not_analyze_non_python_files(tmp_path):
+    (tmp_path / "config.json").write_text(
+        '{"name": "devagent"}',
+        encoding="utf-8",
+    )
+
+    context = ProjectContext(tmp_path).build()
+
+    assert "=== ANÁLISE PYTHON ===" not in context
+    assert "config.json" in context

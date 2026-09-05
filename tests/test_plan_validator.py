@@ -317,3 +317,103 @@ def test_plan_validator_rejects_empty_test_reference():
         match="Cada teste deve ser um caminho de arquivo pytest",
     ):
         validator.validate(plan)
+
+
+def test_plan_validator_rejects_absolute_test_path(tmp_path):
+    validator = PlanValidator(str(tmp_path))
+
+    plan = Plan(
+        objective="Executar teste",
+        changes=[],
+        tests=["/tmp/test_example.py"],
+        risks=[],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Caminho absoluto não permitido",
+    ):
+        validator.validate(plan)
+
+
+def test_plan_validator_rejects_test_path_outside_project(tmp_path):
+    validator = PlanValidator(str(tmp_path))
+
+    plan = Plan(
+        objective="Executar teste",
+        changes=[],
+        tests=["../test_example.py"],
+        risks=[],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Caminho fora do projeto",
+    ):
+        validator.validate(plan)
+
+
+def test_plan_validator_rejects_non_python_test_file(tmp_path):
+    validator = PlanValidator(str(tmp_path))
+
+    plan = Plan(
+        objective="Executar teste",
+        changes=[],
+        tests=["test_example.txt"],
+        risks=[],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="O teste deve ser um arquivo Python",
+    ):
+        validator.validate(plan)
+
+
+def test_plan_validator_rejects_invalid_pytest_filename(tmp_path):
+    validator = PlanValidator(str(tmp_path))
+
+    plan = Plan(
+        objective="Executar teste",
+        changes=[],
+        tests=["example.py"],
+        risks=[],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"test_.*\.py ou \*_test\.py",
+    ):
+        validator.validate(plan)
+
+
+def test_plan_validator_project_coherence_rejects_outside_path(
+    tmp_path,
+):
+    validator = PlanValidator(str(tmp_path))
+
+    outside = tmp_path.parent / "outside.py"
+    outside.write_text(
+        "print('outside')",
+        encoding="utf-8",
+    )
+
+    change = Change(
+        change_type=ChangeType.MODIFY,
+        path="../outside.py",
+        content="print('modified')",
+        reason="Teste de segurança",
+    )
+
+    plan = Plan(
+        objective="Modificar arquivo",
+        changes=[change],
+        tests=[],
+        risks=[],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Caminho fora do projeto",
+    ):
+        validator.validate_project_coherence(plan)

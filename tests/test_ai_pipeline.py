@@ -255,3 +255,153 @@ def test_devagent_propagates_ai_adapter_http_error(tmp_path):
 
     with pytest.raises(RuntimeError, match="HTTP 429"):
         agent.process("Crie app.py")
+
+
+def test_pipeline_sends_project_context_to_ai_planner(tmp_path):
+    existing = tmp_path / "existing.py"
+    existing.write_text(
+        "def hello():\n    return 'hello'\n",
+        encoding="utf-8",
+    )
+
+    class ContextAdapter:
+        def __init__(self):
+            self.prompt = None
+
+        def generate(self, prompt):
+            self.prompt = prompt
+            return json.dumps({
+                "objective": "Criar novo arquivo",
+                "changes": [
+                    {
+                        "type": "create",
+                        "path": "new.py",
+                        "content": "print('new')",
+                        "reason": "Novo arquivo",
+                    }
+                ],
+                "tests": [],
+                "risks": [],
+            })
+
+    adapter = ContextAdapter()
+
+    pipeline = DevAgentPipeline(
+        root=str(tmp_path),
+        ai_adapter=adapter,
+    )
+
+    pipeline.process("Crie new.py")
+
+    assert "existing.py" in adapter.prompt
+    assert "def hello():" in adapter.prompt
+    assert "FUNÇÕES:" in adapter.prompt
+
+
+def test_pipeline_accepts_multi_file_plan_with_existing_and_new_files(tmp_path):
+    modify_file = tmp_path / "modify.py"
+    delete_file = tmp_path / "delete.py"
+
+    modify_file.write_text(
+        "def old():\n    return 'old'\n",
+        encoding="utf-8",
+    )
+    delete_file.write_text(
+        "print('delete me')\n",
+        encoding="utf-8",
+    )
+
+    class MultiFileAdapter:
+        def generate(self, prompt):
+            return json.dumps({
+                "objective": "Atualizar projeto em múltiplos arquivos",
+                "changes": [
+                    {
+                        "type": "modify",
+                        "path": "modify.py",
+                        "content": "def new():\n    return 'new'\n",
+                        "reason": "Atualizar implementação",
+                    },
+                    {
+                        "type": "create",
+                        "path": "create.py",
+                        "content": "print('created')\n",
+                        "reason": "Adicionar novo módulo",
+                    },
+                    {
+                        "type": "delete",
+                        "path": "delete.py",
+                        "content": None,
+                        "reason": "Remover arquivo obsoleto",
+                    },
+                ],
+                "tests": [],
+                "risks": [],
+            })
+
+    pipeline = DevAgentPipeline(
+        root=str(tmp_path),
+        ai_adapter=MultiFileAdapter(),
+    )
+
+    plan = pipeline.process(
+        "Atualize modify.py, crie create.py e remova delete.py"
+    )
+
+    assert len(plan.changes) == 3
+    assert [change.path for change in plan.changes] == [
+        "modify.py",
+        "create.py",
+        "delete.py",
+    ]
+
+
+def test_pipeline_rejects_multi_file_plan_with_missing_modify_target(tmp_path):
+    class MissingFileAdapter:
+        def generate(self, prompt):
+            return json.dumps({
+                "objective": "Atualizar arquivo inexistente",
+                "changes": [
+                    {
+                        "type": "modify",
+                        "path": "missing.py",
+                        "content": "print('new')\n",
+                        "reason": "Arquivo ausente",
+                    },
+                    {
+                        "type": "create",
+                        "path": "create.py",
+                        "content": "print('created')\n",
+                        "reason": "Criar arquivo",
+                    },
+                ],
+                "tests": [],
+                "risks": [],
+            })
+
+    pipeline = DevAgentPipeline(
+        root=str(tmp_path),
+        ai_adapter=MissingFileAdapter(),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Arquivo inexistente para MODIFY: missing.py",
+    ):
+        pipeline.process(
+            "Atualize missing.py e crie create.py"
+        )
+
+
+def test_pipeline_uses_classic_planner_without_ai_adapter(tmp_path):
+    pipeline = DevAgentPipeline(
+        root=str(tmp_path),
+    )
+
+    plan = pipeline.process(
+        "Crie classic.py com conteúdo print('classic')"
+    )
+
+    assert len(plan.changes) == 1
+    assert plan.changes[0].path == "classic.py"
+    assert plan.changes[0].content

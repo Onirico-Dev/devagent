@@ -782,3 +782,189 @@ def test_planner_rejects_empty_target(action):
 
     with pytest.raises(ValueError, match="Operação exige um alvo textual"):
         Planner().create_plan(command)
+
+
+# ============================================================
+# PLAN VALIDATOR — PROJECT COHERENCE
+# ============================================================
+
+def test_plan_validator_rejects_modify_nonexistent_file(tmp_path):
+    validator = PlanValidator(tmp_path)
+
+    plan = Plan(
+        objective="Modificar arquivo inexistente",
+        changes=[
+            Change(
+                change_type=ChangeType.MODIFY,
+                path="inexistente.py",
+                content="print('novo')",
+                reason="Teste",
+            )
+        ],
+        tests=[],
+        risks=[],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Arquivo inexistente para MODIFY",
+    ):
+        validator.validate_project_coherence(plan)
+
+def test_plan_validator_rejects_delete_nonexistent_file(tmp_path):
+    validator = PlanValidator(tmp_path)
+
+    plan = Plan(
+        objective="Excluir arquivo inexistente",
+        changes=[
+            Change(
+                change_type=ChangeType.DELETE,
+                path="inexistente.py",
+                content=None,
+                reason="Teste",
+            )
+        ],
+        tests=[],
+        risks=[],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Arquivo inexistente para DELETE",
+    ):
+        validator.validate_project_coherence(plan)
+
+def test_plan_validator_accepts_modify_existing_file(tmp_path):
+    target = tmp_path / "existente.py"
+    target.write_text(
+        "print('original')\n",
+        encoding="utf-8",
+    )
+
+    plan = Plan(
+        objective="Modificar arquivo",
+        changes=[
+            Change(
+                change_type=ChangeType.MODIFY,
+                path="existente.py",
+                content="print('novo')",
+                reason="Teste",
+            )
+        ],
+        tests=[],
+        risks=[],
+    )
+
+    validator = PlanValidator(str(tmp_path))
+
+    assert validator.validate_project_coherence(plan) is True
+
+
+def test_plan_validator_accepts_delete_existing_file(tmp_path):
+    target = tmp_path / "existente.py"
+    target.write_text(
+        "print('original')\n",
+        encoding="utf-8",
+    )
+
+    plan = Plan(
+        objective="Excluir arquivo",
+        changes=[
+            Change(
+                change_type=ChangeType.DELETE,
+                path="existente.py",
+                content=None,
+                reason="Teste",
+            )
+        ],
+        tests=[],
+        risks=[],
+    )
+
+    validator = PlanValidator(str(tmp_path))
+
+    assert validator.validate_project_coherence(plan) is True
+
+# ============================================================
+# PLAN VALIDATOR — MULTI-FILE PROJECT COHERENCE
+# ============================================================
+
+
+def test_plan_validator_project_coherence_accepts_mixed_existing_changes(
+    tmp_path,
+):
+    (tmp_path / "modify.py").write_text(
+        "print('original')\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "delete.py").write_text(
+        "print('remover')\n",
+        encoding="utf-8",
+    )
+
+    validator = PlanValidator(tmp_path)
+
+    plan = Plan(
+        objective="Modificar, excluir e criar arquivos",
+        changes=[
+            Change(
+                change_type=ChangeType.MODIFY,
+                path="modify.py",
+                content="print('novo')",
+                reason="Atualizar arquivo",
+            ),
+            Change(
+                change_type=ChangeType.DELETE,
+                path="delete.py",
+                content=None,
+                reason="Remover arquivo",
+            ),
+            Change(
+                change_type=ChangeType.CREATE,
+                path="create.py",
+                content="print('criado')",
+                reason="Criar arquivo",
+            ),
+        ],
+        tests=[],
+        risks=[],
+    )
+
+    assert validator.validate_project_coherence(plan) is True
+
+
+def test_plan_validator_project_coherence_rejects_mixed_plan_with_missing_modify(
+    tmp_path,
+):
+    (tmp_path / "existing.py").write_text(
+        "print('original')\n",
+        encoding="utf-8",
+    )
+
+    validator = PlanValidator(tmp_path)
+
+    plan = Plan(
+        objective="Plano misto inválido",
+        changes=[
+            Change(
+                change_type=ChangeType.MODIFY,
+                path="existing.py",
+                content="print('novo')",
+                reason="Atualizar arquivo",
+            ),
+            Change(
+                change_type=ChangeType.DELETE,
+                path="missing.py",
+                content=None,
+                reason="Excluir arquivo inexistente",
+            ),
+        ],
+        tests=[],
+        risks=[],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Arquivo inexistente para DELETE",
+    ):
+        validator.validate_project_coherence(plan)

@@ -154,3 +154,26 @@ class PlanValidator:
                     )
 
         return True
+
+    def validate_project_coherence(self, plan: Plan):
+        self.validate(plan)
+
+        for change in plan.changes:
+            if change.change_type not in (
+                ChangeType.MODIFY,
+                ChangeType.DELETE,
+            ):
+                continue
+
+            target = (
+                self.root / Path(change.path)
+            ).resolve()
+
+            if not target.is_file():
+                operation = change.change_type.value.upper()
+                raise ValueError(
+                    f"Arquivo inexistente para {operation}: "
+                    f"{change.path}"
+                )
+
+        return True
