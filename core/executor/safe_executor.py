@@ -4,6 +4,8 @@ import stat
 import secrets
 from pathlib import Path
 
+from core.executor.secure_filesystem import SecureFileSystem
+
 from core.schemas.models import ChangeType, TransactionStatus
 
 
@@ -26,89 +28,34 @@ class SafeExecutor:
         return target
 
     @staticmethod
-    def _open_directory_chain(root: Path, parts: tuple[str, ...]):
-        fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        try:
-            for part in parts:
-                if part in ("", ".", ".."):
-                    raise ValueError(f"Caminho inválido: {part}")
-                next_fd = os.open(
-                    part,
-                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                    dir_fd=fd,
-                )
-                os.close(fd)
-                fd = next_fd
-            return fd
-        except Exception:
-            os.close(fd)
-            raise
+    def _open_directory_chain(
+        root: Path,
+        parts: tuple[str, ...],
+        *,
+        create: bool = False,
+    ) -> int:
+        return SecureFileSystem.open_directory_chain(
+            root,
+            parts,
+            create=create,
+        )
 
-    @classmethod
+    @staticmethod
     def _open_parent_directory(
-        cls,
         root: Path,
         relative_path: str,
         *,
         create: bool = False,
-    ):
-        relative = Path(relative_path)
-
-        if relative.is_absolute():
-            raise ValueError(
-                f"Caminho absoluto não permitido: {relative_path}"
-            )
-
-        parts = relative.parts
-        if not parts or parts[-1] in ("", ".", ".."):
-            raise ValueError(f"Caminho inválido: {relative_path}")
-
-        parent_parts = parts[:-1]
-
-        if not parent_parts:
-            return os.open(
-                root,
-                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-            )
-
-        if not create:
-            return cls._open_directory_chain(root, parent_parts)
-
-        fd = os.open(
+    ) -> int:
+        return SecureFileSystem.open_parent_directory(
             root,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            relative_path,
+            create=create,
         )
-
-        try:
-            for part in parent_parts:
-                if part in ("", ".", ".."):
-                    raise ValueError(f"Caminho inválido: {relative_path}")
-
-                try:
-                    next_fd = os.open(
-                        part,
-                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                        dir_fd=fd,
-                    )
-                except FileNotFoundError:
-                    os.mkdir(part, 0o755, dir_fd=fd)
-                    next_fd = os.open(
-                        part,
-                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                        dir_fd=fd,
-                    )
-
-                os.close(fd)
-                fd = next_fd
-
-            return fd
-        except Exception:
-            os.close(fd)
-            raise
 
     @staticmethod
     def _fsync_directory(parent_fd: int) -> None:
-        os.fsync(parent_fd)
+        SecureFileSystem.fsync_directory(parent_fd)
 
     @staticmethod
     def _write_new_file_in_parent(
