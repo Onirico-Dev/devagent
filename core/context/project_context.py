@@ -90,12 +90,12 @@ class ProjectContext:
             self.root / relative_path
         ).resolve()
 
-        if not str(path).startswith(
-            str(self.root)
-        ):
+        try:
+            path.relative_to(self.root)
+        except ValueError:
             raise ValueError(
                 f"Caminho bloqueado: {relative_path}"
-            )
+            ) from None
 
         if self._is_ignored(path):
             raise ValueError(

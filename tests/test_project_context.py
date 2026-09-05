@@ -141,6 +141,37 @@ def test_read_file_rejects_path_escape(tmp_path):
         context.read_file("../outside.py")
 
 
+def test_read_file_rejects_path_prefix_collision(tmp_path):
+    context = ProjectContext(tmp_path)
+
+    sibling = tmp_path.parent / f"{tmp_path.name}-malicious"
+    sibling.mkdir()
+    secret = sibling / "secret.py"
+    secret.write_text("secret", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Caminho bloqueado"):
+        context.read_file(
+            str(secret)
+        )
+
+
+def test_read_file_rejects_symlink_to_external_file(tmp_path):
+    context = ProjectContext(tmp_path)
+
+    outside = tmp_path.parent / "external-secret.py"
+    outside.write_text("secret", encoding="utf-8")
+
+    link = tmp_path / "linked.py"
+
+    try:
+        link.symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("Symlinks não suportados neste ambiente.")
+
+    with pytest.raises(ValueError, match="Caminho bloqueado"):
+        context.read_file("linked.py")
+
+
 def test_read_file_rejects_ignored_file(tmp_path):
     context = ProjectContext(tmp_path)
 
