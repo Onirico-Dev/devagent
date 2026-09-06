@@ -221,6 +221,97 @@ class TransactionManager:
 
         return recovered
 
+    def _create_backup_directory(self, parent_fd, backup_name):
+        try:
+            try:
+                os.mkdir(
+                    backup_name,
+                    dir_fd=parent_fd,
+                )
+            except FileExistsError:
+                pass
+            except OSError as error:
+                if error.errno in (errno.ELOOP, errno.ENOTDIR):
+                    raise ValueError(
+                        "Diretório de backup inválido."
+                    ) from error
+
+            backup_parent_fd = os.open(
+                backup_name,
+                os.O_RDONLY
+                | os.O_DIRECTORY
+                | os.O_NOFOLLOW,
+                dir_fd=parent_fd,
+            )
+        except OSError as error:
+            raise ValueError(
+                "Diretório de backup inválido."
+            ) from error
+
+        return backup_parent_fd
+
+    def _create_transaction_directory(
+        self,
+        backup_parent_fd,
+        transaction,
+    ):
+        backup_stat = os.fstat(backup_parent_fd)
+        if not stat.S_ISDIR(backup_stat.st_mode):
+            raise ValueError(
+                "Diretório de backup inválido."
+            )
+
+        try:
+            os.mkdir(
+                transaction.transaction_id,
+                dir_fd=backup_parent_fd,
+            )
+        except FileExistsError:
+            if transaction.transaction_id == "unused":
+                raise ValueError(
+                    "Diretório de backup já existe ou não é seguro."
+                )
+
+            transaction.transaction_id = str(uuid.uuid4())
+
+            try:
+                os.mkdir(
+                    transaction.transaction_id,
+                    dir_fd=backup_parent_fd,
+                )
+            except OSError as error:
+                if error.errno in (
+                    errno.ELOOP,
+                    errno.ENOTDIR,
+                    errno.EEXIST,
+                ):
+                    raise ValueError(
+                        "Diretório de backup já existe ou não é seguro."
+                    ) from error
+                raise
+        except OSError as error:
+            if error.errno in (errno.ELOOP, errno.ENOTDIR):
+                raise ValueError(
+                    "Diretório de backup já existe ou não é seguro."
+                ) from error
+            raise
+
+        transaction_fd = os.open(
+            transaction.transaction_id,
+            os.O_RDONLY
+            | os.O_DIRECTORY
+            | os.O_NOFOLLOW,
+            dir_fd=backup_parent_fd,
+        )
+        try:
+            transaction_stat = os.fstat(transaction_fd)
+            if not stat.S_ISDIR(transaction_stat.st_mode):
+                raise ValueError(
+                    "Diretório de backup inválido."
+                )
+        finally:
+            os.close(transaction_fd)
+
     def begin(self, transaction):
         if not getattr(transaction, "transaction_id", None) or transaction.transaction_id == "unused":
             transaction.transaction_id = str(uuid.uuid4())
@@ -237,89 +328,15 @@ class TransactionManager:
             create=True,
         )
         try:
+            backup_parent_fd = self._create_backup_directory(
+                parent_fd,
+                backup_name,
+            )
             try:
-                try:
-                    os.mkdir(
-                        backup_name,
-                        dir_fd=parent_fd,
-                    )
-                except FileExistsError:
-                    pass
-                except OSError as error:
-                    if error.errno in (errno.ELOOP, errno.ENOTDIR):
-                        raise ValueError(
-                            "Diretório de backup inválido."
-                        ) from error
-
-                backup_parent_fd = os.open(
-                    backup_name,
-                    os.O_RDONLY
-                    | os.O_DIRECTORY
-                    | os.O_NOFOLLOW,
-                    dir_fd=parent_fd,
+                self._create_transaction_directory(
+                    backup_parent_fd,
+                    transaction,
                 )
-            except OSError as error:
-                raise ValueError(
-                    "Diretório de backup inválido."
-                ) from error
-
-            try:
-                backup_stat = os.fstat(backup_parent_fd)
-                if not stat.S_ISDIR(backup_stat.st_mode):
-                    raise ValueError(
-                        "Diretório de backup inválido."
-                    )
-
-                try:
-                    os.mkdir(
-                        transaction.transaction_id,
-                        dir_fd=backup_parent_fd,
-                    )
-                except FileExistsError:
-                    if transaction.transaction_id == "unused":
-                        raise ValueError(
-                            "Diretório de backup já existe ou não é seguro."
-                        )
-
-                    transaction.transaction_id = str(uuid.uuid4())
-
-                    try:
-                        os.mkdir(
-                            transaction.transaction_id,
-                            dir_fd=backup_parent_fd,
-                        )
-                    except OSError as error:
-                        if error.errno in (
-                            errno.ELOOP,
-                            errno.ENOTDIR,
-                            errno.EEXIST,
-                        ):
-                            raise ValueError(
-                                "Diretório de backup já existe ou não é seguro."
-                            ) from error
-                        raise
-                except OSError as error:
-                    if error.errno in (errno.ELOOP, errno.ENOTDIR):
-                        raise ValueError(
-                            "Diretório de backup já existe ou não é seguro."
-                        ) from error
-                    raise
-
-                transaction_fd = os.open(
-                    transaction.transaction_id,
-                    os.O_RDONLY
-                    | os.O_DIRECTORY
-                    | os.O_NOFOLLOW,
-                    dir_fd=backup_parent_fd,
-                )
-                try:
-                    transaction_stat = os.fstat(transaction_fd)
-                    if not stat.S_ISDIR(transaction_stat.st_mode):
-                        raise ValueError(
-                            "Diretório de backup inválido."
-                        )
-                finally:
-                    os.close(transaction_fd)
             finally:
                 os.close(backup_parent_fd)
         finally:
