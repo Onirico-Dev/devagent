@@ -310,25 +310,21 @@ class TransactionFlow:
             ),
         }
 
-    def rollback_transaction(
+    def _attempt_rollback(self, transaction):
+        try:
+            self.transactions.rollback(transaction)
+        except Exception as exc:
+            return exc
+
+        return None
+
+    def _apply_rollback_state(
         self,
-        approval_id,
         transaction,
         repair_state,
-        test_result=None,
-        repair=None,
-        status=TaskHistoryStatus.ROLLED_BACK.value,
-        error=None,
+        error,
+        rollback_error,
     ):
-        rollback_error = None
-
-        try:
-            self.transactions.rollback(
-                transaction
-            )
-        except Exception as exc:
-            rollback_error = exc
-
         if rollback_error is not None:
             transaction.status = TransactionStatus.FAILED
             repair_state.mark_failed(
@@ -339,9 +335,15 @@ class TransactionFlow:
                 error or ""
             )
 
-        self.transactions.persist_manifest(transaction)
-        repair_state.persist(transaction)
-
+    def _build_rollback_extra(
+        self,
+        transaction,
+        repair_state,
+        test_result,
+        repair,
+        error,
+        rollback_error,
+    ):
         attempts = repair_state.attempts
 
         extra = {
@@ -364,23 +366,29 @@ class TransactionFlow:
                 rollback_error
             )
 
-        final_status = (
-            TaskHistoryStatus.FAILED.value
-            if rollback_error is not None
-            else status
-        )
+        return extra, attempts
 
-        self._history_update(
-            approval_id,
-            status=final_status,
-            transaction_id=transaction.transaction_id,
-            extra=extra,
-        )
+    def _finalize_rollback_status(
+        self,
+        status,
+        rollback_error,
+    ):
+        if rollback_error is not None:
+            return TaskHistoryStatus.FAILED.value
 
-        self.repair_controller.reset(
-            transaction.transaction_id
-        )
+        return status
 
+    def _build_rollback_result(
+        self,
+        approval_id,
+        final_status,
+        transaction,
+        test_result,
+        repair,
+        attempts,
+        error,
+        rollback_error,
+    ):
         return {
             "approval_id": approval_id,
             "status": final_status,
@@ -404,6 +412,67 @@ class TransactionFlow:
                 else {}
             ),
         }
+
+    def rollback_transaction(
+        self,
+        approval_id,
+        transaction,
+        repair_state,
+        test_result=None,
+        repair=None,
+        status=TaskHistoryStatus.ROLLED_BACK.value,
+        error=None,
+    ):
+        rollback_error = self._attempt_rollback(
+            transaction
+        )
+
+        self._apply_rollback_state(
+            transaction=transaction,
+            repair_state=repair_state,
+            error=error,
+            rollback_error=rollback_error,
+        )
+
+        self.transactions.persist_manifest(transaction)
+        repair_state.persist(transaction)
+
+        extra, attempts = self._build_rollback_extra(
+            transaction=transaction,
+            repair_state=repair_state,
+            test_result=test_result,
+            repair=repair,
+            error=error,
+            rollback_error=rollback_error,
+        )
+
+        final_status = self._finalize_rollback_status(
+            status,
+            rollback_error,
+        )
+
+        self._history_update(
+            approval_id,
+            status=final_status,
+            transaction_id=transaction.transaction_id,
+            extra=extra,
+        )
+
+        self.repair_controller.reset(
+            transaction.transaction_id
+        )
+
+        return self._build_rollback_result(
+            approval_id=approval_id,
+            final_status=final_status,
+            transaction=transaction,
+            test_result=test_result,
+            repair=repair,
+            attempts=attempts,
+            error=error,
+            rollback_error=rollback_error,
+        )
+
 
     def _build_transaction(self, plan):
         return self.agent.build_transaction_from_approved_plan(
