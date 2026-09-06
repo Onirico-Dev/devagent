@@ -742,3 +742,348 @@ def test_modify_file_in_parent_rejects_isadirectoryerror(
             )
     finally:
         os.close(parent_fd)
+
+def test_create_change_writes_file_and_syncs_directory(tmp_path, monkeypatch):
+    from core.executor.safe_executor import SafeExecutor
+    from core.schemas.models import Change, ChangeType
+
+    executor = SafeExecutor(tmp_path)
+
+    change = Change(
+        path="created.txt",
+        change_type=ChangeType.CREATE,
+        content="created content",
+    )
+
+    fsync_calls = []
+
+    def fake_fsync_directory(parent_fd):
+        fsync_calls.append(parent_fd)
+
+    monkeypatch.setattr(
+        SafeExecutor,
+        "_fsync_directory",
+        staticmethod(fake_fsync_directory),
+    )
+
+    executor.execute_change(change)
+
+    target = tmp_path / "created.txt"
+
+    assert target.exists()
+    assert target.read_text(encoding="utf-8") == "created content"
+    assert len(fsync_calls) == 1
+
+def test_safe_path_rejects_absolute_path(tmp_path):
+    from core.executor.safe_executor import SafeExecutor
+
+    executor = SafeExecutor(root=tmp_path)
+
+    with pytest.raises(
+        ValueError,
+        match="Caminho absoluto não permitido",
+    ):
+        executor._safe_path("/absolute/file.txt")
+
+
+def test_safe_path_rejects_path_outside_project(tmp_path):
+    from core.executor.safe_executor import SafeExecutor
+
+    executor = SafeExecutor(root=tmp_path)
+
+    with pytest.raises(
+        ValueError,
+        match="Caminho fora do projeto",
+    ):
+        executor._safe_path("../outside.txt")
+
+
+def test_execute_change_modify_dispatches_to_modify_helper(tmp_path):
+    from core.executor.safe_executor import SafeExecutor
+    from core.schemas.models import Change, ChangeType
+
+    target = tmp_path / "file.txt"
+    target.write_text("original", encoding="utf-8")
+
+    executor = SafeExecutor(root=tmp_path)
+
+    change = Change(
+        change_type=ChangeType.MODIFY,
+        path="file.txt",
+        content="modified",
+    )
+
+    executor.execute_change(change)
+
+    assert target.read_text(encoding="utf-8") == "modified"
+
+
+def test_execute_change_rejects_unsupported_change_type(tmp_path):
+    from core.executor.safe_executor import SafeExecutor
+    from types import SimpleNamespace
+
+    executor = SafeExecutor(root=tmp_path)
+
+    change = SimpleNamespace(
+        change_type="UNSUPPORTED",
+        path="file.txt",
+        content="content",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Tipo de alteração não suportado",
+    ):
+        executor.execute_change(change)
+
+
+def test_execute_returns_successful_transaction(tmp_path):
+    from core.executor.safe_executor import SafeExecutor
+    from types import SimpleNamespace
+    from core.schemas.models import TransactionStatus
+
+    executor = SafeExecutor(root=tmp_path)
+
+    transaction = SimpleNamespace(
+        changes=[],
+        status=None,
+    )
+
+    result = executor.execute(transaction)
+
+    assert result is transaction
+    assert transaction.status == TransactionStatus.EXECUTING
+
+
+def test_execute_marks_transaction_failed_when_change_fails(tmp_path):
+    from core.executor.safe_executor import SafeExecutor
+    from types import SimpleNamespace
+    from core.schemas.models import TransactionStatus
+
+    executor = SafeExecutor(root=tmp_path)
+
+    transaction = SimpleNamespace(
+        changes=[
+            SimpleNamespace(
+                change_type="UNSUPPORTED",
+                path="file.txt",
+                content="content",
+            ),
+        ],
+        status=None,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Tipo de alteração não suportado",
+    ):
+        executor.execute(transaction)
+
+    assert transaction.status == TransactionStatus.FAILED
+
+
+def test_modify_file_in_parent_maps_eloop_to_value_error(
+    tmp_path,
+    monkeypatch,
+):
+    import errno
+    from core.executor.safe_executor import SafeExecutor
+
+    parent_fd = os.open(
+        tmp_path,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+    )
+
+    def fail_open(*args, **kwargs):
+        raise OSError(errno.ELOOP, "simulated symlink loop")
+
+    monkeypatch.setattr(
+        "core.executor.safe_executor.os.open",
+        fail_open,
+    )
+
+    try:
+        with pytest.raises(
+            ValueError,
+            match="Caminho não é um arquivo",
+        ):
+            SafeExecutor._modify_file_in_parent(
+                parent_fd,
+                "file.txt",
+                "content",
+                "file.txt",
+            )
+    finally:
+        os.close(parent_fd)
+
+
+def test_verify_regular_file_in_parent_maps_eloop_to_value_error(
+    tmp_path,
+    monkeypatch,
+):
+    import errno
+    from core.executor.safe_executor import SafeExecutor
+
+    parent_fd = os.open(
+        tmp_path,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+    )
+
+    def fail_open(*args, **kwargs):
+        raise OSError(errno.ELOOP, "simulated symlink loop")
+
+    monkeypatch.setattr(
+        "core.executor.safe_executor.os.open",
+        fail_open,
+    )
+
+    try:
+        with pytest.raises(
+            ValueError,
+            match="Caminho não é um arquivo",
+        ):
+            SafeExecutor._verify_regular_file_in_parent(
+                parent_fd,
+                "file.txt",
+                "file.txt",
+            )
+    finally:
+        os.close(parent_fd)
+
+
+def test_execute_delete_detects_file_disappearing_during_second_open(
+    tmp_path,
+    monkeypatch,
+):
+    from core.executor.safe_executor import SafeExecutor
+    from core.schemas.models import Change, ChangeType
+
+    target = tmp_path / "file.txt"
+    target.write_text("original", encoding="utf-8")
+
+    executor = SafeExecutor(root=tmp_path)
+
+    change = Change(
+        change_type=ChangeType.DELETE,
+        path="file.txt",
+    )
+
+    original_open = os.open
+    open_calls = 0
+
+    def fail_second_open(*args, **kwargs):
+        nonlocal open_calls
+
+        filename = args[0] if args else None
+
+        if (
+            isinstance(filename, str)
+            and filename == "file.txt"
+        ):
+            open_calls += 1
+
+            if open_calls == 2:
+                raise FileNotFoundError(
+                    "simulated disappearing file"
+                )
+
+        return original_open(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "core.executor.safe_executor.os.open",
+        fail_second_open,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Arquivo foi alterado durante a remoção",
+    ):
+        executor.execute_change(change)
+
+    assert target.exists()
+    assert target.read_text(encoding="utf-8") == "original"
+
+
+def test_execute_delete_removes_file_and_syncs_directory(
+    tmp_path,
+    monkeypatch,
+):
+    from core.executor.safe_executor import SafeExecutor
+    from core.schemas.models import Change, ChangeType
+
+    target = tmp_path / "file.txt"
+    target.write_text("original", encoding="utf-8")
+
+    executor = SafeExecutor(root=tmp_path)
+
+    change = Change(
+        change_type=ChangeType.DELETE,
+        path="file.txt",
+    )
+
+    fsync_calls = []
+
+    def track_fsync(parent_fd):
+        fsync_calls.append(parent_fd)
+
+    monkeypatch.setattr(
+        SafeExecutor,
+        "_fsync_directory",
+        staticmethod(track_fsync),
+    )
+
+    executor.execute_change(change)
+
+    assert not target.exists()
+    assert len(fsync_calls) == 1
+
+
+def test_modify_file_in_parent_maps_eloop_for_target_open(
+    tmp_path,
+    monkeypatch,
+):
+    import errno
+    from core.executor.safe_executor import SafeExecutor
+
+    target = tmp_path / "file.txt"
+    target.write_text("original", encoding="utf-8")
+
+    parent_fd = os.open(
+        tmp_path,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+    )
+
+    original_open = os.open
+
+    def fail_target_open(*args, **kwargs):
+        filename = args[0] if args else None
+
+        if (
+            isinstance(filename, str)
+            and filename == "file.txt"
+        ):
+            raise OSError(
+                errno.ELOOP,
+                "simulated symlink loop",
+            )
+
+        return original_open(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "core.executor.safe_executor.os.open",
+        fail_target_open,
+    )
+
+    try:
+        with pytest.raises(
+            ValueError,
+            match="Caminho não é um arquivo",
+        ):
+            SafeExecutor._modify_file_in_parent(
+                parent_fd,
+                "file.txt",
+                "replacement",
+                "file.txt",
+            )
+    finally:
+        os.close(parent_fd)

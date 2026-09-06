@@ -238,104 +238,110 @@ class SafeExecutor:
         finally:
             os.close(fd)
 
-    def execute_change(self, change):
-        target = self._safe_path(change.path)
-        relative = Path(change.path)
-
-        if change.change_type == ChangeType.CREATE:
-            parent_fd = self._open_parent_directory(
-                self.root,
-                change.path,
-                create=True,
-            )
+    def _create_change(self, change, relative):
+        parent_fd = self._open_parent_directory(
+            self.root,
+            change.path,
+            create=True,
+        )
+        try:
             try:
-                try:
-                    self._write_new_file_in_parent(
-                        parent_fd,
-                        relative.name,
-                        change.content or "",
-                    )
-                except FileExistsError as error:
-                    raise FileExistsError(
-                        f"Arquivo já existe: {change.path}"
-                    ) from error
-            finally:
-                os.close(parent_fd)
-
-        elif change.change_type == ChangeType.MODIFY:
-            parent_fd = self._open_parent_directory(
-                self.root,
-                change.path,
-            )
-            try:
-                self._modify_file_in_parent(
+                self._write_new_file_in_parent(
                     parent_fd,
                     relative.name,
                     change.content or "",
-                    change.path,
                 )
-            finally:
-                os.close(parent_fd)
+            except FileExistsError as error:
+                raise FileExistsError(
+                    f"Arquivo já existe: {change.path}"
+                ) from error
+        finally:
+            os.close(parent_fd)
 
-        elif change.change_type == ChangeType.DELETE:
-            parent_fd = self._open_parent_directory(
-                self.root,
+    def _modify_change(self, change, relative):
+        parent_fd = self._open_parent_directory(
+            self.root,
+            change.path,
+        )
+        try:
+            self._modify_file_in_parent(
+                parent_fd,
+                relative.name,
+                change.content or "",
                 change.path,
             )
-            try:
-                expected_identity = self._verify_regular_file_in_parent(
-                    parent_fd,
-                    relative.name,
-                    change.path,
-                )
+        finally:
+            os.close(parent_fd)
 
-                try:
-                    fd = os.open(
-                        relative.name,
-                        os.O_RDONLY | os.O_NOFOLLOW,
-                        dir_fd=parent_fd,
-                    )
-                except FileNotFoundError as error:
+    def _delete_change(self, change, relative):
+        parent_fd = self._open_parent_directory(
+            self.root,
+            change.path,
+        )
+        try:
+            expected_identity = self._verify_regular_file_in_parent(
+                parent_fd,
+                relative.name,
+                change.path,
+            )
+
+            try:
+                fd = os.open(
+                    relative.name,
+                    os.O_RDONLY | os.O_NOFOLLOW,
+                    dir_fd=parent_fd,
+                )
+            except FileNotFoundError as error:
+                raise RuntimeError(
+                    f"Arquivo foi alterado durante a remoção: "
+                    f"{change.path}"
+                ) from error
+            except OSError as error:
+                if getattr(error, "errno", None) in (
+                    errno.ELOOP,
+                    errno.EISDIR,
+                ):
                     raise RuntimeError(
                         f"Arquivo foi alterado durante a remoção: "
                         f"{change.path}"
                     ) from error
-                except OSError as error:
-                    if getattr(error, "errno", None) in (
-                        errno.ELOOP,
-                        errno.EISDIR,
-                    ):
-                        raise RuntimeError(
-                            f"Arquivo foi alterado durante a remoção: "
-                            f"{change.path}"
-                        ) from error
-                    raise
+                raise
 
-                try:
-                    current_stat = os.fstat(fd)
-                    current_identity = (
-                        current_stat.st_dev,
-                        current_stat.st_ino,
-                    )
-                finally:
-                    os.close(fd)
-
-                if current_identity != expected_identity:
-                    raise RuntimeError(
-                        f"Arquivo foi alterado durante a remoção: "
-                        f"{change.path}"
-                    )
-
-                os.unlink(relative.name, dir_fd=parent_fd)
-
-                self._fsync_directory(parent_fd)
+            try:
+                current_stat = os.fstat(fd)
+                current_identity = (
+                    current_stat.st_dev,
+                    current_stat.st_ino,
+                )
             finally:
-                os.close(parent_fd)
+                os.close(fd)
 
+            if current_identity != expected_identity:
+                raise RuntimeError(
+                    f"Arquivo foi alterado durante a remoção: "
+                    f"{change.path}"
+                )
+
+            os.unlink(relative.name, dir_fd=parent_fd)
+            self._fsync_directory(parent_fd)
+        finally:
+            os.close(parent_fd)
+
+    def execute_change(self, change):
+        self._safe_path(change.path)
+        relative = Path(change.path)
+
+        if change.change_type == ChangeType.CREATE:
+            self._create_change(change, relative)
+        elif change.change_type == ChangeType.MODIFY:
+            self._modify_change(change, relative)
+        elif change.change_type == ChangeType.DELETE:
+            self._delete_change(change, relative)
         else:
             raise ValueError(
                 f"Tipo de alteração não suportado: {change.change_type}"
             )
+
 
     def execute(self, transaction):
         transaction.status = TransactionStatus.EXECUTING
