@@ -118,74 +118,20 @@ class TransactionFlow:
         )
 
         try:
-            self._prepare_transaction(transaction)
-
-            self.executor.execute(
-                transaction
-            )
-
-            repair_state.mark_testing()
-            repair_state.persist(transaction)
-
-            self._history_update(
-                approval_id,
-                status=TaskHistoryStatus.TESTING.value,
-                transaction_id=transaction.transaction_id,
-            )
-
-            test_result = self.tests.run(
-                [
-                    change.path
-                    for change in transaction.changes
-                ]
-            )
-
-            test_result = self._run_declared_tests(
+            test_result = self._execute_and_test_transaction(
                 transaction,
-                test_result,
+                repair_state,
+                approval_id,
             )
 
-            if test_result.get("success"):
-                return commit_fn(
-                    approval_id=approval_id,
-                    instruction=instruction,
-                    transaction=transaction,
-                    test_result=test_result,
-                    repair_state=repair_state,
-                )
-
-            repair_cycle = self._repair_cycle(
+            return self._finalize_execution_result(
+                approval_id=approval_id,
                 instruction=instruction,
                 transaction=transaction,
+                repair_state=repair_state,
                 test_result=test_result,
-                repair_state=repair_state,
-            )
-
-            if repair_cycle.get("success"):
-                return commit_fn(
-                    approval_id=approval_id,
-                    instruction=instruction,
-                    transaction=transaction,
-                    test_result=repair_cycle["tests"],
-                    repair_state=repair_state,
-                    repair=repair_cycle.get("repair"),
-                )
-
-            return rollback_fn(
-                approval_id=approval_id,
-                transaction=transaction,
-                repair_state=repair_state,
-                test_result=repair_cycle.get(
-                    "tests",
-                    test_result,
-                ),
-                repair=repair_cycle.get(
-                    "repair"
-                ),
-                status=TaskHistoryStatus.ROLLED_BACK.value,
-                error=repair_cycle.get(
-                    "error"
-                ),
+                commit_fn=commit_fn,
+                rollback_fn=rollback_fn,
             )
 
         except Exception as error:
@@ -196,6 +142,92 @@ class TransactionFlow:
                 repair_state=repair_state,
                 rollback_fn=rollback_fn,
             )
+
+    def _execute_and_test_transaction(
+        self,
+        transaction,
+        repair_state,
+        approval_id,
+    ):
+        self._prepare_transaction(transaction)
+
+        self.executor.execute(
+            transaction
+        )
+
+        repair_state.mark_testing()
+        repair_state.persist(transaction)
+
+        self._history_update(
+            approval_id,
+            status=TaskHistoryStatus.TESTING.value,
+            transaction_id=transaction.transaction_id,
+        )
+
+        test_result = self.tests.run(
+            [
+                change.path
+                for change in transaction.changes
+            ]
+        )
+
+        return self._run_declared_tests(
+            transaction,
+            test_result,
+        )
+
+    def _finalize_execution_result(
+        self,
+        approval_id,
+        instruction,
+        transaction,
+        repair_state,
+        test_result,
+        commit_fn,
+        rollback_fn,
+    ):
+        if test_result.get("success"):
+            return commit_fn(
+                approval_id=approval_id,
+                instruction=instruction,
+                transaction=transaction,
+                test_result=test_result,
+                repair_state=repair_state,
+            )
+
+        repair_cycle = self._repair_cycle(
+            instruction=instruction,
+            transaction=transaction,
+            test_result=test_result,
+            repair_state=repair_state,
+        )
+
+        if repair_cycle.get("success"):
+            return commit_fn(
+                approval_id=approval_id,
+                instruction=instruction,
+                transaction=transaction,
+                test_result=repair_cycle["tests"],
+                repair_state=repair_state,
+                repair=repair_cycle.get("repair"),
+            )
+
+        return rollback_fn(
+            approval_id=approval_id,
+            transaction=transaction,
+            repair_state=repair_state,
+            test_result=repair_cycle.get(
+                "tests",
+                test_result,
+            ),
+            repair=repair_cycle.get(
+                "repair"
+            ),
+            status=TaskHistoryStatus.ROLLED_BACK.value,
+            error=repair_cycle.get(
+                "error"
+            ),
+        )
 
     def commit_transaction(
         self,
