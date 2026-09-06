@@ -98,11 +98,8 @@ Regras:
             instruction,
         )
 
-    def _build_plan(
-        self,
-        data,
-        instruction="",
-    ):
+    @staticmethod
+    def _validate_plan_data(data):
         if not isinstance(data, dict):
             raise ValueError(
                 "Plano da IA deve ser um objeto JSON."
@@ -127,12 +124,10 @@ Regras:
             "changes",
             [],
         )
-
         tests = data.get(
             "tests",
             [],
         )
-
         risks = data.get(
             "risks",
             [],
@@ -153,6 +148,13 @@ Regras:
                 "Campo 'risks' deve ser uma lista."
             )
 
+        return objective, changes_data, tests, risks
+
+    def _validate_plan_tests_and_risks(
+        self,
+        tests,
+        risks,
+    ):
         for test in tests:
             self._validate_test_reference(test)
 
@@ -162,68 +164,76 @@ Regras:
                     "Cada risco deve ser uma string."
                 )
 
-        changes = []
-
-        for item in changes_data:
-            if not isinstance(item, dict):
-                raise ValueError(
-                    "Cada alteração deve ser um objeto."
-                )
-
-            change_type = item.get("change_type")
-
-            if change_type is None:
-                change_type = item.get("type")
-
-            path = item.get("path")
-            content = item.get("content")
-            reason = item.get(
-                "reason",
-                "",
+    @staticmethod
+    def _validate_change_item(item):
+        if not isinstance(item, dict):
+            raise ValueError(
+                "Cada alteração deve ser um objeto."
             )
 
-            try:
-                change_type = ChangeType(change_type)
-            except ValueError as error:
-                raise ValueError(
-                    f"Tipo de alteração inválido: {change_type}"
-                ) from error
+        change_type = item.get("change_type")
 
-            if not isinstance(path, str) or not path.strip():
-                raise ValueError(
-                    "Caminho da alteração inválido."
-                )
+        if change_type is None:
+            change_type = item.get("type")
 
-            if not isinstance(reason, str):
-                raise ValueError(
-                    "Motivo da alteração deve ser uma string."
-                )
+        path = item.get("path")
+        content = item.get("content")
+        reason = item.get(
+            "reason",
+            "",
+        )
 
-            if change_type == ChangeType.DELETE:
-                if content is not None:
-                    raise ValueError(
-                        "DELETE não pode possuir conteúdo."
-                    )
+        try:
+            change_type = ChangeType(change_type)
+        except ValueError as error:
+            raise ValueError(
+                f"Tipo de alteração inválido: {change_type}"
+            ) from error
 
-            elif change_type in (
-                ChangeType.CREATE,
-                ChangeType.MODIFY,
-            ):
-                if not isinstance(content, str):
-                    raise ValueError(
-                        f"{change_type.value.upper()} "
-                        "exige conteúdo textual."
-                    )
-
-            changes.append(
-                Change(
-                    change_type=change_type,
-                    path=path,
-                    content=content,
-                    reason=reason,
-                )
+        if not isinstance(path, str) or not path.strip():
+            raise ValueError(
+                "Caminho da alteração inválido."
             )
 
+        if not isinstance(reason, str):
+            raise ValueError(
+                "Motivo da alteração deve ser uma string."
+            )
+
+        if change_type == ChangeType.DELETE:
+            if content is not None:
+                raise ValueError(
+                    "DELETE não pode possuir conteúdo."
+                )
+
+        elif change_type in (
+            ChangeType.CREATE,
+            ChangeType.MODIFY,
+        ):
+            if not isinstance(content, str):
+                raise ValueError(
+                    f"{change_type.value.upper()} "
+                    "exige conteúdo textual."
+                )
+
+        return Change(
+            change_type=change_type,
+            path=path,
+            content=content,
+            reason=reason,
+        )
+
+    def _build_changes(self, changes_data):
+        return [
+            self._validate_change_item(item)
+            for item in changes_data
+        ]
+
+    def _validate_required_changes(
+        self,
+        instruction,
+        changes,
+    ):
         if (
             isinstance(instruction, str)
             and instruction.strip()
@@ -234,6 +244,32 @@ Regras:
                 "A solicitação exige alteração no projeto, "
                 "mas a IA retornou um plano sem alterações."
             )
+
+    def _build_plan(
+        self,
+        data,
+        instruction="",
+    ):
+        (
+            objective,
+            changes_data,
+            tests,
+            risks,
+        ) = self._validate_plan_data(data)
+
+        self._validate_plan_tests_and_risks(
+            tests,
+            risks,
+        )
+
+        changes = self._build_changes(
+            changes_data,
+        )
+
+        self._validate_required_changes(
+            instruction,
+            changes,
+        )
 
         return Plan(
             objective=objective,
