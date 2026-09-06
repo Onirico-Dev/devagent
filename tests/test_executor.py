@@ -4246,6 +4246,93 @@ def test_git_manager_returns_no_changes_when_explicit_paths_have_no_changes(
     }
 
 
+def test_git_manager_unstages_and_reraises_commit_exception(
+    tmp_path,
+    monkeypatch,
+):
+    import subprocess
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    target = tmp_path / "app.py"
+    target.write_text(
+        "ORIGINAL\n",
+        encoding="utf-8",
+    )
+
+    subprocess.run(
+        ["git", "add", "app.py"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "initial"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    target.write_text(
+        "MODIFIED\n",
+        encoding="utf-8",
+    )
+
+    original_run = subprocess.run
+
+    def fail_commit(*args, **kwargs):
+        command = args[0]
+        if command[:3] == ["git", "commit", "-m"]:
+            raise RuntimeError("simulated commit exception")
+        return original_run(*args, **kwargs)
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        fail_commit,
+    )
+
+    from core.executor.git_manager import GitManager
+
+    manager = GitManager(tmp_path)
+
+    with pytest.raises(
+        RuntimeError,
+        match="simulated commit exception",
+    ):
+        manager.commit_transaction(
+            "transaction-commit-exception",
+            "Alterar app.py",
+            paths=["app.py"],
+        )
+
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert status.stdout == " M app.py\n"
+
+
 def test_git_manager_unstages_and_reraises_post_commit_failure(tmp_path):
     import subprocess
 

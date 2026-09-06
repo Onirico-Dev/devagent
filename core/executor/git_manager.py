@@ -213,11 +213,10 @@ class GitManager:
             text=True,
         )
 
-    def commit_transaction(
+    def _validate_commit_request(
         self,
         transaction_id,
         instruction,
-        paths=None,
     ):
         if not isinstance(transaction_id, str):
             raise ValueError(
@@ -241,43 +240,39 @@ class GitManager:
 
         self._ensure_git_repository()
 
-        if paths is None:
-            paths = self._infer_paths_from_instruction(
-                instruction
-            )
+    def _resolve_commit_paths(
+        self,
+        instruction,
+        paths,
+    ):
+        if paths is not None:
+            return self._normalize_paths(paths)
 
-            # Compatibilidade com chamadas antigas que não
-            # especificam o arquivo, incluindo criação de arquivo.
-            if not paths:
-                paths = self._infer_new_files_from_worktree()
-        else:
-            paths = self._normalize_paths(paths)
-
-        if not paths:
-            return {
-                "status": "no_changes",
-                "transaction_id": transaction_id,
-                "commit_hash": None,
-                "files": [],
-                "message": None,
-            }
-
-        changed_paths = self._stage_paths(paths)
-
-        if not changed_paths:
-            return {
-                "status": "no_changes",
-                "transaction_id": transaction_id,
-                "commit_hash": None,
-                "files": [],
-                "message": None,
-            }
-
-        message = (
-            f"DevAgent: transação {transaction_id} — "
-            f"{instruction.strip()}"
+        resolved = self._infer_paths_from_instruction(
+            instruction
         )
 
+        # Compatibilidade com chamadas antigas que não
+        # especificam o arquivo, incluindo criação de arquivo.
+        if not resolved:
+            resolved = self._infer_new_files_from_worktree()
+
+        return resolved
+
+    def _no_changes_result(self, transaction_id):
+        return {
+            "status": "no_changes",
+            "transaction_id": transaction_id,
+            "commit_hash": None,
+            "files": [],
+            "message": None,
+        }
+
+    def _commit_staged_paths(
+        self,
+        transaction_id,
+        message,
+    ):
         try:
             commit = subprocess.run(
                 ["git", "commit", "-m", message],
@@ -297,32 +292,85 @@ class GitManager:
                     "message": commit.stderr.strip(),
                 }
 
-            commit_hash = self._run_git(
-                "rev-parse",
-                "HEAD",
-            ).stdout.strip()
+            return None
 
-            committed_files = self._run_git(
-                "show",
-                "--format=",
-                "--name-only",
-                "HEAD",
-            ).stdout.splitlines()
+        except Exception:
+            self._unstage_all()
+            raise
 
-            committed_files = [
-                path.strip()
-                for path in committed_files
-                if path.strip()
-            ]
+    def _build_commit_result(
+        self,
+        transaction_id,
+        message,
+    ):
+        commit_hash = self._run_git(
+            "rev-parse",
+            "HEAD",
+        ).stdout.strip()
 
-            return {
-                "status": GitStatus.COMMITTED.value,
-                "transaction_id": transaction_id,
-                "commit_hash": commit_hash,
-                "files": committed_files,
-                "message": message,
-            }
+        committed_files = self._run_git(
+            "show",
+            "--format=",
+            "--name-only",
+            "HEAD",
+        ).stdout.splitlines()
 
+        committed_files = [
+            path.strip()
+            for path in committed_files
+            if path.strip()
+        ]
+
+        return {
+            "status": GitStatus.COMMITTED.value,
+            "transaction_id": transaction_id,
+            "commit_hash": commit_hash,
+            "files": committed_files,
+            "message": message,
+        }
+
+    def commit_transaction(
+        self,
+        transaction_id,
+        instruction,
+        paths=None,
+    ):
+        self._validate_commit_request(
+            transaction_id,
+            instruction,
+        )
+
+        paths = self._resolve_commit_paths(
+            instruction,
+            paths,
+        )
+
+        if not paths:
+            return self._no_changes_result(transaction_id)
+
+        changed_paths = self._stage_paths(paths)
+
+        if not changed_paths:
+            return self._no_changes_result(transaction_id)
+
+        message = (
+            f"DevAgent: transação {transaction_id} — "
+            f"{instruction.strip()}"
+        )
+
+        commit_error = self._commit_staged_paths(
+            transaction_id,
+            message,
+        )
+
+        if commit_error is not None:
+            return commit_error
+
+        try:
+            return self._build_commit_result(
+                transaction_id,
+                message,
+            )
         except Exception:
             self._unstage_all()
             raise
