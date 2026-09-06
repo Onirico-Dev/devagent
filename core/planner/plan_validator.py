@@ -52,7 +52,7 @@ class PlanValidator:
                 "test_*.py ou *_test.py."
             )
 
-    def validate(self, plan: Plan):
+    def _validate_plan_structure(self, plan):
         if not isinstance(plan, Plan):
             raise TypeError(
                 "O plano deve ser uma instância de Plan."
@@ -83,6 +83,7 @@ class PlanValidator:
                 "Risks deve ser uma lista."
             )
 
+    def _validate_tests_and_risks(self, plan):
         for test in plan.tests:
             self._validate_test_path(test)
 
@@ -92,66 +93,79 @@ class PlanValidator:
                     "Cada risco deve ser uma string."
                 )
 
+    def _validate_change(self, change):
+        if not isinstance(change, Change):
+            raise TypeError(
+                "Cada alteração deve ser uma instância de Change."
+            )
+
+        if not isinstance(change.change_type, ChangeType):
+            raise ValueError(
+                "Tipo de alteração inválido."
+            )
+
+        if not isinstance(change.path, str):
+            raise ValueError(
+                "Caminho da alteração deve ser uma string."
+            )
+
+        if not isinstance(change.reason, str):
+            raise ValueError(
+                "Motivo da alteração deve ser uma string."
+            )
+
+        if not change.path.strip():
+            raise ValueError(
+                "Alteração sem caminho."
+            )
+
+        self._validate_change_path(change)
+        self._validate_change_content(change)
+
+    def _validate_change_path(self, change):
+        relative_path = Path(change.path)
+
+        if relative_path.is_absolute():
+            raise ValueError(
+                f"Caminho absoluto não permitido: {change.path}"
+            )
+
+        target = (
+            self.root / relative_path
+        ).resolve()
+
+        try:
+            target.relative_to(self.root)
+        except ValueError as error:
+            raise ValueError(
+                "Caminho fora do projeto: "
+                f"{change.path}"
+            ) from error
+
+    def _validate_change_content(self, change):
+        if change.change_type == ChangeType.DELETE:
+            if change.content is not None:
+                raise ValueError(
+                    "DELETE não pode possuir conteúdo."
+                )
+            return
+
+        if change.change_type in (
+            ChangeType.CREATE,
+            ChangeType.MODIFY,
+        ):
+            if not isinstance(change.content, str):
+                raise ValueError(
+                    f"{change.change_type.value.upper()} "
+                    "exige conteúdo textual."
+                )
+
+    def validate(self, plan: Plan):
+        self._validate_plan_structure(plan)
+        self._validate_tests_and_risks(plan)
+
         for change in plan.changes:
-            if not isinstance(change, Change):
-                raise TypeError(
-                    "Cada alteração deve ser uma instância de Change."
-                )
-
-            if not isinstance(change.change_type, ChangeType):
-                raise ValueError(
-                    "Tipo de alteração inválido."
-                )
-
-            if not isinstance(change.path, str):
-                raise ValueError(
-                    "Caminho da alteração deve ser uma string."
-                )
-
-            if not isinstance(change.reason, str):
-                raise ValueError(
-                    "Motivo da alteração deve ser uma string."
-                )
-
-            if not change.path.strip():
-                raise ValueError(
-                    "Alteração sem caminho."
-                )
-
-            relative_path = Path(change.path)
-
-            if relative_path.is_absolute():
-                raise ValueError(
-                    f"Caminho absoluto não permitido: {change.path}"
-                )
-
-            target = (
-                self.root / relative_path
-            ).resolve()
-
-            try:
-                target.relative_to(self.root)
-            except ValueError as error:
-                raise ValueError(
-                    "Caminho fora do projeto: "
-                    f"{change.path}"
-                ) from error
-
-            if change.change_type == ChangeType.DELETE:
-                if change.content is not None:
-                    raise ValueError(
-                        "DELETE não pode possuir conteúdo."
-                    )
-
-            elif change.change_type in (
-                ChangeType.CREATE,
-                ChangeType.MODIFY,
-            ):
-                if not isinstance(change.content, str):
-                    raise ValueError(
-                        f"{change.change_type.value.upper()} "
-                        "exige conteúdo textual."
-                    )
+            self._validate_change(change)
 
         return True
 
