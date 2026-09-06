@@ -2,19 +2,13 @@ import json
 
 
 class RepairEngine:
+    MAX_REPAIR_CONTENT = 1_000_000
 
     def __init__(self, ai_adapter):
         self.ai = ai_adapter
 
-    def analyze_failure(
-        self,
-        instruction,
-        error,
-        test_output,
-    ):
-
-        prompt = f"""
-Você é o módulo de reparo automático do DevAgent.
+    def _build_prompt(self, instruction, error, test_output):
+        return f"""Você é o módulo de reparo automático do DevAgent.
 
 Objetivo original:
 {instruction}
@@ -51,19 +45,27 @@ Regras:
 - risk deve ser exatamente baixo, medio ou alto.
 """
 
-        response = self.ai.generate(prompt)
+    @staticmethod
+    def _invalid_response(diagnosis):
+        return {
+            "diagnosis": diagnosis,
+            "correction": "",
+            "risk": "alto",
+            "action": "none",
+            "path": "",
+            "content": "",
+        }
 
+    def _parse_response(self, response):
         try:
             data = json.loads(response)
         except json.JSONDecodeError:
-            return {
-                "diagnosis": response,
-                "correction": "",
-                "risk": "alto",
-                "action": "none",
-                "path": "",
-                "content": "",
-            }
+            return self._invalid_response(response)
+
+        if not isinstance(data, dict):
+            return self._invalid_response(
+                "Resposta do modelo não é um objeto JSON."
+            )
 
         required = {
             "diagnosis",
@@ -74,26 +76,14 @@ Regras:
             "content",
         }
 
-        if not isinstance(data, dict):
-            return {
-                "diagnosis": "Resposta do modelo não é um objeto JSON.",
-                "correction": "",
-                "risk": "alto",
-                "action": "none",
-                "path": "",
-                "content": "",
-            }
-
         if not required.issubset(data):
-            return {
-                "diagnosis": "Resposta incompleta do modelo.",
-                "correction": "",
-                "risk": "alto",
-                "action": "none",
-                "path": "",
-                "content": "",
-            }
+            return self._invalid_response(
+                "Resposta incompleta do modelo."
+            )
 
+        return data
+
+    def _normalize_response(self, data):
         if not isinstance(data["risk"], str):
             data["risk"] = "alto"
 
@@ -120,28 +110,41 @@ Regras:
         if not isinstance(data["content"], str):
             data["content"] = ""
 
-        # create/modify sem conteúdo executável é uma proposta inválida.
-        # O RepairExecutor precisa receber o conteúdo completo do arquivo.
-        if data["action"] in {"create", "modify"} and not data["content"].strip():
-            return {
-                "diagnosis": "Resposta do modelo não contém conteúdo de reparo.",
-                "correction": "",
-                "risk": "alto",
-                "action": "none",
-                "path": "",
-                "content": "",
-            }
+        return data
 
-        MAX_REPAIR_CONTENT = 1_000_000
+    def _validate_repair_content(self, data):
+        if (
+            data["action"] in {"create", "modify"}
+            and not data["content"].strip()
+        ):
+            return self._invalid_response(
+                "Resposta do modelo não contém conteúdo de reparo."
+            )
 
-        if len(data["content"]) > MAX_REPAIR_CONTENT:
-            return {
-                "diagnosis": "Conteúdo de reparo excede o limite permitido.",
-                "correction": "",
-                "risk": "alto",
-                "action": "none",
-                "path": "",
-                "content": "",
-            }
+        if len(data["content"]) > self.MAX_REPAIR_CONTENT:
+            return self._invalid_response(
+                "Conteúdo de reparo excede o limite permitido."
+            )
 
         return data
+
+    def analyze_failure(
+        self,
+        instruction,
+        error,
+        test_output,
+    ):
+        prompt = self._build_prompt(
+            instruction,
+            error,
+            test_output,
+        )
+
+        response = self.ai.generate(prompt)
+        data = self._parse_response(response)
+
+        if data.get("action") == "none" and not data.get("path"):
+            return data
+
+        data = self._normalize_response(data)
+        return self._validate_repair_content(data)
