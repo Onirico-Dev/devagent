@@ -54,50 +54,13 @@ class RepairFlow:
             state.attempts,
         )
 
-    def attempt(
+    def _prepare_repair_attempt(
         self,
         instruction,
         transaction,
         test_result,
         repair_state,
     ):
-        """
-        Executa exatamente uma tentativa de reparo.
-
-        A análise ocorre antes do consumo da tentativa.
-        Somente uma correção aplicável consome uma tentativa.
-        repair_failed com testes representa uma correção aplicada
-        cujos testes continuam falhando; o ciclo decide se haverá
-        nova tentativa ou rollback.
-        """
-        self.sync_controller(
-            transaction,
-            repair_state,
-        )
-
-        if not repair_state.can_continue():
-            return {
-                "status": RepairCycleStatus.LIMIT_REACHED.value,
-                "success": False,
-                "repair": {
-                    "status": (
-                        RepairCycleStatus.LIMIT_REACHED.value
-                    ),
-                    "action": "none",
-                    "risk": "baixo",
-                    "path": "",
-                    "content": "",
-                    "diagnosis": (
-                        "Limite máximo de tentativas "
-                        "de reparo atingido."
-                    ),
-                    "correction": (
-                        "Nenhuma nova correção automática "
-                        "será tentada."
-                    ),
-                },
-            }
-
         repair_state.mark_analyzing()
         repair_state.persist(transaction)
 
@@ -115,32 +78,39 @@ class RepairFlow:
                 "risk": "baixo",
                 "path": "",
                 "content": "",
-                "diagnosis": (
-                    "Diagnóstico de reparo inválido."
-                ),
+                "diagnosis": "Diagnóstico de reparo inválido.",
                 "correction": "",
             }
 
         if diagnosis.get("risk") == "alto":
-            return {
-                "status": TransactionStatus.ROLLED_BACK.value,
-                "success": False,
-                "repair": diagnosis,
-            }
+            return (
+                diagnosis,
+                {
+                    "status": TransactionStatus.ROLLED_BACK.value,
+                    "success": False,
+                    "repair": diagnosis,
+                },
+            )
 
         if diagnosis.get("action") == "none":
-            return {
-                "status": RepairCycleStatus.NO_REPAIR.value,
-                "success": False,
-                "repair": diagnosis,
-            }
+            return (
+                diagnosis,
+                {
+                    "status": RepairCycleStatus.NO_REPAIR.value,
+                    "success": False,
+                    "repair": diagnosis,
+                },
+            )
 
         if not repair_state.can_continue():
-            return {
-                "status": RepairCycleStatus.LIMIT_REACHED.value,
-                "success": False,
-                "repair": diagnosis,
-            }
+            return (
+                diagnosis,
+                {
+                    "status": RepairCycleStatus.LIMIT_REACHED.value,
+                    "success": False,
+                    "repair": diagnosis,
+                },
+            )
 
         repair_state.record(
             action=diagnosis.get(
@@ -156,14 +126,15 @@ class RepairFlow:
             repair_state,
         )
 
-        repair_result = (
-            self.repair_executor.execute_repair(
-                diagnosis,
-                instruction,
-                transaction,
-            )
-        )
+        return diagnosis, None
 
+    def _finalize_repair_attempt(
+        self,
+        repair_result,
+        diagnosis,
+        transaction,
+        repair_state,
+    ):
         if not isinstance(repair_result, dict):
             repair_result = {
                 "success": False,
@@ -238,6 +209,255 @@ class RepairFlow:
 
         return repair_result
 
+    def attempt(
+        self,
+        instruction,
+        transaction,
+        test_result,
+        repair_state,
+    ):
+        """
+        Executa exatamente uma tentativa de reparo.
+
+        A análise ocorre antes do consumo da tentativa.
+        Somente uma correção aplicável consome uma tentativa.
+        repair_failed com testes representa uma correção aplicada
+        cujos testes continuam falhando; o ciclo decide se haverá
+        nova tentativa ou rollback.
+        """
+        self.sync_controller(
+            transaction,
+            repair_state,
+        )
+
+        if not repair_state.can_continue():
+            return {
+                "status": RepairCycleStatus.LIMIT_REACHED.value,
+                "success": False,
+                "repair": {
+                    "status": (
+                        RepairCycleStatus.LIMIT_REACHED.value
+                    ),
+                    "action": "none",
+                    "risk": "baixo",
+                    "path": "",
+                    "content": "",
+                    "diagnosis": (
+                        "Limite máximo de tentativas "
+                        "de reparo atingido."
+                    ),
+                    "correction": (
+                        "Nenhuma nova correção automática "
+                        "será tentada."
+                    ),
+                },
+            }
+
+        diagnosis, terminal_result = self._prepare_repair_attempt(
+            instruction=instruction,
+            transaction=transaction,
+            test_result=test_result,
+            repair_state=repair_state,
+        )
+
+        if terminal_result is not None:
+            return terminal_result
+
+        repair_result = self.repair_executor.execute_repair(
+            diagnosis,
+            instruction,
+            transaction,
+        )
+
+        return self._finalize_repair_attempt(
+            repair_result=repair_result,
+            diagnosis=diagnosis,
+            transaction=transaction,
+            repair_state=repair_state,
+        )
+
+    def _build_limit_reached_result(
+        self,
+        test_result,
+        repair_state,
+        repair=None,
+        default_repair=False,
+    ):
+        if default_repair:
+            repair = {
+                "action": "none",
+                "risk": "baixo",
+                "path": "",
+                "content": "",
+                "status": (
+                    RepairCycleStatus.LIMIT_REACHED.value
+                ),
+                "diagnosis": (
+                    "Limite máximo de tentativas "
+                    "de reparo atingido."
+                ),
+                "correction": (
+                    "Nenhuma nova correção automática "
+                    "será tentada."
+                ),
+            }
+        elif isinstance(repair, dict):
+            repair = dict(repair)
+            repair["status"] = (
+                RepairCycleStatus.LIMIT_REACHED.value
+            )
+        elif repair is not None:
+            repair = None
+
+        return {
+            "success": False,
+            "status": TransactionStatus.ROLLED_BACK.value,
+            "tests": test_result,
+            "repair_attempts": repair_state.attempts,
+            "repair": repair,
+        }
+
+    def _handle_repair_result(
+        self,
+        repair_result,
+        instruction,
+        transaction,
+        test_result,
+        repair_state,
+        attempt,
+    ):
+        status = repair_result.get(
+            "status",
+            RepairExecutorStatus.REPAIR_FAILED.value,
+        )
+
+        if repair_result.get("success"):
+            next_tests = repair_result.get(
+                "tests",
+                {},
+            )
+
+            if (
+                isinstance(next_tests, dict)
+                and next_tests.get("success")
+            ):
+                repair_state.mark_verified()
+                repair_state.persist(transaction)
+
+                return {
+                    "action": "return",
+                    "result": {
+                        "success": True,
+                        "status": (
+                            RepairCycleStatus.VERIFIED.value
+                        ),
+                        "tests": next_tests,
+                        "repair": repair_result.get(
+                            "repair"
+                        ),
+                        "repair_attempts": (
+                            repair_state.attempts
+                        ),
+                    },
+                }
+
+        if status == RepairExecutorStatus.REPAIR_FAILED.value:
+            next_tests = repair_result.get("tests")
+
+            if isinstance(next_tests, dict):
+                if repair_state.can_continue():
+                    return {
+                        "action": "continue",
+                        "test_result": next_tests,
+                    }
+
+                return {
+                    "action": "return",
+                    "result": self._build_limit_reached_result(
+                        test_result=next_tests,
+                        repair_state=repair_state,
+                        repair=repair_result.get("repair"),
+                    ),
+                }
+
+            return {
+                "action": "return",
+                "result": {
+                    "success": False,
+                    "status": (
+                        TransactionStatus.ROLLED_BACK.value
+                    ),
+                    "tests": test_result,
+                    "repair": repair_result.get(
+                        "repair"
+                    ),
+                    "repair_attempts": (
+                        repair_state.attempts
+                    ),
+                },
+            }
+
+        if status == RepairExecutorStatus.FAILED.value:
+            return {
+                "action": "return",
+                "result": {
+                    "success": False,
+                    "status": (
+                        TransactionStatus.ROLLED_BACK.value
+                    ),
+                    "tests": test_result,
+                    "repair": repair_result.get(
+                        "repair"
+                    ),
+                    "repair_attempts": (
+                        repair_state.attempts
+                    ),
+                    "error": repair_result.get(
+                        "error",
+                        "",
+                    ),
+                },
+            }
+
+        if status in {
+            RepairCycleStatus.NO_REPAIR.value,
+            RepairCycleStatus.LIMIT_REACHED.value,
+            TransactionStatus.ROLLED_BACK.value,
+        }:
+            return {
+                "action": "return",
+                "result": {
+                    "success": False,
+                    "status": (
+                        TransactionStatus.ROLLED_BACK.value
+                    ),
+                    "tests": test_result,
+                    "repair": repair_result.get(
+                        "repair"
+                    ),
+                    "repair_attempts": (
+                        repair_state.attempts
+                    ),
+                },
+            }
+
+        return {
+            "action": "return",
+            "result": {
+                "success": False,
+                "status": (
+                    TransactionStatus.ROLLED_BACK.value
+                ),
+                "tests": test_result,
+                "repair": repair_result.get(
+                    "repair"
+                ),
+                "repair_attempts": (
+                    repair_state.attempts
+                ),
+            },
+        }
+
     def run(
         self,
         instruction,
@@ -269,33 +489,11 @@ class RepairFlow:
             )
 
             if not repair_state.can_continue():
-                return {
-                    "success": False,
-                    "status": (
-                        TransactionStatus.ROLLED_BACK.value
-                    ),
-                    "tests": test_result,
-                    "repair_attempts": (
-                        repair_state.attempts
-                    ),
-                    "repair": {
-                        "action": "none",
-                        "risk": "baixo",
-                        "path": "",
-                        "content": "",
-                        "status": (
-                            RepairCycleStatus.LIMIT_REACHED.value
-                        ),
-                        "diagnosis": (
-                            "Limite máximo de tentativas "
-                            "de reparo atingido."
-                        ),
-                        "correction": (
-                            "Nenhuma nova correção automática "
-                            "será tentada."
-                        ),
-                    },
-                }
+                return self._build_limit_reached_result(
+                    test_result=test_result,
+                    repair_state=repair_state,
+                    default_repair=True,
+                )
 
             repair_result = attempt(
                 instruction=instruction,
@@ -304,134 +502,20 @@ class RepairFlow:
                 repair_state=repair_state,
             )
 
-            status = repair_result.get(
-                "status",
-                RepairExecutorStatus.REPAIR_FAILED.value,
+            handled = self._handle_repair_result(
+                repair_result=repair_result,
+                instruction=instruction,
+                transaction=transaction,
+                test_result=test_result,
+                repair_state=repair_state,
+                attempt=attempt,
             )
 
-            if repair_result.get("success"):
-                next_tests = repair_result.get(
-                    "tests",
-                    {},
-                )
+            if handled["action"] == "continue":
+                test_result = handled["test_result"]
+                continue
 
-                if (
-                    isinstance(next_tests, dict)
-                    and next_tests.get("success")
-                ):
-                    repair_state.mark_verified()
-                    repair_state.persist(transaction)
-
-                    return {
-                        "success": True,
-                        "status": (
-                            RepairCycleStatus.VERIFIED.value
-                        ),
-                        "tests": next_tests,
-                        "repair": repair_result.get(
-                            "repair"
-                        ),
-                        "repair_attempts": (
-                            repair_state.attempts
-                        ),
-                    }
-
-            if status == RepairExecutorStatus.REPAIR_FAILED.value:
-                next_tests = repair_result.get("tests")
-
-                if isinstance(next_tests, dict):
-                    test_result = next_tests
-
-                    if repair_state.can_continue():
-                        continue
-
-                    repair = repair_result.get("repair")
-
-                    if isinstance(repair, dict):
-                        repair = dict(repair)
-                        repair["status"] = (
-                            RepairCycleStatus.LIMIT_REACHED.value
-                        )
-                    else:
-                        repair = None
-
-                    return {
-                        "success": False,
-                        "status": (
-                            TransactionStatus.ROLLED_BACK.value
-                        ),
-                        "tests": test_result,
-                        "repair": repair,
-                        "repair_attempts": (
-                            repair_state.attempts
-                        ),
-                    }
-
-                return {
-                    "success": False,
-                    "status": (
-                        TransactionStatus.ROLLED_BACK.value
-                    ),
-                    "tests": test_result,
-                    "repair": repair_result.get(
-                        "repair"
-                    ),
-                    "repair_attempts": (
-                        repair_state.attempts
-                    ),
-                }
-
-            if status == RepairExecutorStatus.FAILED.value:
-                return {
-                    "success": False,
-                    "status": (
-                        TransactionStatus.ROLLED_BACK.value
-                    ),
-                    "tests": test_result,
-                    "repair": repair_result.get(
-                        "repair"
-                    ),
-                    "repair_attempts": (
-                        repair_state.attempts
-                    ),
-                    "error": repair_result.get(
-                        "error",
-                        "",
-                    ),
-                }
-
-            if status in {
-                RepairCycleStatus.NO_REPAIR.value,
-                RepairCycleStatus.LIMIT_REACHED.value,
-                TransactionStatus.ROLLED_BACK.value,
-            }:
-                return {
-                    "success": False,
-                    "status": (
-                        TransactionStatus.ROLLED_BACK.value
-                    ),
-                    "tests": test_result,
-                    "repair": repair_result.get(
-                        "repair"
-                    ),
-                    "repair_attempts": (
-                        repair_state.attempts
-                    ),
-                }
-
-            return {
-                "success": False,
-                "status": (
-                    TransactionStatus.ROLLED_BACK.value
-                ),
-                "tests": test_result,
-                "repair": repair_result.get(
-                    "repair"
-                ),
-                "repair_attempts": (
-                    repair_state.attempts
-                ),
-            }
+            return handled["result"]
 
         return {
             "success": True,
