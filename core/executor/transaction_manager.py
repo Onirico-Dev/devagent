@@ -522,106 +522,133 @@ class TransactionManager:
 
         return backup_root
 
-    def _remove_created_files(self, transaction):
-        for relative_path in transaction.metadata.get(
-            "created",
-            [],
-        ):
-            expected_identity = transaction.metadata.get(
-                "created_identity",
-                {},
-            ).get(relative_path, {})
+    def _validate_created_file_path(self, relative_path):
+        relative = Path(relative_path)
 
-            expected_dev = expected_identity.get("st_dev")
-            expected_ino = expected_identity.get("st_ino")
-
-            relative = Path(relative_path)
-
-            if relative.is_absolute():
-                raise ValueError(
-                    f"Caminho absoluto não permitido: {relative_path}"
-                )
-
-            target = (
-                self.root / relative
-            ).resolve()
-
-            try:
-                target.relative_to(self.root)
-            except ValueError as error:
-                raise ValueError(
-                    f"Caminho fora do projeto: {relative_path}"
-                ) from error
-
-            parent_fd = self._open_parent_directory(
-                self.root,
-                relative,
+        if relative.is_absolute():
+            raise ValueError(
+                f"Caminho absoluto não permitido: {relative_path}"
             )
 
+        target = (self.root / relative).resolve()
+
+        try:
+            target.relative_to(self.root)
+        except ValueError as error:
+            raise ValueError(
+                f"Caminho fora do projeto: {relative_path}"
+            ) from error
+
+        return relative
+
+    def _get_created_file_identity(
+        self,
+        transaction,
+        relative_path,
+    ):
+        expected_identity = transaction.metadata.get(
+            "created_identity",
+            {},
+        ).get(relative_path, {})
+
+        return (
+            expected_identity.get("st_dev"),
+            expected_identity.get("st_ino"),
+        )
+
+    def _remove_created_file(
+        self,
+        relative,
+        expected_dev,
+        expected_ino,
+    ):
+        parent_fd = self._open_parent_directory(
+            self.root,
+            relative,
+        )
+
+        try:
+            filename = relative.name
+
             try:
-                filename = relative.name
+                file_fd = os.open(
+                    filename,
+                    os.O_RDONLY | os.O_NOFOLLOW,
+                    dir_fd=parent_fd,
+                )
+            except FileNotFoundError:
+                return
+            except OSError as error:
+                if getattr(error, "errno", None) == errno.ELOOP:
+                    raise ValueError(
+                        "Caminho criado é um symlink: "
+                        f"{relative}"
+                    ) from error
+                raise
 
-                try:
-                    file_fd = os.open(
-                        filename,
-                        os.O_RDONLY | os.O_NOFOLLOW,
-                        dir_fd=parent_fd,
+            try:
+                file_stat = os.fstat(file_fd)
+
+                if not stat.S_ISREG(file_stat.st_mode):
+                    raise ValueError(
+                        "Caminho criado não é um arquivo regular: "
+                        f"{relative}"
                     )
-                except FileNotFoundError:
-                    continue
-                except OSError as error:
-                    if getattr(error, "errno", None) == errno.ELOOP:
-                        raise ValueError(
-                            f"Caminho criado é um symlink: "
-                            f"{relative_path}"
-                        ) from error
-                    raise
 
-                try:
-                    file_stat = os.fstat(file_fd)
-
-                    if not stat.S_ISREG(file_stat.st_mode):
-                        raise ValueError(
-                            "Caminho criado não é um arquivo regular: "
-                            f"{relative_path}"
-                        )
-
-                    # Transações antigas podem não possuir identidade
-                    # registrada. Mantemos compatibilidade com esse formato.
-                    if (
-                        expected_dev is None
-                        or expected_ino is None
-                    ):
-                        os.unlink(
-                            filename,
-                            dir_fd=parent_fd,
-                        )
-                        self._fsync_directory(parent_fd)
-                        continue
-
-                    # Para transações novas, verificamos a identidade
-                    # registrada antes de qualquer decisão destrutiva.
-                    if (
-                        file_stat.st_dev != expected_dev
-                        or file_stat.st_ino != expected_ino
-                    ):
-                        raise RuntimeError(
-                            "Arquivo criado foi alterado durante a "
-                            f"transação: {relative_path}"
-                        )
-
-                    # A identidade foi validada contra o inode registrado
-                    # durante o registro da criação. A remoção continua
-                    # relativa ao parent_fd já validado.
+                if (
+                    expected_dev is None
+                    or expected_ino is None
+                ):
                     os.unlink(
                         filename,
                         dir_fd=parent_fd,
                     )
                     self._fsync_directory(parent_fd)
-                finally:
-                    os.close(file_fd)
+                    return
+
+                if (
+                    file_stat.st_dev != expected_dev
+                    or file_stat.st_ino != expected_ino
+                ):
+                    raise RuntimeError(
+                        "Arquivo criado foi alterado durante a "
+                        f"transação: {relative}"
+                    )
+
+                os.unlink(
+                    filename,
+                    dir_fd=parent_fd,
+                )
+                self._fsync_directory(parent_fd)
             finally:
-                os.close(parent_fd)
+                os.close(file_fd)
+        finally:
+            os.close(parent_fd)
+
+    def _remove_created_files(self, transaction):
+        created = transaction.metadata.get(
+            "created",
+            [],
+        )
+
+        for relative_path in created:
+            expected_dev, expected_ino = (
+                self._get_created_file_identity(
+                    transaction,
+                    relative_path,
+                )
+            )
+
+            relative = self._validate_created_file_path(
+                relative_path
+            )
+
+            self._remove_created_file(
+                relative=relative,
+                expected_dev=expected_dev,
+                expected_ino=expected_ino,
+            )
+
 
     def _restore_backup_files(self, backup_root):
         for backup_file in backup_root.rglob("*"):
