@@ -90,12 +90,12 @@ class SafeExecutor:
                 os.close(fd)
 
     @staticmethod
-    def _modify_file_in_parent(
+    @staticmethod
+    def _open_file_mode_in_parent(
         parent_fd: int,
         filename: str,
-        content: str,
         display_path: str,
-    ) -> None:
+    ) -> int:
         try:
             fd = os.open(
                 filename,
@@ -122,25 +122,26 @@ class SafeExecutor:
 
         try:
             stat_result = os.fstat(fd)
-
             if not stat.S_ISREG(stat_result.st_mode):
                 raise ValueError(
                     f"Caminho não é um arquivo: {display_path}"
                 )
-
-            mode = stat.S_IMODE(stat_result.st_mode)
+            return stat.S_IMODE(stat_result.st_mode)
         finally:
             os.close(fd)
 
-        temporary_name = None
-        temporary_fd = None
-
+    @staticmethod
+    def _create_temporary_file_in_parent(
+        parent_fd: int,
+        filename: str,
+        mode: int,
+        display_path: str,
+    ) -> tuple[int, str]:
         for _ in range(32):
             candidate = (
                 f".{filename}.devagent-"
                 f"{secrets.token_hex(12)}.tmp"
             )
-
             try:
                 temporary_fd = os.open(
                     candidate,
@@ -153,51 +154,102 @@ class SafeExecutor:
                     mode,
                     dir_fd=parent_fd,
                 )
-                temporary_name = candidate
-                break
+                return temporary_fd, candidate
             except FileExistsError:
                 continue
 
-        if temporary_fd is None or temporary_name is None:
-            raise FileExistsError(
-                f"Não foi possível criar arquivo temporário para: "
-                f"{display_path}"
-            )
+        raise FileExistsError(
+            f"Não foi possível criar arquivo temporário para: "
+            f"{display_path}"
+        )
 
+    @staticmethod
+    def _write_and_replace_file_in_parent(
+        parent_fd: int,
+        filename: str,
+        content: str,
+        temporary_fd: int,
+        temporary_name: str,
+    ) -> None:
+        fd = temporary_fd
         try:
-            with os.fdopen(
-                temporary_fd,
+            handle = os.fdopen(
+                fd,
                 "w",
                 encoding="utf-8",
-            ) as handle:
-                temporary_fd = None
-                handle.write(content)
-                handle.flush()
-                os.fsync(handle.fileno())
-
-            os.replace(
-                temporary_name,
-                filename,
-                src_dir_fd=parent_fd,
-                dst_dir_fd=parent_fd,
             )
+            fd = None
+        except Exception:
+            os.close(fd)
+            raise
 
+        with handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        os.replace(
+            temporary_name,
+            filename,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=parent_fd,
+        )
+        SafeExecutor._fsync_directory(parent_fd)
+
+    @staticmethod
+    def _cleanup_temporary_file_in_parent(
+        parent_fd: int,
+        temporary_fd: int | None,
+        temporary_name: str | None,
+    ) -> None:
+        if temporary_fd is not None:
+            os.close(temporary_fd)
+
+        if temporary_name is not None:
+            try:
+                os.unlink(
+                    temporary_name,
+                    dir_fd=parent_fd,
+                )
+            except FileNotFoundError:
+                pass
+
+    @staticmethod
+    def _modify_file_in_parent(
+        parent_fd: int,
+        filename: str,
+        content: str,
+        display_path: str,
+    ) -> None:
+        mode = SafeExecutor._open_file_mode_in_parent(
+            parent_fd,
+            filename,
+            display_path,
+        )
+        temporary_fd, temporary_name = (
+            SafeExecutor._create_temporary_file_in_parent(
+                parent_fd,
+                filename,
+                mode,
+                display_path,
+            )
+        )
+
+        try:
+            SafeExecutor._write_and_replace_file_in_parent(
+                parent_fd,
+                filename,
+                content,
+                temporary_fd,
+                temporary_name,
+            )
             temporary_name = None
-
-            SafeExecutor._fsync_directory(parent_fd)
-
         finally:
-            if temporary_fd is not None:
-                os.close(temporary_fd)
-
-            if temporary_name is not None:
-                try:
-                    os.unlink(
-                        temporary_name,
-                        dir_fd=parent_fd,
-                    )
-                except FileNotFoundError:
-                    pass
+            SafeExecutor._cleanup_temporary_file_in_parent(
+                parent_fd,
+                None,
+                temporary_name,
+            )
 
     @staticmethod
     def _verify_regular_file_in_parent(

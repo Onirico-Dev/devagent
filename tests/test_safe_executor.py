@@ -1087,3 +1087,23 @@ def test_modify_file_in_parent_maps_eloop_for_target_open(
             )
     finally:
         os.close(parent_fd)
+
+
+def test_cleanup_temporary_file_closes_fd(tmp_path):
+    from core.executor.safe_executor import SafeExecutor
+
+    parent_fd = os.open(tmp_path, os.O_RDONLY)
+    temporary = tmp_path / ".temporary.tmp"
+    temporary.write_text("temporary", encoding="utf-8")
+    temporary_fd = os.open(temporary, os.O_RDONLY)
+
+    try:
+        SafeExecutor._cleanup_temporary_file_in_parent(
+            parent_fd,
+            temporary_fd,
+            temporary.name,
+        )
+    finally:
+        os.close(parent_fd)
+
+    assert not temporary.exists()
