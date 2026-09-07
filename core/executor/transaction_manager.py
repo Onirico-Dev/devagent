@@ -666,6 +666,66 @@ class TransactionManager:
             expected_identity.get("st_ino"),
         )
 
+    def _open_created_file(self, parent_fd, relative):
+        filename = relative.name
+
+        try:
+            return os.open(
+                filename,
+                os.O_RDONLY | os.O_NOFOLLOW,
+                dir_fd=parent_fd,
+            )
+        except FileNotFoundError:
+            return None
+        except OSError as error:
+            if getattr(error, "errno", None) == errno.ELOOP:
+                raise ValueError(
+                    "Caminho criado é um symlink: "
+                    f"{relative}"
+                ) from error
+            raise
+
+
+    def _validate_created_file(self, file_fd, relative):
+        file_stat = os.fstat(file_fd)
+
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise ValueError(
+                "Caminho criado não é um arquivo regular: "
+                f"{relative}"
+            )
+
+        return file_stat
+
+
+    def _validate_created_identity(
+        self,
+        file_stat,
+        relative,
+        expected_dev,
+        expected_ino,
+    ):
+        if expected_dev is None or expected_ino is None:
+            return
+
+        if (
+            file_stat.st_dev != expected_dev
+            or file_stat.st_ino != expected_ino
+        ):
+            raise RuntimeError(
+                "Arquivo criado foi alterado durante a "
+                f"transação: {relative}"
+            )
+
+
+    def _unlink_created_file(self, parent_fd, relative):
+        os.unlink(
+            relative.name,
+            dir_fd=parent_fd,
+        )
+        self._fsync_directory(parent_fd)
+
+
     def _remove_created_file(
         self,
         relative,
@@ -678,58 +738,28 @@ class TransactionManager:
         )
 
         try:
-            filename = relative.name
-
-            try:
-                file_fd = os.open(
-                    filename,
-                    os.O_RDONLY | os.O_NOFOLLOW,
-                    dir_fd=parent_fd,
-                )
-            except FileNotFoundError:
+            file_fd = self._open_created_file(
+                parent_fd,
+                relative,
+            )
+            if file_fd is None:
                 return
-            except OSError as error:
-                if getattr(error, "errno", None) == errno.ELOOP:
-                    raise ValueError(
-                        "Caminho criado é um symlink: "
-                        f"{relative}"
-                    ) from error
-                raise
 
             try:
-                file_stat = os.fstat(file_fd)
-
-                if not stat.S_ISREG(file_stat.st_mode):
-                    raise ValueError(
-                        "Caminho criado não é um arquivo regular: "
-                        f"{relative}"
-                    )
-
-                if (
-                    expected_dev is None
-                    or expected_ino is None
-                ):
-                    os.unlink(
-                        filename,
-                        dir_fd=parent_fd,
-                    )
-                    self._fsync_directory(parent_fd)
-                    return
-
-                if (
-                    file_stat.st_dev != expected_dev
-                    or file_stat.st_ino != expected_ino
-                ):
-                    raise RuntimeError(
-                        "Arquivo criado foi alterado durante a "
-                        f"transação: {relative}"
-                    )
-
-                os.unlink(
-                    filename,
-                    dir_fd=parent_fd,
+                file_stat = self._validate_created_file(
+                    file_fd,
+                    relative,
                 )
-                self._fsync_directory(parent_fd)
+                self._validate_created_identity(
+                    file_stat,
+                    relative,
+                    expected_dev,
+                    expected_ino,
+                )
+                self._unlink_created_file(
+                    parent_fd,
+                    relative,
+                )
             finally:
                 os.close(file_fd)
         finally:
