@@ -548,12 +548,7 @@ class TransactionManager:
         )
         self.persist_manifest(transaction)
 
-    def register_created(
-        self,
-        transaction,
-        relative_path
-    ):
-
+    def _validate_created_path(self, relative_path):
         relative = Path(relative_path)
 
         if relative.is_absolute():
@@ -561,9 +556,7 @@ class TransactionManager:
                 f"Caminho absoluto não permitido: {relative_path}"
             )
 
-        target = (
-            self.root / relative
-        ).resolve()
+        target = (self.root / relative).resolve()
 
         try:
             target.relative_to(self.root)
@@ -577,20 +570,45 @@ class TransactionManager:
                 f"Caminho aponta para um diretório: {relative_path}"
             )
 
-        transaction.metadata[
-            "created"
-        ].append(relative_path)
+        return target
 
-        if target.exists() and target.is_file():
-            file_stat = target.stat()
 
-            transaction.metadata.setdefault(
-                "created_identity",
-                {},
-            )[relative_path] = {
-                "st_dev": file_stat.st_dev,
-                "st_ino": file_stat.st_ino,
-            }
+    def _record_created_path(self, transaction, relative_path):
+        transaction.metadata["created"].append(relative_path)
+
+
+    def _record_created_identity(
+        self,
+        transaction,
+        relative_path,
+        target,
+    ):
+        if not target.exists() or not target.is_file():
+            return
+
+        file_stat = target.stat()
+
+        transaction.metadata.setdefault(
+            "created_identity",
+            {},
+        )[relative_path] = {
+            "st_dev": file_stat.st_dev,
+            "st_ino": file_stat.st_ino,
+        }
+
+
+    def register_created(
+        self,
+        transaction,
+        relative_path
+    ):
+        target = self._validate_created_path(relative_path)
+        self._record_created_path(transaction, relative_path)
+        self._record_created_identity(
+            transaction,
+            relative_path,
+            target,
+        )
         self.persist_manifest(transaction)
 
     def _validate_backup_root(self, transaction):
