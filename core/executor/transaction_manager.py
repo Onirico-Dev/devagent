@@ -135,17 +135,16 @@ class TransactionManager:
         data = self._build_manifest_data(transaction)
         self._write_manifest_atomically(manifest, data)
 
-    def load_manifest(self, transaction_id):
-        manifest = self._manifest_path(transaction_id)
-
+    def _read_manifest_data(self, manifest):
         try:
             raw = manifest.read_text(encoding="utf-8")
-            data = json.loads(raw)
+            return json.loads(raw)
         except (OSError, json.JSONDecodeError, UnicodeDecodeError) as error:
             raise ValueError(
                 "Manifesto de transação inválido."
             ) from error
 
+    def _validate_manifest_data(self, data, transaction_id):
         if not isinstance(data, dict):
             raise ValueError("Manifesto de transação inválido.")
 
@@ -168,6 +167,16 @@ class TransactionManager:
                 "Campo 'repair_state' inválido no manifesto."
             )
 
+        return changes, metadata, repair_state
+
+    def _build_transaction_from_manifest(
+        self,
+        transaction_id,
+        data,
+        changes,
+        metadata,
+        repair_state,
+    ):
         return Transaction(
             transaction_id=transaction_id,
             status=TransactionStatus(
@@ -179,6 +188,21 @@ class TransactionManager:
             ],
             metadata=dict(metadata),
             repair_state=dict(repair_state),
+        )
+
+    def load_manifest(self, transaction_id):
+        manifest = self._manifest_path(transaction_id)
+        data = self._read_manifest_data(manifest)
+        changes, metadata, repair_state = self._validate_manifest_data(
+            data,
+            transaction_id,
+        )
+        return self._build_transaction_from_manifest(
+            transaction_id,
+            data,
+            changes,
+            metadata,
+            repair_state,
         )
 
     def list_recoverable_transactions(self):
