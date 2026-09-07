@@ -730,3 +730,83 @@ def test_supervisor_prepare_malformed_approval_entry_raises_key_error(
         match="Tarefa não encontrada",
     ):
         supervisor.prepare_approval("1")
+
+def test_supervisor_write_pending_to_temporary_cleans_up_on_write_failure(
+    tmp_path,
+    monkeypatch,
+):
+    from core.supervisor import Supervisor
+
+    path = tmp_path / "approvals.json"
+    supervisor = Supervisor(path)
+
+    def failing_dump(*args, **kwargs):
+        raise RuntimeError("simulated write failure")
+
+    monkeypatch.setattr(
+        "core.supervisor.json.dump",
+        failing_dump,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="simulated write failure",
+    ):
+        supervisor._write_pending_to_temporary()
+
+    temporary_files = list(
+        tmp_path.glob(".approvals.json.*.tmp")
+    )
+    assert temporary_files == []
+
+
+def test_supervisor_write_pending_to_temporary_ignores_unlink_oserror(
+    tmp_path,
+    monkeypatch,
+):
+    from core.supervisor import Supervisor
+
+    path = tmp_path / "approvals.json"
+    supervisor = Supervisor(path)
+
+    def failing_dump(*args, **kwargs):
+        raise RuntimeError("simulated write failure")
+
+    monkeypatch.setattr(
+        "core.supervisor.json.dump",
+        failing_dump,
+    )
+
+    original_unlink = Path.unlink
+
+    def failing_unlink(self, *args, **kwargs):
+        if (
+            self.parent == path.parent
+            and self.name != path.name
+        ):
+            raise OSError("simulated unlink failure")
+
+        return original_unlink(
+            self,
+            *args,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(
+        Path,
+        "unlink",
+        failing_unlink,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="simulated write failure",
+    ):
+        supervisor._write_pending_to_temporary()
+
+    temporary_files = list(
+        tmp_path.glob(".approvals.json.*.tmp")
+    )
+    assert len(temporary_files) == 1
+
+    original_unlink(temporary_files[0])

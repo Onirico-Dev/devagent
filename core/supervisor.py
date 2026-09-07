@@ -90,50 +90,71 @@ class Supervisor:
         ):
             self.pending = {}
 
+    def _write_pending_to_temporary(self):
+        fd, temporary_name = tempfile.mkstemp(
+            prefix=f".{self.storage_path.name}.",
+            suffix=".tmp",
+            dir=str(self.storage_path.parent),
+        )
+
+        temporary = Path(temporary_name)
+
+        try:
+            with open(
+                fd,
+                "w",
+                encoding="utf-8",
+            ) as handle:
+                json.dump(
+                    self.pending,
+                    handle,
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                handle.flush()
+                os.fsync(handle.fileno())
+
+            return temporary
+        except Exception:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+            raise
+
+    def _replace_storage_file(self, temporary):
+        temporary.replace(
+            self.storage_path
+        )
+
+        directory_fd = os.open(
+            str(self.storage_path.parent),
+            os.O_RDONLY,
+        )
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+
+    def _cleanup_temporary_file(self, temporary):
+        try:
+            if temporary.exists():
+                temporary.unlink()
+        except OSError:
+            pass
+
     def _save(self):
         with self._lock:
-            fd, temporary_name = tempfile.mkstemp(
-                prefix=f".{self.storage_path.name}.",
-                suffix=".tmp",
-                dir=str(self.storage_path.parent),
-            )
-
-            temporary = Path(temporary_name)
+            temporary = self._write_pending_to_temporary()
 
             try:
-                with open(
-                    fd,
-                    "w",
-                    encoding="utf-8",
-                ) as handle:
-                    json.dump(
-                        self.pending,
-                        handle,
-                        ensure_ascii=False,
-                        indent=2,
-                    )
-                    handle.flush()
-                    os.fsync(handle.fileno())
-
-                temporary.replace(
-                    self.storage_path
+                self._replace_storage_file(
+                    temporary
                 )
-
-                directory_fd = os.open(
-                    str(self.storage_path.parent),
-                    os.O_RDONLY,
-                )
-                try:
-                    os.fsync(directory_fd)
-                finally:
-                    os.close(directory_fd)
-
             finally:
-                try:
-                    if temporary.exists():
-                        temporary.unlink()
-                except OSError:
-                    pass
+                self._cleanup_temporary_file(
+                    temporary
+                )
 
 
     def request_approval(self, plan):
