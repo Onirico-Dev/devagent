@@ -423,13 +423,15 @@ class TransactionManager:
             overwrite=overwrite,
         )
 
-    def backup_file(self, transaction, relative_path: str) -> None:
+    def _validate_backup_path(self, relative_path):
         relative = Path(relative_path)
         if relative.is_absolute():
             raise ValueError(
                 f"Caminho absoluto não permitido: {relative_path}"
             )
+        return relative
 
+    def _resolve_transaction_backup_directory(self, transaction):
         backup_value = transaction.metadata.get("backup")
         if not backup_value:
             raise ValueError("Diretório de backup não configurado")
@@ -448,6 +450,9 @@ class TransactionManager:
         if backup_dir != expected_backup:
             raise ValueError("Caminho de backup inválido")
 
+        return backup_dir
+
+    def _resolve_backup_source(self, relative, relative_path):
         source = (self.root / relative).resolve()
         try:
             source.relative_to(self.root)
@@ -457,13 +462,21 @@ class TransactionManager:
             ) from error
 
         if not source.exists():
-            return
+            return None
 
         if source.is_symlink() or not source.is_file():
             raise ValueError(
                 f"Caminho não é um arquivo: {relative_path}"
             )
 
+        return source
+
+    def _validate_backup_destination(
+        self,
+        backup_dir,
+        relative,
+        relative_path,
+    ):
         destination = (backup_dir / relative).resolve()
         try:
             destination.relative_to(backup_dir)
@@ -477,6 +490,25 @@ class TransactionManager:
                 f"Caminho de backup inválido: {relative_path}"
             )
 
+        return destination
+
+    def backup_file(self, transaction, relative_path: str) -> None:
+        relative = self._validate_backup_path(relative_path)
+        backup_dir = self._resolve_transaction_backup_directory(
+            transaction
+        )
+        source = self._resolve_backup_source(
+            relative,
+            relative_path,
+        )
+        if source is None:
+            return
+
+        destination = self._validate_backup_destination(
+            backup_dir,
+            relative,
+            relative_path,
+        )
         if destination.exists():
             return
 
