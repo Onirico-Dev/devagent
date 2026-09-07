@@ -157,53 +157,71 @@ class Supervisor:
                 )
 
 
-    def request_approval(self, plan):
+    def _validate_approval_plan(self, plan):
         if not isinstance(plan, dict):
             raise ValueError(
                 "Plano de aprovação inválido."
             )
 
+    def _next_approval_id(self):
+        numeric_ids = []
+
+        for approval_id in self.pending:
+            try:
+                numeric_ids.append(
+                    int(approval_id)
+                )
+            except ValueError:
+                continue
+
+        return str(
+            max(numeric_ids, default=0) + 1
+        )
+
+    def _build_approval_request(self, plan):
+        snapshot = copy.deepcopy(plan)
+        now = self._now()
+
+        return {
+            "status": ApprovalStatus.PENDING.value,
+            "plan": snapshot,
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    def _persist_approval_request(
+        self,
+        approval_id,
+        request,
+        previous_pending,
+    ):
+        updated_pending = {
+            **self.pending,
+            approval_id: request,
+        }
+
+        try:
+            self.pending = updated_pending
+            self._save()
+        except Exception:
+            self.pending = previous_pending
+            raise
+
+    def request_approval(self, plan):
+        self._validate_approval_plan(plan)
+
         with self._lock:
             previous_pending = self.pending
             self._load()
 
-            numeric_ids = []
+            approval_id = self._next_approval_id()
+            request = self._build_approval_request(plan)
 
-            for approval_id in self.pending:
-                try:
-                    numeric_ids.append(
-                        int(approval_id)
-                    )
-                except ValueError:
-                    continue
-
-            next_id = (
-                max(numeric_ids, default=0) + 1
+            self._persist_approval_request(
+                approval_id,
+                request,
+                previous_pending,
             )
-
-            approval_id = str(next_id)
-
-            snapshot = copy.deepcopy(plan)
-            now = self._now()
-
-            request = {
-                "status": ApprovalStatus.PENDING.value,
-                "plan": snapshot,
-                "created_at": now,
-                "updated_at": now,
-            }
-
-            updated_pending = {
-                **self.pending,
-                approval_id: request,
-            }
-
-            try:
-                self.pending = updated_pending
-                self._save()
-            except Exception:
-                self.pending = previous_pending
-                raise
 
             return approval_id
     def prepare_approval(self, approval_id):
