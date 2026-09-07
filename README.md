@@ -4,7 +4,7 @@ DevAgent é um agente de desenvolvimento em Python com planejamento, validação
 
 ## Status
 
-Versão atual: **0.4.4**
+Versão atual: **0.4.5**
 
 A versão `v0.4.4` está publicada com a suíte completa de testes passando e cobertura de produção em 100%. A série `v0.4.x` também concluiu a decomposição estrutural do Gateway, com fluxos de reparo e transação extraídos para componentes especializados e as operações seguras de filesystem centralizadas em `SecureFileSystem`.
 
