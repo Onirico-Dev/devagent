@@ -317,6 +317,145 @@ class RepairFlow:
             "repair": repair,
         }
 
+    def _build_repair_rollback_result(
+        self,
+        repair_result,
+        test_result,
+        repair_state,
+        error=None,
+    ):
+        result = {
+            "success": False,
+            "status": TransactionStatus.ROLLED_BACK.value,
+            "tests": test_result,
+            "repair": repair_result.get("repair"),
+            "repair_attempts": repair_state.attempts,
+        }
+
+        if error is not None:
+            result["error"] = error
+
+        return {
+            "action": "return",
+            "result": result,
+        }
+
+    def _handle_verified_repair_result(
+        self,
+        repair_result,
+        transaction,
+        repair_state,
+    ):
+        if not repair_result.get("success"):
+            return None
+
+        next_tests = repair_result.get("tests", {})
+
+        if not (
+            isinstance(next_tests, dict)
+            and next_tests.get("success")
+        ):
+            return None
+
+        repair_state.mark_verified()
+        repair_state.persist(transaction)
+
+        return {
+            "action": "return",
+            "result": {
+                "success": True,
+                "status": RepairCycleStatus.VERIFIED.value,
+                "tests": next_tests,
+                "repair": repair_result.get("repair"),
+                "repair_attempts": repair_state.attempts,
+            },
+        }
+
+    def _handle_repair_failed_result(
+        self,
+        repair_result,
+        test_result,
+        repair_state,
+    ):
+        next_tests = repair_result.get("tests")
+
+        if isinstance(next_tests, dict):
+            if repair_state.can_continue():
+                return {
+                    "action": "continue",
+                    "test_result": next_tests,
+                }
+
+            return {
+                "action": "return",
+                "result": self._build_limit_reached_result(
+                    test_result=next_tests,
+                    repair_state=repair_state,
+                    repair=repair_result.get("repair"),
+                ),
+            }
+
+        return self._build_repair_rollback_result(
+            repair_result=repair_result,
+            test_result=test_result,
+            repair_state=repair_state,
+        )
+
+    def _handle_repair_failed_status(
+        self,
+        repair_result,
+        test_result,
+        repair_state,
+        status,
+    ):
+        if status != RepairExecutorStatus.REPAIR_FAILED.value:
+            return None
+
+        return self._handle_repair_failed_result(
+            repair_result=repair_result,
+            test_result=test_result,
+            repair_state=repair_state,
+        )
+
+    def _handle_failed_status(
+        self,
+        repair_result,
+        test_result,
+        repair_state,
+        status,
+    ):
+        if status != RepairExecutorStatus.FAILED.value:
+            return None
+
+        return self._build_repair_rollback_result(
+            repair_result=repair_result,
+            test_result=test_result,
+            repair_state=repair_state,
+            error=repair_result.get("error", ""),
+        )
+
+    def _handle_terminal_repair_status(
+        self,
+        repair_result,
+        test_result,
+        repair_state,
+        status,
+    ):
+        terminal_statuses = {
+            RepairCycleStatus.NO_REPAIR.value,
+            RepairCycleStatus.LIMIT_REACHED.value,
+            TransactionStatus.ROLLED_BACK.value,
+        }
+
+        if status not in terminal_statuses:
+            return None
+
+        return self._build_repair_rollback_result(
+            repair_result=repair_result,
+            test_result=test_result,
+            repair_state=repair_state,
+        )
+
     def _handle_repair_result(
         self,
         repair_result,
@@ -331,132 +470,46 @@ class RepairFlow:
             RepairExecutorStatus.REPAIR_FAILED.value,
         )
 
-        if repair_result.get("success"):
-            next_tests = repair_result.get(
-                "tests",
-                {},
-            )
+        result = self._handle_verified_repair_result(
+            repair_result=repair_result,
+            transaction=transaction,
+            repair_state=repair_state,
+        )
+        if result is not None:
+            return result
 
-            if (
-                isinstance(next_tests, dict)
-                and next_tests.get("success")
-            ):
-                repair_state.mark_verified()
-                repair_state.persist(transaction)
+        result = self._handle_repair_failed_status(
+            repair_result=repair_result,
+            test_result=test_result,
+            repair_state=repair_state,
+            status=status,
+        )
+        if result is not None:
+            return result
 
-                return {
-                    "action": "return",
-                    "result": {
-                        "success": True,
-                        "status": (
-                            RepairCycleStatus.VERIFIED.value
-                        ),
-                        "tests": next_tests,
-                        "repair": repair_result.get(
-                            "repair"
-                        ),
-                        "repair_attempts": (
-                            repair_state.attempts
-                        ),
-                    },
-                }
+        result = self._handle_failed_status(
+            repair_result=repair_result,
+            test_result=test_result,
+            repair_state=repair_state,
+            status=status,
+        )
+        if result is not None:
+            return result
 
-        if status == RepairExecutorStatus.REPAIR_FAILED.value:
-            next_tests = repair_result.get("tests")
+        result = self._handle_terminal_repair_status(
+            repair_result=repair_result,
+            test_result=test_result,
+            repair_state=repair_state,
+            status=status,
+        )
+        if result is not None:
+            return result
 
-            if isinstance(next_tests, dict):
-                if repair_state.can_continue():
-                    return {
-                        "action": "continue",
-                        "test_result": next_tests,
-                    }
-
-                return {
-                    "action": "return",
-                    "result": self._build_limit_reached_result(
-                        test_result=next_tests,
-                        repair_state=repair_state,
-                        repair=repair_result.get("repair"),
-                    ),
-                }
-
-            return {
-                "action": "return",
-                "result": {
-                    "success": False,
-                    "status": (
-                        TransactionStatus.ROLLED_BACK.value
-                    ),
-                    "tests": test_result,
-                    "repair": repair_result.get(
-                        "repair"
-                    ),
-                    "repair_attempts": (
-                        repair_state.attempts
-                    ),
-                },
-            }
-
-        if status == RepairExecutorStatus.FAILED.value:
-            return {
-                "action": "return",
-                "result": {
-                    "success": False,
-                    "status": (
-                        TransactionStatus.ROLLED_BACK.value
-                    ),
-                    "tests": test_result,
-                    "repair": repair_result.get(
-                        "repair"
-                    ),
-                    "repair_attempts": (
-                        repair_state.attempts
-                    ),
-                    "error": repair_result.get(
-                        "error",
-                        "",
-                    ),
-                },
-            }
-
-        if status in {
-            RepairCycleStatus.NO_REPAIR.value,
-            RepairCycleStatus.LIMIT_REACHED.value,
-            TransactionStatus.ROLLED_BACK.value,
-        }:
-            return {
-                "action": "return",
-                "result": {
-                    "success": False,
-                    "status": (
-                        TransactionStatus.ROLLED_BACK.value
-                    ),
-                    "tests": test_result,
-                    "repair": repair_result.get(
-                        "repair"
-                    ),
-                    "repair_attempts": (
-                        repair_state.attempts
-                    ),
-                },
-            }
-
-        return {
-            "action": "return",
-            "result": {
-                "success": False,
-                "status": (
-                    TransactionStatus.ROLLED_BACK.value
-                ),
-                "tests": test_result,
-                "repair": repair_result.get(
-                    "repair"
-                ),
-                "repair_attempts": (
-                    repair_state.attempts
-                ),
-            },
-        }
+        return self._build_repair_rollback_result(
+            repair_result=repair_result,
+            test_result=test_result,
+            repair_state=repair_state,
+        )
 
     def run(
         self,

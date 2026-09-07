@@ -838,6 +838,23 @@ def test_run_uses_default_attempt_when_attempt_fn_is_none(monkeypatch):
     assert len(calls) == 1
 
 
+def test_build_limit_reached_result_normalizes_non_dict_repair():
+    flow, _ = make_flow()
+    state = FakeState()
+
+    result = flow._build_limit_reached_result(
+        test_result={"success": False},
+        repair_state=state,
+        repair="diagnostico-invalido",
+    )
+
+    assert result["success"] is False
+    assert result["status"] == TransactionStatus.ROLLED_BACK.value
+    assert result["tests"] == {"success": False}
+    assert result["repair"] is None
+    assert result["repair_attempts"] == state.attempts
+
+
 def test_run_marks_repair_none_when_limit_reached_without_repair_dict():
     flow, _ = make_flow()
     transaction = make_transaction()
