@@ -250,17 +250,19 @@ class TransactionManager:
 
         return backup_parent_fd
 
-    def _create_transaction_directory(
-        self,
-        backup_parent_fd,
-        transaction,
-    ):
+    def _validate_backup_parent_directory(self, backup_parent_fd):
         backup_stat = os.fstat(backup_parent_fd)
+
         if not stat.S_ISDIR(backup_stat.st_mode):
             raise ValueError(
                 "Diretório de backup inválido."
             )
 
+    def _create_transaction_directory_entry(
+        self,
+        backup_parent_fd,
+        transaction,
+    ):
         try:
             os.mkdir(
                 transaction.transaction_id,
@@ -290,12 +292,20 @@ class TransactionManager:
                     ) from error
                 raise
         except OSError as error:
-            if error.errno in (errno.ELOOP, errno.ENOTDIR):
+            if error.errno in (
+                errno.ELOOP,
+                errno.ENOTDIR,
+            ):
                 raise ValueError(
                     "Diretório de backup já existe ou não é seguro."
                 ) from error
             raise
 
+    def _validate_transaction_directory(
+        self,
+        backup_parent_fd,
+        transaction,
+    ):
         transaction_fd = os.open(
             transaction.transaction_id,
             os.O_RDONLY
@@ -303,14 +313,36 @@ class TransactionManager:
             | os.O_NOFOLLOW,
             dir_fd=backup_parent_fd,
         )
+
         try:
             transaction_stat = os.fstat(transaction_fd)
+
             if not stat.S_ISDIR(transaction_stat.st_mode):
                 raise ValueError(
                     "Diretório de backup inválido."
                 )
         finally:
             os.close(transaction_fd)
+
+    def _create_transaction_directory(
+        self,
+        backup_parent_fd,
+        transaction,
+    ):
+        self._validate_backup_parent_directory(
+            backup_parent_fd
+        )
+
+        self._create_transaction_directory_entry(
+            backup_parent_fd,
+            transaction,
+        )
+
+        self._validate_transaction_directory(
+            backup_parent_fd,
+            transaction,
+        )
+
 
     def begin(self, transaction):
         if not getattr(transaction, "transaction_id", None) or transaction.transaction_id == "unused":
