@@ -5,7 +5,7 @@ from core.adapters.base import AIAdapter
 
 
 class MockAdapter(AIAdapter):
-    def generate(self, prompt: str) -> str:
+    def _validate_prompt(self, prompt: str) -> None:
         if not isinstance(prompt, str):
             raise TypeError(
                 "O prompt deve ser uma string."
@@ -16,64 +16,54 @@ class MockAdapter(AIAdapter):
                 "O prompt não pode ser vazio."
             )
 
-        # =========================================================
-        # REPAIR ENGINE
-        # =========================================================
-        #
-        # O modo de reparo só é reconhecido quando a instrução
-        # estrutural aparece no início do prompt. Isso evita que
-        # conteúdo do contexto do projeto acione falsamente o
-        # Repair Engine.
-        #
+    def _generate_repair_response(self, prompt: str) -> str:
         repair_marker = (
             "Você é o módulo de reparo automático do DevAgent."
         )
 
-        if prompt.lstrip().startswith(repair_marker):
-            instruction = ""
+        if not prompt.lstrip().startswith(repair_marker):
+            return ""
 
-            marker = "Objetivo original:"
+        instruction = ""
 
-            if marker in prompt:
-                instruction = (
-                    prompt.split(marker, 1)[1]
-                    .split("Erro:", 1)[0]
-                    .strip()
-                )
-
-            path = self._extract_repair_path(
-                instruction
+        marker = "Objetivo original:"
+        if marker in prompt:
+            instruction = (
+                prompt.split(marker, 1)[1]
+                .split("Erro:", 1)[0]
+                .strip()
             )
 
-            if not path:
-                path = "reparo.py"
+        path = self._extract_repair_path(
+            instruction
+        )
 
-            content = self._extract_invalid_content(
-                instruction
-            )
+        if not path:
+            path = "reparo.py"
 
-            return json.dumps(
-                {
-                    "diagnosis": (
-                        "O arquivo contém conteúdo que "
-                        "não constitui Python válido."
-                    ),
-                    "correction": (
-                        "O conteúdo precisa ser substituído "
-                        "por código Python válido."
-                    ),
-                    "risk": "baixo",
-                    "action": "modify",
-                    "path": path,
-                    "content": content,
-                },
-                ensure_ascii=False,
-            )
+        content = self._extract_invalid_content(
+            instruction
+        )
 
-        # =========================================================
-        # AI PLANNER
-        # =========================================================
+        return json.dumps(
+            {
+                "diagnosis": (
+                    "O arquivo contém conteúdo que "
+                    "não constitui Python válido."
+                ),
+                "correction": (
+                    "O conteúdo precisa ser substituído "
+                    "por código Python válido."
+                ),
+                "risk": "baixo",
+                "action": "modify",
+                "path": path,
+                "content": content,
+            },
+            ensure_ascii=False,
+        )
 
+    def _generate_planner_response(self, prompt: str) -> str:
         marker = "INSTRUÇÃO DO USUÁRIO:"
         instruction = ""
 
@@ -85,7 +75,6 @@ class MockAdapter(AIAdapter):
             )
 
         objective = instruction
-
         change = self._build_planner_change(
             instruction
         )
@@ -104,6 +93,18 @@ class MockAdapter(AIAdapter):
             },
             ensure_ascii=False,
         )
+
+    def generate(self, prompt: str) -> str:
+        self._validate_prompt(prompt)
+
+        repair_response = self._generate_repair_response(
+            prompt
+        )
+
+        if repair_response:
+            return repair_response
+
+        return self._generate_planner_response(prompt)
 
     # =============================================================
     # AI PLANNER — MOCK
