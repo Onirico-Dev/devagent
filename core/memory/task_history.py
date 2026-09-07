@@ -165,6 +165,111 @@ class TaskHistory:
 
         return task
 
+    def _validate_update_status(self, status):
+        if status is None:
+            return
+
+        valid_statuses = {
+            lifecycle_status.value
+            for lifecycle_status in TaskHistoryStatus
+        }
+        valid_statuses.add("completed")
+
+        if status not in valid_statuses:
+            raise ValueError(
+                "status inválido"
+            )
+
+    def _apply_update_extra(self, updated_task, extra):
+        if extra is None:
+            return
+
+        if not isinstance(extra, dict):
+            raise TypeError(
+                "extra deve ser um dicionário"
+            )
+
+        structural_fields = {
+            "task_id",
+            "approval_id",
+            "instruction",
+            "plan",
+            "status",
+            "transaction_id",
+            "created_at",
+            "updated_at",
+        }
+
+        if structural_fields.intersection(extra):
+            raise ValueError(
+                "Campos estruturais não podem ser sobrescritos"
+            )
+
+        updated_task.update(extra)
+
+    def _build_updated_task(
+        self,
+        data,
+        task_id,
+        status,
+        transaction_id,
+        extra,
+    ):
+        if not isinstance(data, dict):
+            data = {}
+
+        task = data.get(task_id)
+
+        if task is None:
+            raise KeyError(
+                "Tarefa não encontrada."
+            )
+
+        updated_task = {
+            **task,
+        }
+
+        self._validate_update_status(status)
+
+        if status is not None:
+            updated_task["status"] = status
+
+        if transaction_id is not None:
+            updated_task["transaction_id"] = transaction_id
+
+        self._apply_update_extra(
+            updated_task,
+            extra,
+        )
+
+        updated_task["updated_at"] = self._now()
+
+        updated_tasks = dict(data)
+        updated_tasks[task_id] = updated_task
+
+        return updated_tasks
+
+    def _persist_task_update(
+        self,
+        task_id,
+        status,
+        transaction_id,
+        extra,
+    ):
+        def update_task(data):
+            return self._build_updated_task(
+                data=data,
+                task_id=task_id,
+                status=status,
+                transaction_id=transaction_id,
+                extra=extra,
+            )
+
+        return self.store.update(
+            update_task,
+            default={},
+        )
+
     def update(
         self,
         task_id,
@@ -174,72 +279,11 @@ class TaskHistory:
     ):
         task_id = str(task_id)
 
-        def update_task(data):
-            if not isinstance(data, dict):
-                data = {}
-
-            task = data.get(task_id)
-
-            if task is None:
-                raise KeyError(
-                    "Tarefa não encontrada."
-                )
-
-            updated_task = {
-                **task,
-            }
-
-            if status is not None:
-                valid_statuses = {
-                    lifecycle_status.value
-                    for lifecycle_status in TaskHistoryStatus
-                }
-                valid_statuses.add("completed")
-
-                if status not in valid_statuses:
-                    raise ValueError(
-                        "status inválido"
-                    )
-
-                updated_task["status"] = status
-
-            if transaction_id is not None:
-                updated_task["transaction_id"] = transaction_id
-
-            if extra is not None:
-                if not isinstance(extra, dict):
-                    raise TypeError(
-                        "extra deve ser um dicionário"
-                    )
-
-                structural_fields = {
-                    "task_id",
-                    "approval_id",
-                    "instruction",
-                    "plan",
-                    "status",
-                    "transaction_id",
-                    "created_at",
-                    "updated_at",
-                }
-
-                if structural_fields.intersection(extra):
-                    raise ValueError(
-                        "Campos estruturais não podem ser sobrescritos"
-                    )
-
-                updated_task.update(extra)
-
-            updated_task["updated_at"] = self._now()
-
-            updated_tasks = dict(data)
-            updated_tasks[task_id] = updated_task
-
-            return updated_tasks
-
-        updated_tasks = self.store.update(
-            update_task,
-            default={},
+        updated_tasks = self._persist_task_update(
+            task_id=task_id,
+            status=status,
+            transaction_id=transaction_id,
+            extra=extra,
         )
 
         if not isinstance(updated_tasks, dict):
