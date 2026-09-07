@@ -627,6 +627,117 @@ def test_validate_risk_rejects_medium_when_assessed_risk_is_medium(
         )
 
 
+def test_execute_repair_combines_semantic_test_results(
+    tmp_path,
+):
+    class SemanticTestRunner:
+        def __init__(self):
+            self.run_paths = None
+            self.semantic_files = None
+
+        def run(self, paths):
+            self.run_paths = paths
+            return {
+                "success": True,
+                "returncode": 0,
+                "stdout": "syntax ok",
+                "stderr": "",
+            }
+
+        def run_tests(self, test_files):
+            self.semantic_files = test_files
+            return {
+                "success": True,
+                "returncode": 0,
+                "stdout": "semantic ok",
+                "stderr": "",
+            }
+
+    runner = SemanticTestRunner()
+    fake_executor = FakeExecutor()
+    repair_executor = make_executor(
+        tmp_path,
+        executor=fake_executor,
+        test_runner=runner,
+    )
+    transaction = make_transaction(tmp_path)
+    transaction.metadata["tests"] = [
+        "tests/test_version.py",
+    ]
+
+    result = repair_executor.execute_repair(
+        repair={
+            "action": "create",
+            "path": "arquivo.py",
+            "content": "VALUE = 1\n",
+            "risk": "baixo",
+        },
+        instruction="reparar",
+        transaction=transaction,
+    )
+
+    assert result["success"] is True
+    assert result["status"] == "repair_verified"
+    assert result["tests"]["success"] is True
+    assert result["tests"]["returncode"] == 0
+    assert result["tests"]["stdout"] == "syntax ok\nsemantic ok"
+    assert result["tests"]["stderr"] == ""
+    assert runner.run_paths == ["arquivo.py"]
+    assert runner.semantic_files == ["tests/test_version.py"]
+
+
+def test_execute_repair_combines_failed_semantic_test_result(
+    tmp_path,
+):
+    class SemanticTestRunner:
+        def run(self, paths):
+            return {
+                "success": True,
+                "returncode": 0,
+                "stdout": "syntax ok",
+                "stderr": "",
+            }
+
+        def run_tests(self, test_files):
+            return {
+                "success": False,
+                "returncode": 7,
+                "stdout": "semantic output",
+                "stderr": "semantic failure",
+            }
+
+    fake_executor = FakeExecutor()
+    repair_executor = make_executor(
+        tmp_path,
+        executor=fake_executor,
+        test_runner=SemanticTestRunner(),
+    )
+    transaction = make_transaction(tmp_path)
+    transaction.metadata["tests"] = [
+        "tests/test_version.py",
+    ]
+
+    result = repair_executor.execute_repair(
+        repair={
+            "action": "create",
+            "path": "arquivo.py",
+            "content": "VALUE = 1\n",
+            "risk": "baixo",
+        },
+        instruction="reparar",
+        transaction=transaction,
+    )
+
+    assert result["success"] is False
+    assert result["status"] == "repair_failed"
+    assert result["tests"]["success"] is False
+    assert result["tests"]["returncode"] == 7
+    assert result["tests"]["stdout"] == (
+        "syntax ok\nsemantic output"
+    )
+    assert result["tests"]["stderr"] == "semantic failure"
+
+
 def test_execute_repair_marks_failed_when_semantic_test_runner_raises(
     tmp_path,
 ):

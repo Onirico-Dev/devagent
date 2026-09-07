@@ -184,6 +184,122 @@ class RepairExecutor:
 
         return change
 
+    def _build_no_test_runner_result(self, transaction):
+        return {
+            "success": True,
+            "status": RepairExecutorStatus.REPAIR_APPLIED.value,
+            "transaction_id": transaction.transaction_id,
+            "instruction": "",
+            "repair": None,
+        }
+
+    def _combine_repair_test_results(
+        self,
+        test_result,
+        semantic_result,
+    ):
+        semantic_success = semantic_result.get(
+            "success",
+            False,
+        )
+
+        return {
+            "success": (
+                test_result.get(
+                    "success",
+                    False,
+                )
+                and semantic_success
+            ),
+            "returncode": (
+                semantic_result.get(
+                    "returncode",
+                    test_result.get(
+                        "returncode",
+                        1,
+                    ),
+                )
+                if not semantic_success
+                else test_result.get(
+                    "returncode",
+                    0,
+                )
+            ),
+            "stdout": "\n".join(
+                part
+                for part in (
+                    test_result.get(
+                        "stdout",
+                        "",
+                    ),
+                    semantic_result.get(
+                        "stdout",
+                        "",
+                    ),
+                )
+                if part
+            ),
+            "stderr": "\n".join(
+                part
+                for part in (
+                    test_result.get(
+                        "stderr",
+                        "",
+                    ),
+                    semantic_result.get(
+                        "stderr",
+                        "",
+                    ),
+                )
+                if part
+            ),
+        }
+
+    def _run_declared_repair_tests(
+        self,
+        test_result,
+        transaction,
+    ):
+        if not (
+            isinstance(test_result, dict)
+            and test_result.get("success")
+        ):
+            return test_result
+
+        declared_tests = transaction.metadata.get(
+            "tests",
+            [],
+        )
+
+        if not declared_tests:
+            return test_result
+
+        semantic_result = self.test_runner.run_tests(
+            declared_tests,
+        )
+
+        return self._combine_repair_test_results(
+            test_result,
+            semantic_result,
+        )
+
+    def _normalize_repair_test_result(self, test_result):
+        if (
+            not isinstance(test_result, dict)
+            or not isinstance(
+                test_result.get("success", False),
+                bool,
+            )
+        ):
+            return {
+                "success": False,
+                "status": RepairExecutorStatus.INVALID_TEST_RESULT.value,
+                "stderr": "Resultado de testes inválido.",
+                "stdout": "",
+            }
+
+        return test_result
+
     def _run_repair_tests(
         self,
         change,
@@ -192,113 +308,22 @@ class RepairExecutor:
         transaction.status = TransactionStatus.TESTING
 
         if self.test_runner is None:
-            return {
-                "success": True,
-                "status": RepairExecutorStatus.REPAIR_APPLIED.value,
-                "transaction_id": transaction.transaction_id,
-                "instruction": "",
-                "repair": None,
-            }
+            return self._build_no_test_runner_result(
+                transaction,
+            )
 
         test_result = self.test_runner.run(
             [change.path]
         )
 
-        if (
-            isinstance(test_result, dict)
-            and test_result.get("success")
-        ):
-            declared_tests = transaction.metadata.get(
-                "tests",
-                [],
-            )
+        test_result = self._run_declared_repair_tests(
+            test_result,
+            transaction,
+        )
 
-            if declared_tests:
-                semantic_result = self.test_runner.run_tests(
-                    declared_tests,
-                )
-
-                test_result = {
-                    "success": (
-                        test_result.get(
-                            "success",
-                            False,
-                        )
-                        and semantic_result.get(
-                            "success",
-                            False,
-                        )
-                    ),
-                    "returncode": (
-                        semantic_result.get(
-                            "returncode",
-                            test_result.get(
-                                "returncode",
-                                1,
-                            ),
-                        )
-                        if not semantic_result.get(
-                            "success",
-                            False,
-                        )
-                        else test_result.get(
-                            "returncode",
-                            0,
-                        )
-                    ),
-                    "stdout": "\n".join(
-                        part
-                        for part in (
-                            test_result.get(
-                                "stdout",
-                                "",
-                            ),
-                            semantic_result.get(
-                                "stdout",
-                                "",
-                            ),
-                        )
-                        if part
-                    ),
-                    "stderr": "\n".join(
-                        part
-                        for part in (
-                            test_result.get(
-                                "stderr",
-                                "",
-                            ),
-                            semantic_result.get(
-                                "stderr",
-                                "",
-                            ),
-                        )
-                        if part
-                    ),
-                }
-
-        if not isinstance(test_result, dict):
-            test_result = {
-                "success": False,
-                "status": (
-                    RepairExecutorStatus.INVALID_TEST_RESULT.value
-                ),
-                "stderr": "Resultado de testes inválido.",
-                "stdout": "",
-            }
-        elif not isinstance(
-            test_result.get("success", False),
-            bool,
-        ):
-            test_result = {
-                "success": False,
-                "status": (
-                    RepairExecutorStatus.INVALID_TEST_RESULT.value
-                ),
-                "stderr": "Resultado de testes inválido.",
-                "stdout": "",
-            }
-
-        return test_result
+        return self._normalize_repair_test_result(
+            test_result,
+        )
 
     def execute_repair(
         self,
