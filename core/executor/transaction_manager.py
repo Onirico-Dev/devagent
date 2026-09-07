@@ -82,15 +82,12 @@ class TransactionManager:
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError("Change inválido no manifesto.") from error
 
-    def persist_manifest(self, transaction):
-        manifest = self._manifest_path(transaction.transaction_id)
-        manifest.parent.mkdir(parents=True, exist_ok=True)
-
+    def _build_manifest_data(self, transaction):
         status = getattr(transaction, "status", None)
         if status is None:
             status = TransactionStatus.PENDING
 
-        data = {
+        return {
             "transaction_id": transaction.transaction_id,
             "status": status.value,
             "changes": [
@@ -101,6 +98,7 @@ class TransactionManager:
             "repair_state": dict(getattr(transaction, "repair_state", {})),
         }
 
+    def _write_manifest_atomically(self, manifest, data):
         fd, temporary_name = tempfile.mkstemp(
             prefix=".transaction.",
             suffix=".tmp",
@@ -130,6 +128,12 @@ class TransactionManager:
                     temporary.unlink()
             except OSError:
                 pass
+
+    def persist_manifest(self, transaction):
+        manifest = self._manifest_path(transaction.transaction_id)
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        data = self._build_manifest_data(transaction)
+        self._write_manifest_atomically(manifest, data)
 
     def load_manifest(self, transaction_id):
         manifest = self._manifest_path(transaction_id)
