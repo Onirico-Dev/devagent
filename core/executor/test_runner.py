@@ -124,7 +124,7 @@ class TestRunner:
             "stderr": result.stderr,
         }
 
-    def run_tests(self, test_files):
+    def _validate_test_files_input(self, test_files):
         if not isinstance(test_files, list):
             raise ValueError(
                 "Os testes devem ser fornecidos como uma lista."
@@ -135,56 +135,55 @@ class TestRunner:
                 "A lista de testes não pode ser vazia."
             )
 
-        safe_files = []
+    def _validate_test_file(self, file):
+        if not isinstance(file, (str, Path)):
+            raise ValueError(
+                "Cada teste deve ser um caminho de arquivo pytest."
+            )
 
-        for file in test_files:
-            if not isinstance(file, (str, Path)):
-                raise ValueError(
-                    "Cada teste deve ser um caminho de arquivo pytest."
-                )
+        target = self._safe_path(file)
+        relative = target.relative_to(self.root)
+        name = relative.name
 
-            target = self._safe_path(file)
-            relative = target.relative_to(self.root)
-            name = relative.name
+        if not name.endswith(".py"):
+            raise ValueError(
+                f"Teste inválido: {file}. "
+                "O teste deve ser um arquivo Python."
+            )
 
-            if not name.endswith(".py"):
-                raise ValueError(
-                    f"Teste inválido: {file}. "
-                    "O teste deve ser um arquivo Python."
-                )
+        if not (
+            name.startswith("test_")
+            or name.endswith("_test.py")
+        ):
+            raise ValueError(
+                f"Teste inválido: {file}. "
+                "O arquivo deve seguir o padrão "
+                "test_*.py ou *_test.py."
+            )
 
-            if not (
-                name.startswith("test_")
-                or name.endswith("_test.py")
-            ):
-                raise ValueError(
-                    f"Teste inválido: {file}. "
-                    "O arquivo deve seguir o padrão "
-                    "test_*.py ou *_test.py."
-                )
+        if not target.exists():
+            return {
+                "success": False,
+                "returncode": 1,
+                "stdout": "",
+                "stderr": (
+                    f"Arquivo não encontrado: {file}"
+                ),
+            }
 
-            if not target.exists():
-                return {
-                    "success": False,
-                    "returncode": 1,
-                    "stdout": "",
-                    "stderr": (
-                        f"Arquivo não encontrado: {file}"
-                    ),
-                }
+        if not target.is_file():
+            return {
+                "success": False,
+                "returncode": 1,
+                "stdout": "",
+                "stderr": (
+                    f"Arquivo de teste inválido: {file}"
+                ),
+            }
 
-            if not target.is_file():
-                return {
-                    "success": False,
-                    "returncode": 1,
-                    "stdout": "",
-                    "stderr": (
-                        f"Arquivo de teste inválido: {file}"
-                    ),
-                }
+        return relative.as_posix()
 
-            safe_files.append(relative.as_posix())
-
+    def _execute_pytest(self, safe_files):
         result = subprocess.run(
             [
                 sys.executable,
@@ -204,6 +203,21 @@ class TestRunner:
             "stdout": result.stdout,
             "stderr": result.stderr,
         }
+
+    def run_tests(self, test_files):
+        self._validate_test_files_input(test_files)
+
+        safe_files = []
+
+        for file in test_files:
+            result = self._validate_test_file(file)
+
+            if isinstance(result, dict):
+                return result
+
+            safe_files.append(result)
+
+        return self._execute_pytest(safe_files)
 
     def run(self, files=None):
         if not files:
