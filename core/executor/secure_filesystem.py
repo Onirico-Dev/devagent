@@ -84,6 +84,250 @@ class SecureFileSystem:
         )
 
     @classmethod
+    def _open_source_file(cls, source_parent_fd, source_relative):
+        try:
+            return os.open(
+                source_relative.name,
+                os.O_RDONLY | os.O_NOFOLLOW,
+                dir_fd=source_parent_fd,
+            )
+        except OSError as error:
+            if getattr(error, "errno", None) == errno.ELOOP:
+                raise ValueError(
+                    "Caminho não é um arquivo regular: "
+                    f"{source_relative}"
+                ) from error
+            raise
+
+    @classmethod
+    def _get_expected_destination_identity(
+        cls,
+        destination_parent_fd,
+        destination_relative,
+    ):
+        try:
+            existing_destination_fd = os.open(
+                destination_relative.name,
+                os.O_RDONLY | os.O_NOFOLLOW,
+                dir_fd=destination_parent_fd,
+            )
+        except FileNotFoundError:
+            return None
+        except OSError as error:
+            if getattr(error, "errno", None) in (
+                errno.ELOOP,
+                errno.EISDIR,
+            ):
+                raise ValueError(
+                    "Caminho de destino não é seguro: "
+                    f"{destination_relative}"
+                ) from error
+            raise
+        else:
+            try:
+                destination_stat = os.fstat(
+                    existing_destination_fd
+                )
+
+                if not stat.S_ISREG(destination_stat.st_mode):
+                    raise ValueError(
+                        "Caminho de destino não é um "
+                        "arquivo regular: "
+                        f"{destination_relative}"
+                    )
+
+                return (
+                    destination_stat.st_dev,
+                    destination_stat.st_ino,
+                )
+            finally:
+                os.close(existing_destination_fd)
+
+    @classmethod
+    def _create_temporary_destination(
+        cls,
+        destination_parent_fd,
+        destination_relative,
+        mode,
+    ):
+        destination_fd = None
+        temporary_name = None
+
+        for _ in range(32):
+            candidate = (
+                f".{destination_relative.name}.devagent-"
+                f"{uuid.uuid4().hex}.tmp"
+            )
+
+            try:
+                destination_fd = os.open(
+                    candidate,
+                    (
+                        os.O_WRONLY
+                        | os.O_CREAT
+                        | os.O_EXCL
+                        | os.O_NOFOLLOW
+                    ),
+                    mode,
+                    dir_fd=destination_parent_fd,
+                )
+                temporary_name = candidate
+                break
+            except FileExistsError:
+                continue
+
+        if destination_fd is None or temporary_name is None:
+            raise FileExistsError(
+                "Não foi possível criar arquivo temporário "
+                f"para: {destination_relative}"
+            )
+
+        return destination_fd, temporary_name
+
+    @classmethod
+    def _open_destination_file(
+        cls,
+        destination_parent_fd,
+        destination_relative,
+        mode,
+        overwrite,
+    ):
+        if overwrite:
+            return cls._create_temporary_destination(
+                destination_parent_fd,
+                destination_relative,
+                mode,
+            )
+
+        try:
+            destination_fd = os.open(
+                destination_relative.name,
+                (
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | os.O_NOFOLLOW
+                ),
+                mode,
+                dir_fd=destination_parent_fd,
+            )
+        except OSError as error:
+            if getattr(error, "errno", None) == errno.ELOOP:
+                raise ValueError(
+                    "Caminho de destino não é seguro: "
+                    f"{destination_relative}"
+                ) from error
+            raise
+
+        return destination_fd, None
+
+    @classmethod
+    def _copy_file_contents(
+        cls,
+        source_fd,
+        destination_fd,
+    ):
+        while True:
+            chunk = os.read(
+                source_fd,
+                1024 * 1024,
+            )
+
+            if not chunk:
+                break
+
+            view = memoryview(chunk)
+
+            while view:
+                written = os.write(
+                    destination_fd,
+                    view,
+                )
+
+                if written <= 0:
+                    raise OSError(
+                        "Falha ao escrever arquivo de destino."
+                    )
+
+                view = view[written:]
+
+    @classmethod
+    def _verify_overwrite_destination(
+        cls,
+        destination_parent_fd,
+        destination_relative,
+        expected_destination_identity,
+    ):
+        try:
+            current_destination_fd = os.open(
+                destination_relative.name,
+                os.O_RDONLY | os.O_NOFOLLOW,
+                dir_fd=destination_parent_fd,
+            )
+        except FileNotFoundError:
+            if expected_destination_identity is not None:
+                raise RuntimeError(
+                    "Destino foi removido durante a restauração: "
+                    f"{destination_relative}"
+                )
+        except OSError as error:
+            if getattr(error, "errno", None) in (
+                errno.ELOOP,
+                errno.EISDIR,
+            ):
+                raise RuntimeError(
+                    "Destino foi alterado para um caminho inseguro "
+                    "durante a restauração: "
+                    f"{destination_relative}"
+                ) from error
+            raise
+        else:
+            try:
+                current_destination_stat = os.fstat(
+                    current_destination_fd
+                )
+
+                if not stat.S_ISREG(
+                    current_destination_stat.st_mode
+                ):
+                    raise RuntimeError(
+                        "Destino deixou de ser um arquivo regular "
+                        "durante a restauração: "
+                        f"{destination_relative}"
+                    )
+
+                current_destination_identity = (
+                    current_destination_stat.st_dev,
+                    current_destination_stat.st_ino,
+                )
+
+                if (
+                    expected_destination_identity is not None
+                    and current_destination_identity
+                    != expected_destination_identity
+                ):
+                    raise RuntimeError(
+                        "Destino foi alterado durante a restauração: "
+                        f"{destination_relative}"
+                    )
+            finally:
+                os.close(current_destination_fd)
+
+    @classmethod
+    def _replace_temporary_destination(
+        cls,
+        destination_parent_fd,
+        destination_relative,
+        temporary_name,
+    ):
+        os.replace(
+            temporary_name,
+            destination_relative.name,
+            src_dir_fd=destination_parent_fd,
+            dst_dir_fd=destination_parent_fd,
+        )
+
+    @classmethod
     def copy_file_no_follow(
         cls,
         source_root: Path,
@@ -109,19 +353,10 @@ class SecureFileSystem:
         temporary_name = None
 
         try:
-            try:
-                source_fd = os.open(
-                    source_relative.name,
-                    os.O_RDONLY | os.O_NOFOLLOW,
-                    dir_fd=source_parent_fd,
-                )
-            except OSError as error:
-                if getattr(error, "errno", None) == errno.ELOOP:
-                    raise ValueError(
-                        "Caminho não é um arquivo regular: "
-                        f"{source_relative}"
-                    ) from error
-                raise
+            source_fd = cls._open_source_file(
+                source_parent_fd,
+                source_relative,
+            )
 
             source_stat = os.fstat(source_fd)
 
@@ -135,110 +370,27 @@ class SecureFileSystem:
             expected_destination_identity = None
 
             if overwrite:
-                try:
-                    existing_destination_fd = os.open(
-                        destination_relative.name,
-                        os.O_RDONLY | os.O_NOFOLLOW,
-                        dir_fd=destination_parent_fd,
+                expected_destination_identity = (
+                    cls._get_expected_destination_identity(
+                        destination_parent_fd,
+                        destination_relative,
                     )
-                except FileNotFoundError:
-                    pass
-                except OSError as error:
-                    if getattr(error, "errno", None) in (
-                        errno.ELOOP,
-                        errno.EISDIR,
-                    ):
-                        raise ValueError(
-                            "Caminho de destino não é seguro: "
-                            f"{destination_relative}"
-                        ) from error
-                    raise
-                else:
-                    try:
-                        destination_stat = os.fstat(
-                            existing_destination_fd
-                        )
+                )
 
-                        if not stat.S_ISREG(destination_stat.st_mode):
-                            raise ValueError(
-                                "Caminho de destino não é um "
-                                "arquivo regular: "
-                                f"{destination_relative}"
-                            )
+            (
+                destination_fd,
+                temporary_name,
+            ) = cls._open_destination_file(
+                destination_parent_fd,
+                destination_relative,
+                mode,
+                overwrite,
+            )
 
-                        expected_destination_identity = (
-                            destination_stat.st_dev,
-                            destination_stat.st_ino,
-                        )
-                    finally:
-                        os.close(existing_destination_fd)
-
-                for _ in range(32):
-                    candidate = (
-                        f".{destination_relative.name}.devagent-"
-                        f"{uuid.uuid4().hex}.tmp"
-                    )
-
-                    try:
-                        destination_fd = os.open(
-                            candidate,
-                            (
-                                os.O_WRONLY
-                                | os.O_CREAT
-                                | os.O_EXCL
-                                | os.O_NOFOLLOW
-                            ),
-                            mode,
-                            dir_fd=destination_parent_fd,
-                        )
-                        temporary_name = candidate
-                        break
-                    except FileExistsError:
-                        continue
-
-                if destination_fd is None or temporary_name is None:
-                    raise FileExistsError(
-                        "Não foi possível criar arquivo temporário "
-                        f"para: {destination_relative}"
-                    )
-            else:
-                try:
-                    destination_fd = os.open(
-                        destination_relative.name,
-                        (
-                            os.O_WRONLY
-                            | os.O_CREAT
-                            | os.O_EXCL
-                            | os.O_NOFOLLOW
-                        ),
-                        mode,
-                        dir_fd=destination_parent_fd,
-                    )
-                except OSError as error:
-                    if getattr(error, "errno", None) == errno.ELOOP:
-                        raise ValueError(
-                            "Caminho de destino não é seguro: "
-                            f"{destination_relative}"
-                        ) from error
-                    raise
-
-            while True:
-                chunk = os.read(source_fd, 1024 * 1024)
-
-                if not chunk:
-                    break
-
-                view = memoryview(chunk)
-
-                while view:
-                    written = os.write(destination_fd, view)
-
-                    if written <= 0:
-                        raise OSError(
-                            "Falha ao escrever arquivo de destino."
-                        )
-
-                    view = view[written:]
+            cls._copy_file_contents(
+                source_fd,
+                destination_fd,
+            )
 
             os.fchmod(destination_fd, mode)
             os.fsync(destination_fd)
@@ -247,67 +399,16 @@ class SecureFileSystem:
             destination_fd = None
 
             if overwrite:
-                try:
-                    current_destination_fd = os.open(
-                        destination_relative.name,
-                        os.O_RDONLY | os.O_NOFOLLOW,
-                        dir_fd=destination_parent_fd,
-                    )
-                except FileNotFoundError:
-                    if expected_destination_identity is not None:
-                        raise RuntimeError(
-                            "Destino foi removido durante a restauração: "
-                            f"{destination_relative}"
-                        )
-                except OSError as error:
-                    if getattr(error, "errno", None) in (
-                        errno.ELOOP,
-                        errno.EISDIR,
-                    ):
-                        raise RuntimeError(
-                            "Destino foi alterado para um caminho inseguro "
-                            f"durante a restauração: "
-                            f"{destination_relative}"
-                        ) from error
-                    raise
-                else:
-                    try:
-                        current_destination_stat = os.fstat(
-                            current_destination_fd
-                        )
+                cls._verify_overwrite_destination(
+                    destination_parent_fd,
+                    destination_relative,
+                    expected_destination_identity,
+                )
 
-                        if not stat.S_ISREG(
-                            current_destination_stat.st_mode
-                        ):
-                            raise RuntimeError(
-                                "Destino deixou de ser um arquivo regular "
-                                "durante a restauração: "
-                                f"{destination_relative}"
-                            )
-
-                        current_destination_identity = (
-                            current_destination_stat.st_dev,
-                            current_destination_stat.st_ino,
-                        )
-
-                        if (
-                            expected_destination_identity is not None
-                            and current_destination_identity
-                            != expected_destination_identity
-                        ):
-                            raise RuntimeError(
-                                "Destino foi alterado durante a restauração: "
-                                f"{destination_relative}"
-                            )
-                    finally:
-                        os.close(current_destination_fd)
-
-            if overwrite:
-                os.replace(
+                cls._replace_temporary_destination(
+                    destination_parent_fd,
+                    destination_relative,
                     temporary_name,
-                    destination_relative.name,
-                    src_dir_fd=destination_parent_fd,
-                    dst_dir_fd=destination_parent_fd,
                 )
 
             temporary_name = None
