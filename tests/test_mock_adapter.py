@@ -164,6 +164,16 @@ def test_mock_create_without_content_returns_empty_content():
     }
 
 
+
+def test_mock_legacy_create_content_returns_empty_for_unknown_instruction():
+    adapter = MockAdapter()
+    assert (
+        adapter._extract_legacy_create_content(
+            "faça qualquer coisa"
+        )
+        == ""
+    )
+
 def test_mock_build_planner_change_returns_none_for_unknown_instruction():
     adapter = MockAdapter()
 

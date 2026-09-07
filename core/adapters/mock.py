@@ -109,14 +109,7 @@ class MockAdapter(AIAdapter):
     # AI PLANNER — MOCK
     # =============================================================
 
-    def _build_planner_change(self, instruction: str):
-        if not instruction:
-            return None
-
-        # ---------------------------------------------------------
-        # DELETE
-        # ---------------------------------------------------------
-
+    def _build_delete_change(self, instruction: str):
         delete_match = re.match(
             r"^\s*"
             r"(?:delete|apague|remova|remover|remover)"
@@ -128,21 +121,20 @@ class MockAdapter(AIAdapter):
             flags=re.IGNORECASE,
         )
 
-        if delete_match:
-            path = delete_match.group(1).strip(
-                "\"'`.,;:"
-            )
+        if not delete_match:
+            return None
 
-            return {
-                "type": "delete",
-                "path": path,
-                "reason": instruction,
-            }
+        path = delete_match.group(1).strip(
+            "\"'`.,;:"
+        )
 
-        # ---------------------------------------------------------
-        # MODIFY
-        # ---------------------------------------------------------
+        return {
+            "type": "delete",
+            "path": path,
+            "reason": instruction,
+        }
 
+    def _build_modify_change(self, instruction: str):
         modify_match = re.match(
             r"^\s*"
             r"(?:modifique|modificar|altere|alterar|modify)"
@@ -154,67 +146,93 @@ class MockAdapter(AIAdapter):
             flags=re.IGNORECASE,
         )
 
-        if modify_match:
-            path = modify_match.group(1).strip(
-                "\"'`.,;:"
-            )
+        if not modify_match:
+            return None
 
-            content = (
-                modify_match.group(2)
-                or ""
-            ).strip()
+        path = modify_match.group(1).strip(
+            "\"'`.,;:"
+        )
 
-            return {
-                "type": "modify",
-                "path": path,
-                "content": content,
-                "reason": instruction,
-            }
+        content = (
+            modify_match.group(2)
+            or ""
+        ).strip()
 
-        # ---------------------------------------------------------
-        # CREATE
-        # ---------------------------------------------------------
+        return {
+            "type": "modify",
+            "path": path,
+            "content": content,
+            "reason": instruction,
+        }
 
+    @staticmethod
+    def _extract_legacy_create_content(
+        instruction: str,
+    ) -> str:
+        create_match = re.match(
+            r"^\s*"
+            r"(?:crie|criar|create)"
+            r"\s+"
+            r"(?:um\s+)?"
+            r"(?:arquivo\s+)?"
+            r"(?:chamado\s+)?"
+            r"[A-Za-z0-9_.-]+\.[A-Za-z0-9_-]+"
+            r"(?:\s+(.*))?$",
+            instruction,
+            flags=re.IGNORECASE,
+        )
+
+        if not create_match:
+            return ""
+
+        return (
+            create_match.group(1)
+            or ""
+        ).strip()
+
+    def _build_create_change(self, instruction: str):
         target = self._extract_create_target(
             instruction
         )
 
-        if target:
-            content = self._extract_create_content(
+        if not target:
+            return None
+
+        content = self._extract_create_content(
+            instruction
+        )
+
+        if not content:
+            content = self._extract_legacy_create_content(
                 instruction
             )
 
-            # Compatibilidade com o comportamento anterior:
-            # quando não existe marcador de conteúdo, utiliza
-            # o restante da instrução após o nome do arquivo.
-            if not content:
-                create_match = re.match(
-                    r"^\s*"
-                    r"(?:crie|criar|create)"
-                    r"\s+"
-                    r"(?:um\s+)?"
-                    r"(?:arquivo\s+)?"
-                    r"(?:chamado\s+)?"
-                    r"[A-Za-z0-9_.-]+\.[A-Za-z0-9_-]+"
-                    r"(?:\s+(.*))?$",
-                    instruction,
-                    flags=re.IGNORECASE,
-                )
+        return {
+            "type": "create",
+            "path": target,
+            "content": content,
+            "reason": instruction,
+        }
 
-                if create_match:
-                    content = (
-                        create_match.group(1)
-                        or ""
-                    ).strip()
+    def _build_planner_change(self, instruction: str):
+        if not instruction:
+            return None
 
-            return {
-                "type": "create",
-                "path": target,
-                "content": content,
-                "reason": instruction,
-            }
+        change = self._build_delete_change(
+            instruction
+        )
+        if change is not None:
+            return change
 
-        return None
+        change = self._build_modify_change(
+            instruction
+        )
+        if change is not None:
+            return change
+
+        return self._build_create_change(
+            instruction
+        )
 
     @staticmethod
     def _extract_create_target(instruction: str) -> str:
