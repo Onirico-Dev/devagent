@@ -392,8 +392,9 @@ def test_extract_target_delete_clears_instruction_for_all_special_patterns(
     assert instruction == ""
 
 
-def test_core_main_entrypoint_calls_cli_main(monkeypatch):
+def test_core_main_entrypoint_help(monkeypatch, capsys):
     import runpy
+    import sys
 
     called = []
 
@@ -401,8 +402,73 @@ def test_core_main_entrypoint_calls_cli_main(monkeypatch):
         called.append(True)
 
     import cli
-
     monkeypatch.setattr(cli, "main", fake_main)
+    monkeypatch.setattr(sys, "argv", ["devagent", "--help"])
+
+    runpy.run_module("core.__main__", run_name="__main__")
+
+    output = capsys.readouterr().out
+
+    assert "DevAgent" in output
+    assert "devagent --help" in output
+    assert called == []
+
+
+def test_core_main_entrypoint_version(monkeypatch, capsys):
+    import runpy
+    import sys
+
+    called = []
+
+    def fake_main():
+        called.append(True)
+
+    import cli
+    monkeypatch.setattr(cli, "main", fake_main)
+    monkeypatch.setattr(sys, "argv", ["devagent", "--version"])
+
+    runpy.run_module("core.__main__", run_name="__main__")
+
+    output = capsys.readouterr().out.strip()
+
+    assert output == "0.4.5"
+    assert called == []
+
+
+def test_core_main_entrypoint_rejects_unknown_argument(monkeypatch, capsys):
+    import runpy
+    import sys
+
+    called = []
+
+    def fake_main():
+        called.append(True)
+
+    import cli
+    monkeypatch.setattr(cli, "main", fake_main)
+    monkeypatch.setattr(sys, "argv", ["devagent", "--unknown"])
+
+    runpy.run_module("core.__main__", run_name="__main__")
+
+    output = capsys.readouterr().out
+
+    assert "Argumento não reconhecido: --unknown" in output
+    assert "devagent --help" in output
+    assert called == []
+
+
+def test_core_main_entrypoint_calls_cli_main(monkeypatch):
+    import runpy
+    import sys
+
+    called = []
+
+    def fake_main():
+        called.append(True)
+
+    import cli
+    monkeypatch.setattr(cli, "main", fake_main)
+    monkeypatch.setattr(sys, "argv", ["devagent"])
 
     runpy.run_module("core.__main__", run_name="__main__")
 
