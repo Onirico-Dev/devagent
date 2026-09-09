@@ -431,7 +431,7 @@ def test_core_main_entrypoint_version(monkeypatch, capsys):
 
     output = capsys.readouterr().out.strip()
 
-    assert output == "0.4.6"
+    assert output == "0.4.7"
     assert called == []
 
 
@@ -483,4 +483,4 @@ def test_core_main_version_fallback(monkeypatch):
 
     monkeypatch.setattr(core_main, "version", missing_package)
 
-    assert core_main._version() == "0.4.6"
+    assert core_main._version() == "0.4.7"
