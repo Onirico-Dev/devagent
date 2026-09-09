@@ -473,3 +473,14 @@ def test_core_main_entrypoint_calls_cli_main(monkeypatch):
     runpy.run_module("core.__main__", run_name="__main__")
 
     assert called == [True]
+
+
+def test_core_main_version_fallback(monkeypatch):
+    import core.__main__ as core_main
+
+    def missing_package(_):
+        raise core_main.PackageNotFoundError
+
+    monkeypatch.setattr(core_main, "version", missing_package)
+
+    assert core_main._version() == "0.4.6"
