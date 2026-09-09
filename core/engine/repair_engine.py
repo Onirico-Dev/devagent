@@ -1,13 +1,30 @@
 import json
 
+from core.engine.diagnostic_engine import DiagnosticEngine
+
 
 class RepairEngine:
     MAX_REPAIR_CONTENT = 1_000_000
 
-    def __init__(self, ai_adapter):
+    def __init__(self, ai_adapter, diagnostic_engine=None):
         self.ai = ai_adapter
+        self.diagnostic_engine = diagnostic_engine or DiagnosticEngine()
 
-    def _build_prompt(self, instruction, error, test_output):
+    def _build_prompt(
+        self,
+        instruction,
+        error,
+        test_output,
+        diagnostic=None,
+    ):
+        diagnostic_context = ""
+
+        if diagnostic is not None:
+            diagnostic_context = f"""
+Diagnóstico estruturado da falha:
+{json.dumps(diagnostic, ensure_ascii=False, indent=2)}
+"""
+
         return f"""Você é o módulo de reparo automático do DevAgent.
 
 Objetivo original:
@@ -18,11 +35,10 @@ Erro:
 
 Saída dos testes:
 {test_output}
-
+{diagnostic_context}
 Analise a falha e proponha uma correção.
 
 Retorne SOMENTE JSON válido com exatamente estes campos:
-
 {{
   "diagnosis": "causa provável",
   "correction": "explicação da correção",
@@ -33,7 +49,6 @@ Retorne SOMENTE JSON válido com exatamente estes campos:
 }}
 
 Regras:
-
 - Não execute comandos.
 - Não invente arquivos sem necessidade.
 - O campo path deve apontar para o arquivo que precisa ser corrigido.
@@ -87,21 +102,13 @@ Regras:
         if not isinstance(data["risk"], str):
             data["risk"] = "alto"
 
-        if data["risk"] not in {
-            "baixo",
-            "medio",
-            "alto",
-        }:
+        if data["risk"] not in {"baixo", "medio", "alto"}:
             data["risk"] = "alto"
 
         if not isinstance(data["action"], str):
             data["action"] = "none"
 
-        if data["action"] not in {
-            "create",
-            "modify",
-            "none",
-        }:
+        if data["action"] not in {"create", "modify", "none"}:
             data["action"] = "none"
 
         if not isinstance(data["path"], str):
@@ -134,10 +141,19 @@ Regras:
         error,
         test_output,
     ):
+        diagnostic = self.diagnostic_engine.diagnose(
+            {
+                "success": False,
+                "stderr": error,
+                "stdout": test_output,
+            }
+        )
+
         prompt = self._build_prompt(
             instruction,
             error,
             test_output,
+            diagnostic=diagnostic,
         )
 
         response = self.ai.generate(prompt)
