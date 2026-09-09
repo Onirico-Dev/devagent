@@ -431,7 +431,7 @@ def test_core_main_entrypoint_version(monkeypatch, capsys):
 
     output = capsys.readouterr().out.strip()
 
-    assert output == "0.4.5"
+    assert output == "0.4.6"
     assert called == []
 
 
