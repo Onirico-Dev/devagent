@@ -1,6 +1,7 @@
 import pytest
 
-from core.observer import Observation, Observer
+from core.observation import Observation
+from core.observer import Observer
 from core.worker import Worker
 
 
@@ -137,3 +138,33 @@ def test_worker_allows_distinct_observations():
         "segunda tarefa",
     ]
     assert gateway.calls == ["primeira tarefa", "segunda tarefa"]
+
+
+def test_observer_persists_observations(tmp_path):
+    from core.observation_store import ObservationStore
+
+    store = ObservationStore(tmp_path / "observations.json")
+    observer = Observer(store=store)
+
+    observation = Observation(
+        instruction="persistir observação",
+        metadata={"source": "test"},
+    )
+
+    observer.add(observation)
+
+    restored = Observer(store=store)
+
+    assert restored.observe() == [observation]
+
+
+def test_observer_without_store_remains_ephemeral():
+    observation = Observation(
+        instruction="temporária",
+        metadata={"source": "test"},
+    )
+
+    observer = Observer()
+    observer.add(observation)
+
+    assert observer.observe() == [observation]
