@@ -1,6 +1,15 @@
 import builtins
 
+import pytest
+
 import cli
+
+
+@pytest.fixture(autouse=True)
+def isolate_cli_filesystem(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+
+
 
 
 class FakeGateway:

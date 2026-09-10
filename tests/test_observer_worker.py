@@ -198,3 +198,62 @@ def test_worker_rejects_invalid_state():
 
     with pytest.raises(ValueError):
         worker.restore_state({"processed": [], "processed_ids": [""]})
+
+def test_worker_loads_persisted_state_and_skips_processed_observation(tmp_path):
+    from core.worker_state_store import WorkerStateStore
+
+    store = WorkerStateStore(tmp_path / "worker.json")
+
+    first_gateway = FakeGateway()
+    observer = Observer([
+        Observation(
+            "criar arquivo",
+            {"source": "test"},
+        )
+    ])
+
+    worker = Worker(first_gateway, observer, store=store)
+    proposals = worker.run_once()
+
+    assert len(proposals) == 1
+    assert proposals[0].approval_id
+
+    second_gateway = FakeGateway()
+    restored_worker = Worker(second_gateway, observer, store=store)
+
+    assert restored_worker.run_once() == []
+    assert restored_worker.processed_ids == {proposals[0].approval_id}
+
+
+def test_worker_persists_state_after_processing(tmp_path):
+    from core.worker_state_store import WorkerStateStore
+
+    store = WorkerStateStore(tmp_path / "worker.json")
+    gateway = FakeGateway()
+    observer = Observer([
+        Observation(
+            "criar arquivo",
+            {"source": "test"},
+        )
+    ])
+
+    worker = Worker(gateway, observer, store=store)
+    proposal = worker.run_once()[0]
+
+    persisted = store.load()
+
+    assert persisted["processed"] == [
+        {
+            "instruction": "criar arquivo",
+            "metadata": {"source": "test"},
+        }
+    ]
+    assert persisted["processed_ids"] == [proposal.approval_id]
+
+
+def test_worker_rejects_invalid_store():
+    gateway = FakeGateway()
+    observer = Observer()
+
+    with pytest.raises(ValueError, match="Store do Worker inválido"):
+        Worker(gateway, observer, store=object())

@@ -3,6 +3,7 @@ from typing import Any
 
 from core.observation import Observation
 from core.observer import Observer
+from core.worker_state_store import WorkerStateStore
 
 
 @dataclass(frozen=True)
@@ -19,22 +20,42 @@ class Worker:
 
     O Worker deliberadamente NÃO chama approve() nem execute_approved().
     A transição para execução continua sob controle humano.
+
+    O estado processado pode ser persistido opcionalmente por meio de
+    WorkerStateStore.
     """
 
-    def __init__(self, gateway, observer: Observer):
+    def __init__(
+        self,
+        gateway,
+        observer: Observer,
+        store: WorkerStateStore | None = None,
+    ):
         if gateway is None:
             raise ValueError("Gateway inválido.")
         if not isinstance(observer, Observer):
             raise ValueError("Observer inválido.")
+        if store is not None and not isinstance(store, WorkerStateStore):
+            raise ValueError("Store do Worker inválido.")
 
         self.gateway = gateway
         self.observer = observer
-        self._processed: set[tuple[str, tuple[tuple[str, str], ...]]] = set()
+        self.store = store
+
+        self._processed: set[
+            tuple[str, tuple[tuple[str, str], ...]]
+        ] = set()
         self._processed_ids: set[str] = set()
         self._processed_observations: dict[
             tuple[str, tuple[tuple[str, str], ...]],
             Observation,
         ] = {}
+
+        if self.store is not None:
+            state = self.store.load()
+
+            if state:
+                self.restore_state(state, persist=False)
 
     @staticmethod
     def _metadata_key(
@@ -56,6 +77,10 @@ class Worker:
             observation.instruction.strip(),
             cls._metadata_key(observation.metadata),
         )
+
+    def _persist_state(self) -> None:
+        if self.store is not None:
+            self.store.save(self.export_state())
 
     def process_observation(self, observation: Observation) -> Proposal:
         if not isinstance(observation, Observation):
@@ -80,6 +105,8 @@ class Worker:
             instruction=instruction,
             metadata=dict(observation.metadata),
         )
+
+        self._persist_state()
 
         return Proposal(
             instruction=instruction,
@@ -123,7 +150,11 @@ class Worker:
             "processed_ids": sorted(self._processed_ids),
         }
 
-    def restore_state(self, state: dict[str, Any]) -> None:
+    def restore_state(
+        self,
+        state: dict[str, Any],
+        persist: bool = True,
+    ) -> None:
         if not isinstance(state, dict):
             raise ValueError("Estado do Worker inválido.")
 
@@ -167,3 +198,6 @@ class Worker:
         self._processed = restored
         self._processed_ids = set(processed_ids)
         self._processed_observations = restored_observations
+
+        if persist:
+            self._persist_state()

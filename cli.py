@@ -1,8 +1,12 @@
+from pathlib import Path
+
 from agent import DevAgent
 from core.autonomy_loop import AutonomyLoop
 from core.gateway import DevAgentGateway
+from core.observation_store import ObservationStore
 from core.observer import Observation, Observer
 from core.worker import Worker
+from core.worker_state_store import WorkerStateStore
 
 
 def print_task(task):
@@ -77,11 +81,25 @@ def print_proposals(proposals):
         )
 
 
-def main():
+def main(state_root: str | Path = "transactions"):
     agent = DevAgent(".")
     gateway = DevAgentGateway(agent, ".")
-    observer = Observer()
-    worker = Worker(gateway, observer)
+
+    state_root = Path(state_root)
+
+    observation_store = ObservationStore(
+        state_root / "observations.json"
+    )
+    worker_state_store = WorkerStateStore(
+        state_root / "worker.json"
+    )
+
+    observer = Observer(store=observation_store)
+    worker = Worker(
+        gateway,
+        observer,
+        store=worker_state_store,
+    )
     autonomy_loop = AutonomyLoop(worker)
 
     print("=" * 60)
@@ -139,6 +157,7 @@ def main():
                         metadata={"source": "cli"},
                     )
                 )
+
                 print("\nObservação adicionada.")
 
             elif action == "autonomy":
@@ -147,7 +166,8 @@ def main():
                 print_proposals(result.proposals)
                 print(
                     f"Rodada: {result.metadata['iterations']} | "
-                    f"Propostas: {result.metadata.get('proposal_count', 0)}"
+                    f"Propostas: "
+                    f"{result.metadata.get('proposal_count', 0)}"
                 )
 
             elif action == "tasks":
