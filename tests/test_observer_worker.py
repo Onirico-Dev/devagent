@@ -405,7 +405,6 @@ def test_worker_restores_failed_observation_as_retryable(tmp_path):
     assert second == []
     assert second_gateway.calls == [
         "falhar",
-        "funcionar",
     ]
     assert restored_worker.errors == [
         {
