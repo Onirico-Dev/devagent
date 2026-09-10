@@ -21,6 +21,10 @@ class Worker:
     O Worker deliberadamente NÃO chama approve() nem execute_approved().
     A transição para execução continua sob controle humano.
 
+    Falhas individuais durante uma rodada são isoladas: a observação com
+    falha permanece não processada para nova tentativa futura, enquanto
+    as demais observações da rodada continuam sendo processadas.
+
     O estado processado pode ser persistido opcionalmente por meio de
     WorkerStateStore.
     """
@@ -41,7 +45,6 @@ class Worker:
         self.gateway = gateway
         self.observer = observer
         self.store = store
-
         self._processed: set[
             tuple[str, tuple[tuple[str, str], ...]]
         ] = set()
@@ -50,10 +53,10 @@ class Worker:
             tuple[str, tuple[tuple[str, str], ...]],
             Observation,
         ] = {}
+        self._errors: list[dict[str, str]] = []
 
         if self.store is not None:
             state = self.store.load()
-
             if state:
                 self.restore_state(state, persist=False)
 
@@ -82,13 +85,18 @@ class Worker:
         if self.store is not None:
             self.store.save(self.export_state())
 
-    def process_observation(self, observation: Observation) -> Proposal:
+    def process_observation(
+        self,
+        observation: Observation,
+    ) -> Proposal:
         if not isinstance(observation, Observation):
             raise ValueError("Observação inválida.")
 
         instruction = observation.instruction.strip()
         if not instruction:
-            raise ValueError("A instrução da observação não pode ser vazia.")
+            raise ValueError(
+                "A instrução da observação não pode ser vazia."
+            )
 
         key = self._observation_key(observation)
 
@@ -105,7 +113,6 @@ class Worker:
             instruction=instruction,
             metadata=dict(observation.metadata),
         )
-
         self._persist_state()
 
         return Proposal(
@@ -117,6 +124,7 @@ class Worker:
 
     def run_once(self) -> list[Proposal]:
         proposals = []
+        self._errors = []
 
         for observation in self.observer.observe():
             key = self._observation_key(observation)
@@ -124,13 +132,27 @@ class Worker:
             if key in self._processed:
                 continue
 
-            proposals.append(self.process_observation(observation))
+            try:
+                proposals.append(
+                    self.process_observation(observation)
+                )
+            except Exception as exc:
+                self._errors.append(
+                    {
+                        "instruction": observation.instruction.strip(),
+                        "error": str(exc),
+                    }
+                )
 
         return proposals
 
     @property
     def processed_ids(self) -> set[str]:
         return set(self._processed_ids)
+
+    @property
+    def errors(self) -> list[dict[str, str]]:
+        return [dict(error) for error in self._errors]
 
     def export_state(self) -> dict[str, Any]:
         return {
@@ -162,10 +184,14 @@ class Worker:
         processed_ids = state.get("processed_ids", [])
 
         if not isinstance(processed, list):
-            raise ValueError("Estado de observações processadas inválido.")
+            raise ValueError(
+                "Estado de observações processadas inválido."
+            )
 
         if not isinstance(processed_ids, list):
-            raise ValueError("Estado de IDs processados inválido.")
+            raise ValueError(
+                "Estado de IDs processados inválido."
+            )
 
         restored = set()
         restored_observations = {}
@@ -187,12 +213,15 @@ class Worker:
                 instruction=instruction.strip(),
                 metadata=dict(metadata),
             )
-            key = self._observation_key(observation)
 
+            key = self._observation_key(observation)
             restored.add(key)
             restored_observations[key] = observation
 
-        if any(not isinstance(item, str) or not item for item in processed_ids):
+        if any(
+            not isinstance(item, str) or not item
+            for item in processed_ids
+        ):
             raise ValueError("ID processado inválido.")
 
         self._processed = restored

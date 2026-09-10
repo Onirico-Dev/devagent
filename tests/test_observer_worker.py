@@ -257,3 +257,93 @@ def test_worker_rejects_invalid_store():
 
     with pytest.raises(ValueError, match="Store do Worker inválido"):
         Worker(gateway, observer, store=object())
+
+
+class FailingGateway:
+    def __init__(self):
+        self.calls = []
+
+    def create_task(self, instruction):
+        self.calls.append(instruction)
+        if instruction == "falhar":
+            raise RuntimeError("falha simulada")
+        return {
+            "approval_id": str(len(self.calls)),
+            "status": "pending",
+            "plan": {
+                "instruction": instruction,
+                "changes": [],
+            },
+        }
+
+
+def test_worker_isolates_observation_failure():
+    gateway = FailingGateway()
+    observer = Observer(
+        [
+            Observation("falhar", {"source": "test"}),
+            Observation("funcionar", {"source": "test"}),
+        ]
+    )
+    worker = Worker(gateway, observer)
+
+    proposals = worker.run_once()
+
+    assert [proposal.instruction for proposal in proposals] == [
+        "funcionar"
+    ]
+    assert gateway.calls == ["falhar", "funcionar"]
+    assert worker.errors == [
+        {
+            "instruction": "falhar",
+            "error": "falha simulada",
+        }
+    ]
+
+
+def test_worker_retries_failed_observation_on_next_round():
+    gateway = FailingGateway()
+    observer = Observer(
+        [Observation("falhar", {"source": "test"})]
+    )
+    worker = Worker(gateway, observer)
+
+    first = worker.run_once()
+    second = worker.run_once()
+
+    assert first == []
+    assert second == []
+    assert gateway.calls == ["falhar", "falhar"]
+    assert worker.processed_ids == set()
+    assert worker.errors == [
+        {
+            "instruction": "falhar",
+            "error": "falha simulada",
+        }
+    ]
+
+
+def test_worker_clears_previous_errors_on_successful_round():
+    gateway = FailingGateway()
+    observer = Observer(
+        [
+            Observation("falhar", {"source": "test"}),
+        ]
+    )
+    worker = Worker(gateway, observer)
+
+    worker.run_once()
+
+    worker.observer = Observer(
+        [
+            Observation("nova tarefa", {"source": "test"}),
+        ]
+    )
+    gateway.calls.clear()
+
+    proposals = worker.run_once()
+
+    assert [proposal.instruction for proposal in proposals] == [
+        "nova tarefa"
+    ]
+    assert worker.errors == []
