@@ -20,6 +20,8 @@ Uso:
 
 A CLI interativa oferece:
   plan <instrução>   Criar uma tarefa
+  observe <instrução> Adicionar uma observação
+  autonomy           Processar observações pendentes
   tasks              Listar tarefas
   latest             Mostrar a tarefa mais recente
   status <id>        Mostrar uma tarefa

@@ -9,7 +9,15 @@ class FakeGateway:
 
     def create_task(self, instruction):
         self.calls.append(("create_task", instruction))
-        return {"approval_id": "a1"}
+        return {
+            "approval_id": "a1",
+            "status": "pending",
+            "plan": {
+                "changes": [
+                    {"type": "CREATE", "path": "app.py"},
+                ],
+            },
+        }
 
     def get_task(self, task_id):
         self.calls.append(("get_task", task_id))
@@ -251,3 +259,62 @@ def test_cli_module_entrypoint(monkeypatch):
     import runpy
 
     runpy.run_module("cli", run_name="__main__")
+
+
+def test_main_observe_and_autonomy(monkeypatch, capsys):
+    gateway = FakeGateway(None, ".")
+    monkeypatch.setattr(cli, "DevAgent", lambda root: object())
+    monkeypatch.setattr(cli, "DevAgentGateway", lambda agent, root: gateway)
+
+    commands = iter([
+        "observe corrigir o arquivo",
+        "autonomy",
+        "sair",
+    ])
+
+    monkeypatch.setattr(
+        builtins,
+        "input",
+        lambda _: next(commands),
+    )
+
+    cli.main()
+
+    output = capsys.readouterr().out
+
+    assert "Observação adicionada." in output
+    assert "Novas propostas:" in output
+    assert "a1" in output
+    assert "corrigir o arquivo" in output
+    assert "Rodada: 1" in output
+    assert "Propostas: 1" in output
+
+
+def test_main_observe_and_autonomy_missing_arguments(
+    monkeypatch,
+    capsys,
+):
+    gateway = FakeGateway(None, ".")
+    monkeypatch.setattr(cli, "DevAgent", lambda root: object())
+    monkeypatch.setattr(cli, "DevAgentGateway", lambda agent, root: gateway)
+
+    commands = iter([
+        "observe",
+        "autonomy",
+        "sair",
+    ])
+
+    monkeypatch.setattr(
+        builtins,
+        "input",
+        lambda _: next(commands),
+    )
+
+    cli.main()
+
+    output = capsys.readouterr().out
+
+    assert "Uso: observe <instrução>" in output
+    assert "Nenhuma nova proposta." in output
+    assert "Rodada: 1" in output
+    assert "Propostas: 0" in output
