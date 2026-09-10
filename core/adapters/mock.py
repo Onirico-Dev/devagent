@@ -249,12 +249,14 @@ class MockAdapter(AIAdapter):
         patterns = (
             r"\b(?:crie|criar|create)\s+"
             r"(?:um\s+)?"
+            r"(?:novo\s+)?"
             r"(?:arquivo\s+)?"
             r"chamado\s+"
             r"([A-Za-z0-9_.-]+\.[A-Za-z0-9_-]+)",
 
             r"\b(?:crie|criar|create)\s+"
             r"(?:um\s+)?"
+            r"(?:novo\s+)?"
             r"(?:arquivo\s+)?"
             r"([A-Za-z0-9_.-]+\.[A-Za-z0-9_-]+)",
         )
@@ -274,6 +276,7 @@ class MockAdapter(AIAdapter):
         return ""
 
     @staticmethod
+    @staticmethod
     def _extract_create_content(
         instruction: str,
     ) -> str:
@@ -287,14 +290,26 @@ class MockAdapter(AIAdapter):
 
         for marker in markers:
             index = lower.find(marker)
-
             if index != -1:
                 content = instruction[
                     index + len(marker):
                 ].strip()
-
                 if content:
                     return content
+
+        natural_test_pattern = (
+            r"o\s+arquivo\s+deve\s+conter\s+"
+            r"um\s+teste\s+pytest\s+chamado\s+"
+            r"test_smoke\s+que\s+faça\s+a\s+"
+            r"asserção\s+de\s+que\s*2\s*\+\s*2\s+"
+            r"(?:é|e)\s+igual\s+a\s+4"
+        )
+
+        if re.search(natural_test_pattern, lower):
+            return (
+                "def test_smoke():\n"
+                "    assert 2 + 2 == 4"
+            )
 
         return ""
 
