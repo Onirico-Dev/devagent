@@ -347,3 +347,99 @@ def test_worker_clears_previous_errors_on_successful_round():
         "nova tarefa"
     ]
     assert worker.errors == []
+
+def test_worker_restores_processed_state_after_restart(tmp_path):
+    from core.worker_state_store import WorkerStateStore
+
+    store = WorkerStateStore(tmp_path / "worker.json")
+    observer = Observer(
+        [
+            Observation("primeira tarefa", {"source": "test"}),
+            Observation("segunda tarefa", {"source": "test"}),
+        ]
+    )
+
+    first_gateway = FailingGateway()
+    first_worker = Worker(first_gateway, observer, store=store)
+
+    first_proposals = first_worker.run_once()
+
+    assert [proposal.instruction for proposal in first_proposals] == [
+        "primeira tarefa",
+        "segunda tarefa",
+    ]
+
+    second_gateway = FailingGateway()
+    restored_worker = Worker(second_gateway, observer, store=store)
+
+    assert restored_worker.run_once() == []
+    assert second_gateway.calls == []
+    assert restored_worker.processed_ids == first_worker.processed_ids
+
+
+def test_worker_restores_failed_observation_as_retryable(tmp_path):
+    from core.worker_state_store import WorkerStateStore
+
+    store = WorkerStateStore(tmp_path / "worker.json")
+    observer = Observer(
+        [
+            Observation("falhar", {"source": "test"}),
+            Observation("funcionar", {"source": "test"}),
+        ]
+    )
+
+    first_gateway = FailingGateway()
+    first_worker = Worker(first_gateway, observer, store=store)
+
+    first = first_worker.run_once()
+
+    assert [proposal.instruction for proposal in first] == [
+        "funcionar"
+    ]
+
+    second_gateway = FailingGateway()
+    restored_worker = Worker(second_gateway, observer, store=store)
+
+    second = restored_worker.run_once()
+
+    assert second == []
+    assert second_gateway.calls == [
+        "falhar",
+        "funcionar",
+    ]
+    assert restored_worker.errors == [
+        {
+            "instruction": "falhar",
+            "error": "falha simulada",
+        }
+    ]
+    assert restored_worker.processed_ids == {
+        first[0].approval_id
+    }
+
+
+def test_worker_persists_only_successfully_processed_observations(tmp_path):
+    from core.worker_state_store import WorkerStateStore
+
+    store = WorkerStateStore(tmp_path / "worker.json")
+    observer = Observer(
+        [
+            Observation("falhar", {"source": "test"}),
+            Observation("funcionar", {"source": "test"}),
+        ]
+    )
+
+    gateway = FailingGateway()
+    worker = Worker(gateway, observer, store=store)
+
+    worker.run_once()
+
+    persisted = store.load()
+
+    assert persisted["processed"] == [
+        {
+            "instruction": "funcionar",
+            "metadata": {"source": "test"},
+        }
+    ]
+    assert len(persisted["processed_ids"]) == 1
