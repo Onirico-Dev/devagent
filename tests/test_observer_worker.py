@@ -168,3 +168,33 @@ def test_observer_without_store_remains_ephemeral():
     observer.add(observation)
 
     assert observer.observe() == [observation]
+
+
+def test_worker_exports_and_restores_state():
+    gateway = FakeGateway()
+    observer = Observer([
+        Observation("criar arquivo", {"source": "test"})
+    ])
+    worker = Worker(gateway, observer)
+
+    proposals = worker.run_once()
+    state = worker.export_state()
+
+    restored = Worker(gateway, observer)
+    restored.restore_state(state)
+
+    assert restored.processed_ids == {proposals[0].approval_id}
+    assert restored.run_once() == []
+
+
+def test_worker_rejects_invalid_state():
+    worker = Worker(FakeGateway(), Observer())
+
+    with pytest.raises(ValueError):
+        worker.restore_state([])
+
+    with pytest.raises(ValueError):
+        worker.restore_state({"processed": "invalid"})
+
+    with pytest.raises(ValueError):
+        worker.restore_state({"processed": [], "processed_ids": [""]})
