@@ -442,3 +442,129 @@ def test_worker_persists_only_successfully_processed_observations(tmp_path):
         }
     ]
     assert len(persisted["processed_ids"]) == 1
+
+
+def test_observer_rejects_empty_instruction():
+    import pytest
+    from core.observer import Observer
+    from core.observation import Observation
+
+    with pytest.raises(ValueError, match="instrução.*vazia"):
+        Observer().add(Observation("   ", {}))
+
+
+def test_worker_rejects_empty_instruction():
+    import pytest
+    from core.worker import Worker
+    from core.observation import Observation
+
+    with pytest.raises(ValueError, match="instrução.*vazia"):
+        Worker(object(), Observer()).process_observation(Observation("   ", {}))
+
+
+def test_worker_rejects_duplicate_observation():
+    import pytest
+    from core.worker import Worker
+    from core.observation import Observation
+    from core.observer import Observer
+
+    class Gateway:
+        def create_task(self, instruction):
+            return {
+                "instruction": instruction,
+                "approval_id": "approval-1",
+                "status": "pending",
+                "plan": {},
+            }
+
+    worker = Worker(Gateway(), Observer())
+    observation = Observation("teste", {})
+
+    worker.process_observation(observation)
+
+    with pytest.raises(ValueError, match="já processada"):
+        worker.process_observation(observation)
+
+
+def test_worker_load_state_rejects_invalid_processed_ids():
+    import pytest
+    from core.worker import Worker
+    from core.observer import Observer
+
+    class Gateway:
+        def create_task(self, instruction):
+            return {
+                "instruction": instruction,
+                "approval_id": "approval-1",
+                "status": "pending",
+                "plan": {},
+            }
+
+    with pytest.raises(ValueError, match="IDs processados"):
+        Worker(Gateway(), Observer()).restore_state({
+            "processed": [],
+            "processed_ids": "invalid",
+        })
+
+
+def test_worker_load_state_rejects_invalid_record():
+    import pytest
+    from core.worker import Worker
+    from core.observer import Observer
+
+    class Gateway:
+        def create_task(self, instruction):
+            return {
+                "instruction": instruction,
+                "approval_id": "approval-1",
+                "status": "pending",
+                "plan": {},
+            }
+
+    with pytest.raises(ValueError, match="Registro de estado inválido"):
+        Worker(Gateway(), Observer()).restore_state({
+            "processed": [object()],
+            "processed_ids": [],
+        })
+
+
+def test_worker_load_state_rejects_invalid_instruction():
+    import pytest
+    from core.worker import Worker
+    from core.observer import Observer
+
+    class Gateway:
+        def create_task(self, instruction):
+            return {
+                "instruction": instruction,
+                "approval_id": "approval-1",
+                "status": "pending",
+                "plan": {},
+            }
+
+    with pytest.raises(ValueError, match="Instrução processada inválida"):
+        Worker(Gateway(), Observer()).restore_state({
+            "processed": [{"instruction": "   ", "metadata": {}}],
+            "processed_ids": [],
+        })
+
+
+def test_worker_load_state_rejects_invalid_metadata():
+    import pytest
+    from core.worker import Worker
+    from core.observer import Observer
+
+    class Gateway:
+        def create_task(self, instruction):
+            return {
+                "instruction": instruction,
+                "approval_id": "approval-1",
+                "status": "pending",
+                "plan": {},
+            }
+
+    with pytest.raises(ValueError, match="Metadados processados inválidos"):
+        Worker(Gateway(), Observer()).restore_state({
+            "processed": [{"instruction": "teste", "metadata": []}],
+            "processed_ids": [],
+        })

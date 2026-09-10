@@ -77,3 +77,61 @@ def test_save_fsyncs_file_and_parent_directory(tmp_path, monkeypatch):
     store.save([observation])
 
     assert len(fsync_calls) == 2
+
+
+def test_serialize_rejects_non_list():
+    from core.observation_store import ObservationStore
+    import pytest
+
+    with pytest.raises(ValueError, match="Observações inválidas"):
+        ObservationStore._serialize("invalid")
+
+
+def test_serialize_rejects_invalid_observation():
+    from core.observation_store import ObservationStore
+    import pytest
+
+    with pytest.raises(ValueError, match="Observação inválida"):
+        ObservationStore._serialize([object()])
+
+
+def test_deserialize_rejects_non_dict_record():
+    from core.observation_store import ObservationStore
+    import pytest
+
+    with pytest.raises(ValueError, match="Registro de observação inválido"):
+        ObservationStore._deserialize([object()])
+
+
+def test_deserialize_rejects_invalid_instruction():
+    from core.observation_store import ObservationStore
+    import pytest
+
+    with pytest.raises(ValueError, match="Instrução de observação inválida"):
+        ObservationStore._deserialize([{"instruction": "   ", "metadata": {}}])
+
+
+def test_deserialize_rejects_invalid_metadata():
+    from core.observation_store import ObservationStore
+    import pytest
+
+    with pytest.raises(ValueError, match="Metadados de observação inválidos"):
+        ObservationStore._deserialize([{"instruction": "teste", "metadata": []}])
+
+
+def test_save_removes_temporary_file_on_failure(monkeypatch, tmp_path):
+    from core.observation_store import ObservationStore, Observation
+
+    store = ObservationStore(tmp_path / "observations.json")
+
+    def fail_replace(*args, **kwargs):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr("os.replace", fail_replace)
+
+    try:
+        store.save([Observation("teste", {})])
+    except OSError:
+        pass
+
+    assert not list(tmp_path.glob("*.tmp"))

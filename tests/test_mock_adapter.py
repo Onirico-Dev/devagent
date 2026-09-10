@@ -349,3 +349,15 @@ def test_mock_build_planner_change_returns_none_for_empty_instruction():
     adapter = MockAdapter()
 
     assert adapter._build_planner_change("") is None
+
+
+def test_extract_create_content_natural_test_smoke():
+    instruction = (
+        "o arquivo deve conter um teste pytest chamado "
+        "test_smoke que faça a asserção de que 2 + 2 é igual a 4"
+    )
+
+    assert MockAdapter._extract_create_content(instruction) == (
+        "def test_smoke():\n"
+        "    assert 2 + 2 == 4"
+    )

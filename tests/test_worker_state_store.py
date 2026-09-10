@@ -56,3 +56,20 @@ def test_store_writes_valid_json(tmp_path):
         "processed": [],
         "processed_ids": [],
     }
+
+
+def test_save_removes_temporary_file_on_failure(monkeypatch, tmp_path):
+    import pytest
+    from core.worker_state_store import WorkerStateStore
+
+    store = WorkerStateStore(tmp_path / "state.json")
+
+    def fail_replace(*args, **kwargs):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr("os.replace", fail_replace)
+
+    with pytest.raises(OSError, match="replace failed"):
+        store.save({"processed": [], "processed_ids": []})
+
+    assert not list(tmp_path.glob("*.tmp"))
