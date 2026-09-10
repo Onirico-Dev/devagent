@@ -270,6 +270,24 @@ def test_cli_module_entrypoint(monkeypatch):
     runpy.run_module("cli", run_name="__main__")
 
 
+
+def test_read_command_supports_multiline_python(monkeypatch):
+    from cli import _read_command
+
+    commands = iter([
+        "observe criar arquivo exemplo.py contendo def test_smoke():",
+        "    assert True",
+    ])
+
+    monkeypatch.setattr("builtins.input", lambda _="": next(commands))
+
+    assert _read_command() == (
+        "observe criar arquivo exemplo.py contendo def test_smoke():\n"
+        "    assert True"
+    )
+
+
+
 def test_main_observe_and_autonomy(monkeypatch, capsys):
     gateway = FakeGateway(None, ".")
     monkeypatch.setattr(cli, "DevAgent", lambda root: object())

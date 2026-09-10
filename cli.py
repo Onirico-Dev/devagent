@@ -67,6 +67,28 @@ def print_tasks(tasks):
         )
 
 
+def _read_command():
+    command = input("\nDevAgent > ").rstrip()
+    if not command:
+        return ""
+
+    lines = [command]
+
+    while lines[-1].endswith(":"):
+        try:
+            continuation = input("... ").rstrip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            break
+
+        if not continuation:
+            break
+
+        lines.append(continuation)
+
+    return "\n".join(lines).strip()
+
+
 def print_proposals(proposals):
     if not proposals:
         print("\nNenhuma nova proposta.")
@@ -119,7 +141,7 @@ def main(state_root: str | Path = "transactions"):
 
     while True:
         try:
-            command = input("\nDevAgent > ").strip()
+            command = _read_command()
         except (KeyboardInterrupt, EOFError):
             print()
             break
