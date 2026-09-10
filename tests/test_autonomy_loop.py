@@ -91,3 +91,89 @@ def test_loop_does_not_execute_approval():
     assert result.proposals[0].status == "pending"
     assert not hasattr(gateway, "approve")
     assert not hasattr(gateway, "execute_approved")
+
+def test_loop_restores_worker_state_after_restart(tmp_path):
+    from core.worker_state_store import WorkerStateStore
+
+    store = WorkerStateStore(tmp_path / "worker.json")
+    observer = Observer(
+        [
+            Observation("primeira tarefa", {"source": "test"}),
+            Observation("segunda tarefa", {"source": "test"}),
+        ]
+    )
+
+    gateway = FakeGateway()
+    worker = Worker(gateway, observer, store=store)
+    first_loop = AutonomyLoop(worker)
+
+    first = first_loop.run_once()
+
+    assert len(first.proposals) == 2
+    assert first.stopped is False
+    assert first.metadata["iterations"] == 1
+
+    restored_worker = Worker(
+        gateway,
+        observer,
+        store=store,
+    )
+    second_loop = AutonomyLoop(restored_worker)
+
+    second = second_loop.run_once()
+
+    assert second.proposals == []
+    assert second.stopped is False
+    assert second.metadata["iterations"] == 1
+    assert gateway.calls == [
+        "primeira tarefa",
+        "segunda tarefa",
+    ]
+
+
+def test_loop_stop_does_not_modify_persisted_worker_state(tmp_path):
+    from core.worker_state_store import WorkerStateStore
+
+    store = WorkerStateStore(tmp_path / "worker.json")
+    observer = Observer(
+        [Observation("tarefa", {"source": "test"})]
+    )
+    gateway = FakeGateway()
+    worker = Worker(gateway, observer, store=store)
+
+    loop = AutonomyLoop(worker)
+    loop.stop()
+
+    result = loop.run_once()
+
+    assert result.stopped is True
+    assert result.proposals == []
+    assert worker.processed_ids == set()
+    assert store.load() == {}
+
+
+def test_loop_iterations_are_runtime_state_only(tmp_path):
+    from core.worker_state_store import WorkerStateStore
+
+    store = WorkerStateStore(tmp_path / "worker.json")
+    observer = Observer(
+        [Observation("tarefa", {"source": "test"})]
+    )
+    gateway = FakeGateway()
+
+    worker = Worker(gateway, observer, store=store)
+    first_loop = AutonomyLoop(worker)
+    first_loop.run_once()
+
+    assert first_loop.iterations == 1
+
+    restored_worker = Worker(
+        gateway,
+        observer,
+        store=store,
+    )
+    second_loop = AutonomyLoop(restored_worker)
+
+    assert second_loop.iterations == 0
+    second_loop.run_once()
+    assert second_loop.iterations == 1
