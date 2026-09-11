@@ -138,6 +138,40 @@ def test_mock_delete_recognizes_delete_variants(instruction):
     }
 
 
+
+def test_mock_modify_addition_preserves_existing_context():
+    adapter = MockAdapter()
+
+    context = (
+        "=== CONTEXTO DO PROJETO ===\n"
+        "=== ARQUIVO: target.py ===\n"
+        "def target():\n"
+        "    return 'old'\n"
+        "=== ANÁLISE PYTHON ===\n"
+        "IMPORTS: []\n"
+        "FUNÇÕES: ['target']\n"
+        "CLASSES: []\n"
+    )
+
+    result = adapter._build_planner_change(
+        "modifique target.py adicionando print('ok')",
+        context,
+    )
+
+    assert result == {
+        "type": "modify",
+        "path": "target.py",
+        "content": (
+            "def target():\n"
+            "    return 'old'\n"
+            "print('ok')\n"
+        ),
+        "reason": (
+            "modifique target.py adicionando print('ok')"
+        ),
+    }
+
+
 def test_mock_modify_without_content_returns_empty_content():
     adapter = MockAdapter()
 

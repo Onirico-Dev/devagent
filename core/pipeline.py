@@ -32,7 +32,14 @@ class DevAgentPipeline:
     def process(self, text: str):
         command = self.parser.parse(text)
 
-        context = self.context.build()
+        relevant_paths = []
+
+        if command.action == "modify" and command.target:
+            relevant_paths.append(command.target)
+
+        context = self.context.build(
+            relevant_paths=relevant_paths,
+        )
 
         if self.ai_planner is not None:
             plan = self.ai_planner.create_plan(

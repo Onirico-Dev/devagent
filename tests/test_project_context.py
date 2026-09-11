@@ -380,3 +380,28 @@ def test_project_context_build_does_not_analyze_non_python_files(tmp_path):
 
     assert "=== ANÁLISE PYTHON ===" not in context
     assert "config.json" in context
+
+def test_build_prioritizes_relevant_paths(tmp_path):
+    (tmp_path / "a.py").write_text(
+        "A = 1\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "target.py").write_text(
+        "TARGET = 2\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "z.py").write_text(
+        "Z = 3\n",
+        encoding="utf-8",
+    )
+
+    context = ProjectContext(tmp_path)
+    result = context.build(relevant_paths=["target.py"])
+
+    target_pos = result.index("=== ARQUIVO: target.py ===")
+    a_pos = result.index("=== ARQUIVO: a.py ===")
+    z_pos = result.index("=== ARQUIVO: z.py ===")
+
+    assert target_pos < a_pos
+    assert target_pos < z_pos
+    assert "TARGET = 2" in result

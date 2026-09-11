@@ -16,6 +16,23 @@ class MockAdapter(AIAdapter):
                 "O prompt não pode ser vazio."
             )
 
+    def generate(self, prompt: str) -> str:
+        if not isinstance(prompt, str):
+            raise TypeError("O prompt deve ser uma string.")
+
+        if not prompt.strip():
+            raise ValueError("O prompt não pode ser vazio.")
+
+        repair_marker = "Você é o módulo de reparo automático do DevAgent."
+
+        if prompt.startswith(repair_marker):
+            return self._generate_repair_response(prompt)
+
+        if prompt.startswith("REPAIR REQUEST:"):
+            return self._generate_repair_response(prompt)
+
+        return self._generate_planner_response(prompt)
+
     def _generate_repair_response(self, prompt: str) -> str:
         repair_marker = (
             "Você é o módulo de reparo automático do DevAgent."
@@ -65,24 +82,27 @@ class MockAdapter(AIAdapter):
 
     def _generate_planner_response(self, prompt: str) -> str:
         marker = "INSTRUÇÃO DO USUÁRIO:"
+        context_marker = "CONTEXTO DO PROJETO:"
         instruction = ""
+        context = ""
 
         if marker in prompt:
             instruction = (
                 prompt.split(marker, 1)[1]
-                .split("CONTEXTO DO PROJETO:", 1)[0]
+                .split(context_marker, 1)[0]
                 .strip()
             )
 
+        if context_marker in prompt:
+            context = prompt.split(context_marker, 1)[1].strip()
+
         objective = instruction
         change = self._build_planner_change(
-            instruction
+            instruction,
+            context,
         )
 
-        changes = []
-
-        if change is not None:
-            changes.append(change)
+        changes = [change] if change is not None else []
 
         return json.dumps(
             {
@@ -93,22 +113,6 @@ class MockAdapter(AIAdapter):
             },
             ensure_ascii=False,
         )
-
-    def generate(self, prompt: str) -> str:
-        self._validate_prompt(prompt)
-
-        repair_response = self._generate_repair_response(
-            prompt
-        )
-
-        if repair_response:
-            return repair_response
-
-        return self._generate_planner_response(prompt)
-
-    # =============================================================
-    # AI PLANNER — MOCK
-    # =============================================================
 
     def _build_delete_change(self, instruction: str):
         delete_match = re.match(
@@ -135,7 +139,11 @@ class MockAdapter(AIAdapter):
             "reason": instruction,
         }
 
-    def _build_modify_change(self, instruction: str):
+    def _build_modify_change(
+        self,
+        instruction: str,
+        context: str = "",
+    ):
         modify_match = re.match(
             r"^\s*"
             r"(?:modifique|modificar|altere|alterar|modify)"
@@ -146,18 +154,34 @@ class MockAdapter(AIAdapter):
             instruction,
             flags=re.IGNORECASE,
         )
-
         if not modify_match:
             return None
 
         path = modify_match.group(1).strip(
-            "\"'`.,;:"
+            chr(34) + chr(39) + "`.,;:"
         )
+        request = (modify_match.group(2) or "").strip()
+        content = request
 
-        content = (
-            modify_match.group(2)
-            or ""
-        ).strip()
+        addition = None
+        for prefix in (
+            "adicionando ",
+            "adicione ",
+            "adicionar ",
+        ):
+            if request.lower().startswith(prefix):
+                addition = request[len(prefix):].strip()
+                break
+
+        if addition and context:
+            file_marker = f"=== ARQUIVO: {path} ===\n"
+            if file_marker in context:
+                existing = (
+                    context.split(file_marker, 1)[1]
+                    .split("=== ANÁLISE PYTHON ===", 1)[0]
+                    .rstrip()
+                )
+                content = f"{existing}\n{addition}\n"
 
         return {
             "type": "modify",
@@ -166,30 +190,36 @@ class MockAdapter(AIAdapter):
             "reason": instruction,
         }
 
-    @staticmethod
-    def _extract_legacy_create_content(
-        instruction: str,
-    ) -> str:
-        create_match = re.match(
-            r"^\s*"
-            r"(?:crie|criar|create)"
-            r"\s+"
-            r"(?:um\s+)?"
-            r"(?:arquivo\s+)?"
+    def _extract_legacy_create_content(self, instruction: str) -> str:
+        lower = instruction.lower()
+
+        markers = (
+            " contendo ",
+            " com conteúdo ",
+            " com conteudo ",
+        )
+
+        for marker in markers:
+            index = lower.find(marker)
+            if index != -1:
+                content = instruction[index + len(marker):].strip()
+                if content:
+                    return content
+
+        match = re.match(
+            r"^\s*(?:crie|criar|criar arquivo|create)"
+            r"\s+(?:um\s+arquivo\s+)?"
             r"(?:chamado\s+)?"
-            r"[A-Za-z0-9_.-]+\.[A-Za-z0-9_-]+"
-            r"(?:\s+(.*))?$",
+            r"[A-Za-z0-9_./-]+\.[A-Za-z0-9_-]+"
+            r"\s+(.+?)\s*$",
             instruction,
             flags=re.IGNORECASE,
         )
 
-        if not create_match:
-            return ""
+        if match:
+            return match.group(1).strip()
 
-        return (
-            create_match.group(1)
-            or ""
-        ).strip()
+        return ""
 
     def _build_create_change(self, instruction: str):
         target = self._extract_create_target(
@@ -215,25 +245,27 @@ class MockAdapter(AIAdapter):
             "reason": instruction,
         }
 
-    def _build_planner_change(self, instruction: str):
+    def _build_planner_change(
+        self,
+        instruction: str,
+        context: str = "",
+    ):
         if not instruction:
             return None
 
-        change = self._build_delete_change(
-            instruction
-        )
+        change = self._build_delete_change(instruction)
         if change is not None:
             return change
 
         change = self._build_modify_change(
-            instruction
+            instruction,
+            context,
         )
         if change is not None:
             return change
 
-        return self._build_create_change(
-            instruction
-        )
+        return self._build_create_change(instruction)
+
 
     @staticmethod
     def _extract_create_target(instruction: str) -> str:

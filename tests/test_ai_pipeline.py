@@ -405,3 +405,59 @@ def test_pipeline_uses_classic_planner_without_ai_adapter(tmp_path):
     assert len(plan.changes) == 1
     assert plan.changes[0].path == "classic.py"
     assert plan.changes[0].content
+
+def test_pipeline_prioritizes_modify_target_in_ai_context(tmp_path):
+    target = tmp_path / "target.py"
+    other = tmp_path / "other.py"
+
+    target.write_text(
+        "def target():\n    return 'old'\n",
+        encoding="utf-8",
+    )
+    other.write_text(
+        "def other():\n    return 'other'\n",
+        encoding="utf-8",
+    )
+
+    class ContextAdapter:
+        def __init__(self):
+            self.prompt = None
+
+        def generate(self, prompt):
+            self.prompt = prompt
+            return json.dumps({
+                "objective": "Modificar target.py",
+                "changes": [
+                    {
+                        "type": "modify",
+                        "path": "target.py",
+                        "content": "def target():\n    return 'new'\n",
+                        "reason": "Atualizar função",
+                    }
+                ],
+                "tests": [],
+                "risks": [],
+            })
+
+    adapter = ContextAdapter()
+    pipeline = DevAgentPipeline(
+        root=str(tmp_path),
+        ai_adapter=adapter,
+    )
+
+    plan = pipeline.process("Modifique target.py")
+
+    assert plan.changes[0].path == "target.py"
+    assert plan.changes[0].content == (
+        "def target():\n    return 'new'\n"
+    )
+
+    target_pos = adapter.prompt.index(
+        "=== ARQUIVO: target.py ==="
+    )
+    other_pos = adapter.prompt.index(
+        "=== ARQUIVO: other.py ==="
+    )
+
+    assert target_pos < other_pos
+    assert "return 'old'" in adapter.prompt

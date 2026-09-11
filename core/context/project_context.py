@@ -139,8 +139,23 @@ class ProjectContext:
             f"CLASSES: {analysis['classes']}\n"
         )
 
-    def build(self):
+    def build(self, relevant_paths=None):
         files = self.list_files()
+
+        relevant_paths = {
+            Path(path)
+            for path in (relevant_paths or [])
+        }
+
+        prioritized = [
+            path for path in files
+            if path in relevant_paths
+        ]
+        remaining = [
+            path for path in files
+            if path not in relevant_paths
+        ]
+        files = prioritized + remaining
 
         MAX_CONTEXT_CHARS = 50000
 
