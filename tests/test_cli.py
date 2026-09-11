@@ -182,6 +182,39 @@ def test_main_plan_tasks_latest_status_approve_reject(monkeypatch, capsys):
     assert ("reject", "a1") in gateway.calls
 
 
+
+def test_main_autonomy_proposal_then_approval(monkeypatch, capsys):
+    gateway = FakeGateway(None, ".")
+    monkeypatch.setattr(cli, "DevAgent", lambda root: object())
+    monkeypatch.setattr(
+        cli,
+        "DevAgentGateway",
+        lambda agent, root: gateway,
+    )
+
+    commands = iter([
+        "observe corrigir o arquivo",
+        "autonomy",
+        "approve a1",
+        "sair",
+    ])
+
+    monkeypatch.setattr(
+        builtins,
+        "input",
+        lambda _: next(commands),
+    )
+
+    cli.main()
+
+    output = capsys.readouterr().out
+
+    assert "Novas propostas:" in output
+    assert "[a1] pending — corrigir o arquivo" in output
+    assert "Resultado da aprovação:" in output
+    assert "Execução: committed" in output
+    assert ("approve", "a1") in gateway.calls
+
 def test_main_missing_arguments_and_unknown_command(monkeypatch, capsys):
     gateway = FakeGateway(None, ".")
     monkeypatch.setattr(cli, "DevAgent", lambda root: object())
