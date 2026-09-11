@@ -61,6 +61,17 @@ def test_mock_generate_create_with_explicit_content():
     ]
 
 
+def test_mock_legacy_create_content_extracts_marker_content():
+    adapter = MockAdapter()
+
+    assert (
+        adapter._extract_legacy_create_content(
+            "crie app.py contendo print('ok')"
+        )
+        == "print('ok')"
+    )
+
+
 def test_mock_generate_create_uses_legacy_content_fallback():
     adapter = MockAdapter()
 
@@ -337,6 +348,14 @@ def test_mock_extract_invalid_content_uses_default():
         MockAdapter._extract_invalid_content("corrija broken.py")
         == "isto não é Python válido"
     )
+
+
+def test_mock_generate_legacy_repair_request_route_returns_empty():
+    adapter = MockAdapter()
+
+    assert adapter.generate(
+        "REPAIR REQUEST: corrija broken.py"
+    ) == ""
 
 
 def test_mock_generate_repair_marker_must_be_at_prompt_start():

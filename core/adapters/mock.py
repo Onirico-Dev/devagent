@@ -5,17 +5,6 @@ from core.adapters.base import AIAdapter
 
 
 class MockAdapter(AIAdapter):
-    def _validate_prompt(self, prompt: str) -> None:
-        if not isinstance(prompt, str):
-            raise TypeError(
-                "O prompt deve ser uma string."
-            )
-
-        if not prompt.strip():
-            raise ValueError(
-                "O prompt não pode ser vazio."
-            )
-
     def generate(self, prompt: str) -> str:
         if not isinstance(prompt, str):
             raise TypeError("O prompt deve ser uma string.")
