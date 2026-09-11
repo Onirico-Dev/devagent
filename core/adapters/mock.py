@@ -280,7 +280,20 @@ class MockAdapter(AIAdapter):
     def _extract_create_content(
         instruction: str,
     ) -> str:
-        lower = instruction.lower()
+        lower = instruction.lower().strip()
+
+        natural_test_pattern = (
+            r"um\s+teste\s+pytest\s+chamado\s+"
+            r"test_smoke\s+que\s+faça\s+a\s+"
+            r"asserção\s+de\s+que\s*2\s*\+\s*2\s+"
+            r"(?:é|e)\s+igual\s+a\s+4"
+        )
+
+        if re.search(natural_test_pattern, lower):
+            return (
+                "def test_smoke():\n"
+                "    assert 2 + 2 == 4"
+            )
 
         markers = (
             " contendo ",
@@ -296,20 +309,6 @@ class MockAdapter(AIAdapter):
                 ].strip()
                 if content:
                     return content
-
-        natural_test_pattern = (
-            r"o\s+arquivo\s+deve\s+conter\s+"
-            r"um\s+teste\s+pytest\s+chamado\s+"
-            r"test_smoke\s+que\s+faça\s+a\s+"
-            r"asserção\s+de\s+que\s*2\s*\+\s*2\s+"
-            r"(?:é|e)\s+igual\s+a\s+4"
-        )
-
-        if re.search(natural_test_pattern, lower):
-            return (
-                "def test_smoke():\n"
-                "    assert 2 + 2 == 4"
-            )
 
         return ""
 

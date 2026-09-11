@@ -173,3 +173,25 @@ def test_planner_returns_independent_plan_instances(planner):
     assert first is not second
     assert first.changes is not second.changes
     assert first.changes[0] is not second.changes[0]
+
+
+def test_planner_translates_natural_language_smoke_test(planner):
+    instruction = (
+        "um teste pytest chamado test_smoke que faça a asserção "
+        "de que 2 + 2 é igual a 4"
+    )
+    command = make_command(
+        "create",
+        target="smoke_test.py",
+        instruction=instruction,
+    )
+
+    plan = planner.create_plan(command)
+
+    assert plan.changes[0].change_type == ChangeType.CREATE
+    assert plan.changes[0].path == "smoke_test.py"
+    assert plan.changes[0].content == (
+        "def test_smoke():\n"
+        "    assert 2 + 2 == 4"
+    )
+    assert plan.changes[0].reason == instruction
