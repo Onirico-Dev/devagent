@@ -766,6 +766,105 @@ def test_gateway_rolls_back_after_persistent_declared_semantic_failure(
     )
 
 
+def test_gateway_rolls_back_real_executor_failure_on_second_change(tmp_path):
+    import subprocess
+
+    from agent import DevAgent
+    from core.gateway import DevAgentGateway
+
+    example = tmp_path / "example.py"
+    version = tmp_path / "version.py"
+
+    example.write_text(
+        'def hello():\n'
+        '    return "hello"\n',
+        encoding="utf-8",
+    )
+    version.write_text(
+        'def version():\n'
+        '    return "0.1"\n',
+        encoding="utf-8",
+    )
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "add", "."],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "test: initial executor failure fixture"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    gateway = DevAgentGateway(DevAgent(tmp_path), root=tmp_path)
+    task = gateway.create_task("alterar example.py e version.py")
+    approval_id = task["approval_id"]
+
+    original_execute_change = gateway.executor.execute_change
+    calls = []
+
+    def fail_on_second_change(change):
+        calls.append(change.path)
+        if len(calls) == 2:
+            raise RuntimeError("SECOND_CHANGE_FAILURE")
+        return original_execute_change(change)
+
+    gateway.executor.execute_change = fail_on_second_change
+
+    result = gateway.approve(approval_id)
+
+    assert result["status"] == "rolled_back"
+    assert len(calls) == 2
+
+    assert example.read_text(encoding="utf-8") == (
+        'def hello():\n'
+        '    return "hello"\n'
+    )
+    assert version.read_text(encoding="utf-8") == (
+        'def version():\n'
+        '    return "0.1"\n'
+    )
+
+    persisted = gateway.get_task(approval_id)
+    assert persisted["status"] == "rolled_back"
+    assert persisted["approval_id"] == approval_id
+
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--", "example.py", "version.py"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert status == ""
+
+
 def test_gateway_serializes_concurrent_approve_for_same_task(tmp_path):
     from concurrent.futures import ThreadPoolExecutor
     import subprocess
