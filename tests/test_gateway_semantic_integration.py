@@ -1103,6 +1103,7 @@ def test_gateway_recovers_testing_transaction_after_restart(tmp_path):
 
     from core.engine.repair_cycle_state import RepairCycleState
     from core.gateway import DevAgentGateway
+    from core.memory.task_history import TaskHistoryStatus
     from core.schemas.models import Change, ChangeType, Transaction, TransactionStatus
 
     gateway = DevAgentGateway(None, root=tmp_path)
@@ -1134,8 +1135,26 @@ def test_gateway_recovers_testing_transaction_after_restart(tmp_path):
     transaction.status = TransactionStatus.TESTING
     repair_state.persist(transaction)
 
+    approval_id = "testing-restart-approval"
+    gateway.history.create(
+        approval_id=approval_id,
+        instruction="Teste de recovery em TESTING",
+        plan={"instruction": "Teste de recovery em TESTING"},
+    )
+    gateway.history.update(
+        approval_id,
+        status=TaskHistoryStatus.TESTING.value,
+        transaction_id=transaction.transaction_id,
+    )
+
     assert transaction.status == TransactionStatus.TESTING
     assert target.read_text(encoding="utf-8") == 'VALUE = "changed"\n'
+    assert gateway.history.get(approval_id)["status"] == (
+        TaskHistoryStatus.TESTING.value
+    )
+    assert gateway.history.get(approval_id)["transaction_id"] == (
+        transaction.transaction_id
+    )
 
     restarted_gateway = DevAgentGateway(None, root=tmp_path)
 
@@ -1146,3 +1165,7 @@ def test_gateway_recovers_testing_transaction_after_restart(tmp_path):
     )
     assert recovered.status == TransactionStatus.ROLLED_BACK
     assert restarted_gateway.transactions.list_recoverable_transactions() == []
+
+    history_task = restarted_gateway.history.get(approval_id)
+    assert history_task["status"] == TaskHistoryStatus.ROLLED_BACK.value
+    assert history_task["transaction_id"] == transaction.transaction_id

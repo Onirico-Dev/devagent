@@ -57,7 +57,6 @@ class DevAgentGateway:
         self.security = SecurityPolicy(root)
         self.executor = SafeExecutor(root)
         self.transactions = TransactionManager(root)
-        self.transactions.recover_incomplete_transactions()
         self.tests = TestRunner(root)
         self.git = GitManager(root)
 
@@ -82,6 +81,9 @@ class DevAgentGateway:
                 / "transactions"
                 / "tasks.json"
             )
+        )
+        self._reconcile_recovered_transactions(
+            self.transactions.recover_incomplete_transactions()
         )
 
         self.repair_flow = RepairFlow(
@@ -113,6 +115,34 @@ class DevAgentGateway:
         )
 
     # ------------------------------------------------------------------
+    def _reconcile_recovered_transactions(self, transactions):
+        for transaction in transactions:
+            task = next(
+                (
+                    item
+                    for item in self.history.list_all()
+                    if item.get("transaction_id")
+                    == transaction.transaction_id
+                ),
+                None,
+            )
+            if task is None:
+                continue
+
+            status = getattr(transaction.status, "value", transaction.status)
+
+            if status not in {
+                TaskHistoryStatus.ROLLED_BACK.value,
+                TaskHistoryStatus.FAILED.value,
+            }:
+                continue
+
+            self.history.update(
+                task["task_id"],
+                status=status,
+                transaction_id=transaction.transaction_id,
+            )
+
     # HISTORY
     # ------------------------------------------------------------------
 
