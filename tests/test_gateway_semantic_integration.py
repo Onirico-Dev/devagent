@@ -1054,3 +1054,95 @@ def test_gateway_recovers_commit_failure_after_restart(tmp_path, monkeypatch):
     )
     assert recovered.status.value == "rolled_back"
     assert restarted_gateway.transactions.list_recoverable_transactions() == []
+
+
+def test_gateway_recovers_testing_transaction_after_restart(tmp_path):
+    import subprocess
+
+    target = tmp_path / "testing-restart.py"
+    target.write_text(
+        'VALUE = "original"\n',
+        encoding="utf-8",
+    )
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "add", "."],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "test: initial fixture"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    from core.engine.repair_cycle_state import RepairCycleState
+    from core.gateway import DevAgentGateway
+    from core.schemas.models import Change, ChangeType, Transaction, TransactionStatus
+
+    gateway = DevAgentGateway(None, root=tmp_path)
+
+    transaction = Transaction(
+        transaction_id="testing-restart-recovery",
+        changes=[
+            Change(
+                change_type=ChangeType.MODIFY,
+                path="testing-restart.py",
+                content='VALUE = "changed"\n',
+                reason="Teste de recovery em TESTING após restart",
+            )
+        ],
+    )
+
+    transaction = gateway.transactions.begin(transaction)
+
+    for change in transaction.changes:
+        gateway.security.validate_path(change.path)
+        gateway.transactions.backup_file(transaction, change.path)
+
+    gateway.executor.execute(transaction)
+
+    repair_state = RepairCycleState(
+        transaction_id=transaction.transaction_id,
+    )
+    repair_state.mark_testing()
+    transaction.status = TransactionStatus.TESTING
+    repair_state.persist(transaction)
+
+    assert transaction.status == TransactionStatus.TESTING
+    assert target.read_text(encoding="utf-8") == 'VALUE = "changed"\n'
+
+    restarted_gateway = DevAgentGateway(None, root=tmp_path)
+
+    assert target.read_text(encoding="utf-8") == 'VALUE = "original"\n'
+
+    recovered = restarted_gateway.transactions.load_manifest(
+        "testing-restart-recovery",
+    )
+    assert recovered.status == TransactionStatus.ROLLED_BACK
+    assert restarted_gateway.transactions.list_recoverable_transactions() == []
