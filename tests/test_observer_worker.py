@@ -646,3 +646,91 @@ def test_worker_persists_processed_observation_across_restart(tmp_path):
     assert second == []
     assert len(restarted_worker.processed_ids) == 1
     assert first[0].approval_id in restarted_worker.processed_ids
+
+def test_worker_processes_new_observation_after_restart(tmp_path):
+    from agent import DevAgent
+    from core.gateway import DevAgentGateway
+    from core.observation import Observation
+    from core.observation_store import ObservationStore
+    from core.observer import Observer
+    from core.worker import Worker
+    from core.worker_state_store import WorkerStateStore
+
+    import subprocess
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "devagent@test.local"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    observation_store = ObservationStore(
+        tmp_path / "observations.json"
+    )
+    worker_state_store = WorkerStateStore(
+        tmp_path / "worker.json"
+    )
+
+    observer = Observer(store=observation_store)
+    observer.add(
+        Observation(
+            instruction=(
+                "crie first.py contendo "
+                "def test_first(): assert 1 == 1"
+            ),
+            metadata={"source": "restart"},
+        )
+    )
+
+    agent = DevAgent(tmp_path)
+    gateway = DevAgentGateway(agent, tmp_path)
+
+    worker = Worker(
+        gateway,
+        observer,
+        store=worker_state_store,
+    )
+
+    first = worker.run_once()
+
+    assert len(first) == 1
+
+    restarted_observer = Observer(store=observation_store)
+    restarted_observer.add(
+        Observation(
+            instruction=(
+                "crie second.py contendo "
+                "def test_second(): assert 2 == 2"
+            ),
+            metadata={"source": "restart-new"},
+        )
+    )
+
+    restarted_worker = Worker(
+        gateway,
+        restarted_observer,
+        store=worker_state_store,
+    )
+
+    second = restarted_worker.run_once()
+
+    assert len(second) == 1
+    assert second[0].status == "pending"
+    assert second[0].approval_id != first[0].approval_id
+    assert len(restarted_worker.processed_ids) == 2
