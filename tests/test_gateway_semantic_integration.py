@@ -264,6 +264,95 @@ def test_gateway_recovers_incomplete_transaction_after_restart(tmp_path):
 
 
 
+
+def test_gateway_recovers_partial_multi_file_transaction_after_restart(tmp_path):
+    import subprocess
+
+    first = tmp_path / "first.py"
+    second = tmp_path / "second.py"
+    first.write_text('value = "first-original"\n', encoding="utf-8")
+    second.write_text('value = "second-original"\n', encoding="utf-8")
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "add", "."],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "test: initial fixture"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    from core.schemas.models import Change, ChangeType, Transaction
+
+    gateway = DevAgentGateway(None, root=tmp_path)
+    transaction = Transaction(
+        transaction_id="partial-restart-recovery",
+        changes=[
+            Change(
+                change_type=ChangeType.MODIFY,
+                path="first.py",
+                content='value = "first-changed"\n',
+                reason="partial recovery first",
+            ),
+            Change(
+                change_type=ChangeType.MODIFY,
+                path="second.py",
+                content='value = "second-changed"\n',
+                reason="partial recovery second",
+            ),
+        ],
+    )
+
+    transaction = gateway.transactions.begin(transaction)
+
+    for change in transaction.changes:
+        gateway.security.validate_path(change.path)
+        gateway.transactions.backup_file(transaction, change.path)
+
+    gateway.executor.execute_change(transaction.changes[0])
+
+    assert first.read_text(encoding="utf-8") == 'value = "first-changed"\n'
+    assert second.read_text(encoding="utf-8") == 'value = "second-original"\n'
+
+    restarted_gateway = DevAgentGateway(None, root=tmp_path)
+
+    assert first.read_text(encoding="utf-8") == 'value = "first-original"\n'
+    assert second.read_text(encoding="utf-8") == 'value = "second-original"\n'
+
+    recovered = restarted_gateway.transactions.load_manifest(
+        "partial-restart-recovery"
+    )
+
+    assert recovered.status.value == "rolled_back"
+    assert restarted_gateway.transactions.list_recoverable_transactions() == []
+
 def test_gateway_rolls_back_multi_file_transaction_on_declared_semantic_failure(
     tmp_path,
 ):
