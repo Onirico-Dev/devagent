@@ -652,13 +652,32 @@ class TransactionManager:
         relative_path
     ):
         target = self._validate_created_path(relative_path)
+
+        created = transaction.metadata.setdefault(
+            "created",
+            [],
+        )
+        created_identity = transaction.metadata.setdefault(
+            "created_identity",
+            {},
+        )
+
+        created_before = list(created)
+        identity_before = dict(created_identity)
+
         self._record_created_path(transaction, relative_path)
         self._record_created_identity(
             transaction,
             relative_path,
             target,
         )
-        self.persist_manifest(transaction)
+
+        try:
+            self.persist_manifest(transaction)
+        except Exception:
+            transaction.metadata["created"] = created_before
+            transaction.metadata["created_identity"] = identity_before
+            raise
 
     def _validate_backup_root(self, transaction):
         expected_backup = (

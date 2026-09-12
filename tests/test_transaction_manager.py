@@ -400,6 +400,40 @@ def test_register_created_records_file(tmp_path):
     assert transaction.metadata["created"] == ["novo.py"]
 
 
+def test_register_created_restores_metadata_when_manifest_persist_fails(
+    tmp_path,
+    monkeypatch,
+):
+    manager, transaction = make_started_transaction(tmp_path)
+    target = tmp_path / "novo.py"
+    target.write_text("VALUE = 1\\n", encoding="utf-8")
+
+    transaction.metadata["created"] = ["existing.py"]
+    transaction.metadata["created_identity"] = {
+        "existing.py": {
+            "st_dev": 1,
+            "st_ino": 2,
+        }
+    }
+
+    created_before = list(transaction.metadata["created"])
+    identity_before = dict(transaction.metadata["created_identity"])
+
+    def fail_persist(_transaction):
+        raise OSError("simulated manifest persist failure")
+
+    monkeypatch.setattr(manager, "persist_manifest", fail_persist)
+
+    with pytest.raises(
+        OSError,
+        match="simulated manifest persist failure",
+    ):
+        manager.register_created(transaction, "novo.py")
+
+    assert transaction.metadata["created"] == created_before
+    assert transaction.metadata["created_identity"] == identity_before
+
+
 def test_register_created_accepts_nested_file(tmp_path):
     manager, transaction = make_started_transaction(tmp_path)
 
