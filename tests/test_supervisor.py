@@ -865,3 +865,58 @@ def test_request_approval_is_safe_across_processes(tmp_path):
         request["plan"]["index"]
         for request in requests.values()
     } == set(range(20))
+
+
+def test_supervisor_prepare_approval_refreshes_state_across_instances(tmp_path):
+    path = tmp_path / "approvals.json"
+
+    first = Supervisor(path)
+    second = Supervisor(path)
+
+    approval_id = second.request_approval({"changes": []})
+
+    prepared = first.prepare_approval(approval_id)
+
+    assert prepared["status"] == ApprovalStatus.PENDING.value
+    assert prepared["plan"] == {"changes": []}
+
+
+def test_supervisor_get_refreshes_state_across_instances(tmp_path):
+    path = tmp_path / "approvals.json"
+
+    first = Supervisor(path)
+    second = Supervisor(path)
+
+    approval_id = second.request_approval({"changes": []})
+
+    request = first.get(approval_id)
+
+    assert request is not None
+    assert request["status"] == ApprovalStatus.PENDING.value
+
+
+def test_supervisor_list_all_refreshes_state_across_instances(tmp_path):
+    path = tmp_path / "approvals.json"
+
+    first = Supervisor(path)
+    second = Supervisor(path)
+
+    approval_id = second.request_approval({"changes": []})
+
+    requests = first.list_all()
+
+    assert approval_id in requests
+
+
+def test_supervisor_list_pending_refreshes_state_across_instances(tmp_path):
+    path = tmp_path / "approvals.json"
+
+    first = Supervisor(path)
+    second = Supervisor(path)
+
+    approval_id = second.request_approval({"changes": []})
+
+    pending = first.list_pending()
+
+    assert approval_id in pending
+    assert pending[approval_id]["status"] == ApprovalStatus.PENDING.value

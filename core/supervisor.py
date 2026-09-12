@@ -242,23 +242,19 @@ class Supervisor:
             )
             process_lock.close()
     def prepare_approval(self, approval_id):
-        request = self.pending.get(
-            approval_id
-        )
-
-        if request is None:
-            raise KeyError(
-                "Tarefa não encontrada."
-            )
-
-        if request["status"] != (
-            ApprovalStatus.PENDING.value
-        ):
-            raise ValueError(
-                "Solicitação não está pendente."
-            )
-
-        return copy.deepcopy(request)
+        process_lock = self._process_lock()
+        try:
+            with self._lock:
+                self._load()
+                request = self.pending.get(approval_id)
+                if request is None:
+                    raise KeyError("Tarefa não encontrada.")
+                if request["status"] != ApprovalStatus.PENDING.value:
+                    raise ValueError("Solicitação não está pendente.")
+                return copy.deepcopy(request)
+        finally:
+            fcntl.flock(process_lock.fileno(), fcntl.LOCK_UN)
+            process_lock.close()
 
     def approve(self, approval_id):
         process_lock = self._process_lock()
@@ -357,25 +353,38 @@ class Supervisor:
             )
             process_lock.close()
     def get(self, approval_id):
-        request = self.pending.get(
-            approval_id
-        )
-
-        if request is None:
-            return None
-
-        return copy.deepcopy(request)
+        process_lock = self._process_lock()
+        try:
+            with self._lock:
+                self._load()
+                request = self.pending.get(approval_id)
+                if request is None:
+                    return None
+                return copy.deepcopy(request)
+        finally:
+            fcntl.flock(process_lock.fileno(), fcntl.LOCK_UN)
+            process_lock.close()
 
     def list_all(self):
-        return copy.deepcopy(
-            self.pending
-        )
+        process_lock = self._process_lock()
+        try:
+            with self._lock:
+                self._load()
+                return copy.deepcopy(self.pending)
+        finally:
+            fcntl.flock(process_lock.fileno(), fcntl.LOCK_UN)
+            process_lock.close()
 
     def list_pending(self):
-        return {
-            approval_id: copy.deepcopy(request)
-            for approval_id, request
-            in self.pending.items()
-            if request["status"]
-            == ApprovalStatus.PENDING.value
-        }
+        process_lock = self._process_lock()
+        try:
+            with self._lock:
+                self._load()
+                return {
+                    approval_id: copy.deepcopy(request)
+                    for approval_id, request in self.pending.items()
+                    if request["status"] == ApprovalStatus.PENDING.value
+                }
+        finally:
+            fcntl.flock(process_lock.fileno(), fcntl.LOCK_UN)
+            process_lock.close()
