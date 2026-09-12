@@ -296,3 +296,87 @@ def test_autonomy_loop_proposal_can_be_approved_through_real_gateway(tmp_path):
 
     assert task["status"] == "committed"
     assert task["approval_id"] == proposal.approval_id
+
+def test_autonomy_loop_persists_worker_state_across_restart(tmp_path):
+    from agent import DevAgent
+    from core.autonomy_loop import AutonomyLoop
+    from core.gateway import DevAgentGateway
+    from core.observation import Observation
+    from core.observation_store import ObservationStore
+    from core.observer import Observer
+    from core.worker import Worker
+    from core.worker_state_store import WorkerStateStore
+
+    import subprocess
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "devagent@test.local"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    observation_store = ObservationStore(
+        tmp_path / "observations.json"
+    )
+    worker_state_store = WorkerStateStore(
+        tmp_path / "worker.json"
+    )
+
+    Observer(store=observation_store).add(
+        Observation(
+            instruction=(
+                "crie loop_restart.py contendo "
+                "def test_loop_restart(): assert 2 + 2 == 4"
+            ),
+            metadata={"source": "loop-restart"},
+        )
+    )
+
+    agent = DevAgent(tmp_path)
+    gateway = DevAgentGateway(agent, tmp_path)
+
+    first_observer = Observer(store=observation_store)
+    first_worker = Worker(
+        gateway,
+        first_observer,
+        store=worker_state_store,
+    )
+    first_loop = AutonomyLoop(first_worker)
+
+    first_result = first_loop.run_once()
+
+    assert len(first_result.proposals) == 1
+    assert first_result.proposals[0].status == "pending"
+
+    restarted_observer = Observer(store=observation_store)
+    restarted_worker = Worker(
+        gateway,
+        restarted_observer,
+        store=worker_state_store,
+    )
+    restarted_loop = AutonomyLoop(restarted_worker)
+
+    second_result = restarted_loop.run_once()
+
+    assert second_result.proposals == []
+    assert second_result.metadata["iterations"] == 1
+    assert restarted_loop.iterations == 1
+    assert restarted_worker.processed_ids == {
+        first_result.proposals[0].approval_id
+    }
