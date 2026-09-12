@@ -270,6 +270,32 @@ def test_backup_file_copies_existing_file(tmp_path):
     assert backup.read_text(encoding="utf-8") == "VALUE = 1\n"
 
 
+def test_backup_file_cleans_backup_when_manifest_persist_fails(
+    tmp_path,
+    monkeypatch,
+):
+    manager, transaction = make_started_transaction(tmp_path)
+    source = tmp_path / "arquivo.py"
+    source.write_text("ORIGINAL\\n", encoding="utf-8")
+
+    def fail_persist(_transaction):
+        raise OSError("simulated manifest persist failure")
+
+    monkeypatch.setattr(manager, "persist_manifest", fail_persist)
+
+    with pytest.raises(
+        OSError,
+        match="simulated manifest persist failure",
+    ):
+        manager.backup_file(transaction, "arquivo.py")
+
+    backup = (
+        Path(transaction.metadata["backup"])
+        / "arquivo.py"
+    )
+    assert not backup.exists()
+
+
 def test_backup_file_preserves_nested_path(tmp_path):
     manager, transaction = make_started_transaction(tmp_path)
 

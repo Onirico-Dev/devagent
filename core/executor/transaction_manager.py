@@ -588,7 +588,14 @@ class TransactionManager:
             backup_dir,
             relative,
         )
-        self.persist_manifest(transaction)
+        try:
+            self.persist_manifest(transaction)
+        except Exception:
+            try:
+                destination.unlink()
+            except OSError:
+                pass
+            raise
 
     def _validate_created_path(self, relative_path):
         relative = Path(relative_path)
