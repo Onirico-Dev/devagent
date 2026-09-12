@@ -380,3 +380,95 @@ def test_autonomy_loop_persists_worker_state_across_restart(tmp_path):
     assert restarted_worker.processed_ids == {
         first_result.proposals[0].approval_id
     }
+def test_autonomy_loop_pending_proposal_survives_gateway_restart(tmp_path):
+    from agent import DevAgent
+    from core.autonomy_loop import AutonomyLoop
+    from core.gateway import DevAgentGateway
+    from core.observation import Observation
+    from core.observation_store import ObservationStore
+    from core.observer import Observer
+    from core.worker import Worker
+    from core.worker_state_store import WorkerStateStore
+    import subprocess
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "devagent@test.local"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    observation_store = ObservationStore(
+        tmp_path / "observations.json"
+    )
+    worker_state_store = WorkerStateStore(
+        tmp_path / "worker.json"
+    )
+
+    Observer(store=observation_store).add(
+        Observation(
+            instruction=(
+                "crie gateway_restart.py contendo "
+                "def test_gateway_restart(): assert 2 + 2 == 4"
+            ),
+            metadata={"source": "gateway-restart"},
+        )
+    )
+
+    agent = DevAgent(tmp_path)
+    first_gateway = DevAgentGateway(agent, tmp_path)
+    first_worker = Worker(
+        first_gateway,
+        Observer(store=observation_store),
+        store=worker_state_store,
+    )
+    first_loop = AutonomyLoop(first_worker)
+
+    first_result = first_loop.run_once()
+    proposal = first_result.proposals[0]
+
+    assert proposal.status == "pending"
+
+    restarted_gateway = DevAgentGateway(
+        DevAgent(tmp_path),
+        tmp_path,
+    )
+
+    pending_task = restarted_gateway.get_task(
+        proposal.approval_id
+    )
+
+    assert pending_task["status"] == "pending"
+    assert pending_task["approval_id"] == proposal.approval_id
+
+    approval_result = restarted_gateway.approve(
+        proposal.approval_id
+    )
+
+    assert approval_result["status"] == "committed"
+    assert (
+        tmp_path / "gateway_restart.py"
+    ).read_text(encoding="utf-8") == (
+        "def test_gateway_restart(): assert 2 + 2 == 4"
+    )
+
+    final_task = restarted_gateway.get_task(
+        proposal.approval_id
+    )
+
+    assert final_task["status"] == "committed"
