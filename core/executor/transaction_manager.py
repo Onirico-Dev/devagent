@@ -1,4 +1,5 @@
 from pathlib import Path
+import fcntl
 import errno
 import os
 import stat
@@ -232,24 +233,49 @@ class TransactionManager:
 
         return transactions
 
+    def _recovery_lock(self, transaction_id):
+        lock_path = self.backup_dir / (
+            f".{transaction_id}.recovery.lock"
+        )
+        self.backup_dir.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+", encoding="utf-8")
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        return handle
+
     def recover_incomplete_transactions(self):
         recovered = []
 
         for transaction in self.list_recoverable_transactions():
-            if transaction.status not in (
-                TransactionStatus.EXECUTING,
-                TransactionStatus.TESTING,
-            ):
-                continue
+            lock = self._recovery_lock(
+                transaction.transaction_id
+            )
 
             try:
-                self.rollback(transaction)
-            except Exception as error:
-                transaction.status = TransactionStatus.FAILED
-                transaction.metadata["recovery_error"] = str(error)
-                self.persist_manifest(transaction)
+                current = self.load_manifest(
+                    transaction.transaction_id
+                )
 
-            recovered.append(transaction)
+                if current.status not in (
+                    TransactionStatus.EXECUTING,
+                    TransactionStatus.TESTING,
+                ):
+                    continue
+
+                try:
+                    self.rollback(current)
+                except Exception as error:
+                    current.status = TransactionStatus.FAILED
+                    current.metadata["recovery_error"] = str(error)
+                    self.persist_manifest(current)
+
+                recovered.append(current)
+
+            finally:
+                fcntl.flock(
+                    lock.fileno(),
+                    fcntl.LOCK_UN,
+                )
+                lock.close()
 
         return recovered
 

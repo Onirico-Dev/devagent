@@ -2696,3 +2696,88 @@ def test_load_manifest_rejects_non_dict_repair_state(tmp_path):
 
     with pytest.raises(ValueError, match="repair_state"):
         manager.load_manifest("tx-invalid-repair-state")
+def test_recover_incomplete_transactions_is_serialized_across_processes(tmp_path):
+    import multiprocessing
+
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import (
+        Change,
+        ChangeType,
+        Transaction,
+        TransactionStatus,
+    )
+
+    target = tmp_path / "concurrent-recovery.py"
+    target.write_text(
+        'VALUE = "original"\\n',
+        encoding="utf-8",
+    )
+
+    manager = TransactionManager(root=tmp_path)
+    transaction = Transaction(
+        transaction_id="concurrent-recovery",
+        changes=[
+            Change(
+                change_type=ChangeType.MODIFY,
+                path="concurrent-recovery.py",
+                content='VALUE = "changed"\\n',
+                reason="Teste de recuperação concorrente",
+            )
+        ],
+    )
+    transaction = manager.begin(transaction)
+    manager.backup_file(transaction, "concurrent-recovery.py")
+    target.write_text(
+        'VALUE = "changed"\\n',
+        encoding="utf-8",
+    )
+    transaction.status = TransactionStatus.EXECUTING
+    manager.persist_manifest(transaction)
+
+    ctx = multiprocessing.get_context("fork")
+    barrier = ctx.Barrier(2)
+    results = ctx.Queue()
+
+    def recover_worker(root, sync_barrier, output):
+        worker_manager = TransactionManager(root)
+        original_list = worker_manager.list_recoverable_transactions
+
+        def synchronized_list():
+            transactions = original_list()
+            sync_barrier.wait()
+            return transactions
+
+        worker_manager.list_recoverable_transactions = synchronized_list
+        recovered = worker_manager.recover_incomplete_transactions()
+        output.put(
+            [item.transaction_id for item in recovered]
+        )
+
+    processes = [
+        ctx.Process(
+            target=recover_worker,
+            args=(tmp_path, barrier, results),
+        )
+        for _ in range(2)
+    ]
+
+    for process in processes:
+        process.start()
+
+    for process in processes:
+        process.join(timeout=10)
+        assert process.exitcode == 0
+
+    recovered_results = [
+        results.get(timeout=2)
+        for _ in processes
+    ]
+
+    assert sum(bool(result) for result in recovered_results) == 1
+    assert target.read_text(encoding="utf-8") == 'VALUE = "original"\\n'
+
+    final_transaction = manager.load_manifest(
+        "concurrent-recovery",
+    )
+    assert final_transaction.status == TransactionStatus.ROLLED_BACK
+    assert manager.list_recoverable_transactions() == []
