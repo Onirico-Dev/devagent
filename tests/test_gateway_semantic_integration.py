@@ -484,3 +484,77 @@ def test_gateway_rolls_back_after_persistent_declared_semantic_failure(
         commit_result.stdout.strip()
         == "test: persistent semantic failure fixture"
     )
+
+
+def test_gateway_serializes_concurrent_approve_for_same_task(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    import subprocess
+
+    from agent import DevAgent
+    from core.gateway import DevAgentGateway
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "devagent@test.local"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    gateway = DevAgentGateway(
+        DevAgent(tmp_path),
+        tmp_path,
+    )
+
+    task = gateway.create_task(
+        "crie concurrent_test.py contendo "
+        "def test_concurrent(): assert 2 + 2 == 4"
+    )
+
+    approval_id = task["approval_id"]
+
+    def approve():
+        try:
+            return ("ok", gateway.approve(approval_id))
+        except Exception as exc:
+            return ("error", type(exc).__name__, str(exc))
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _: approve(), range(2)))
+
+    successful = [
+        result for result in results
+        if result[0] == "ok"
+    ]
+    failed = [
+        result for result in results
+        if result[0] == "error"
+    ]
+
+    assert len(successful) == 1
+    assert len(failed) == 1
+    assert failed[0][1] in {
+        "ValueError",
+        "RuntimeError",
+    }
+
+    assert (tmp_path / "concurrent_test.py").read_text() == (
+        "def test_concurrent(): assert 2 + 2 == 4"
+    )
+
+    final_task = gateway.get_task(approval_id)
+    assert final_task["status"] == "committed"
