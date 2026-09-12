@@ -184,11 +184,35 @@ def test_autonomy_loop_real_gateway_creates_pending_proposal(tmp_path):
     from core.observation import Observation
     from core.observer import Observer
 
+    import subprocess
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "devagent@test.local"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
     agent = DevAgent(tmp_path)
     gateway = DevAgentGateway(agent, tmp_path)
     observer = Observer([
         Observation(
-            instruction="crie smoke_test.py contendo assert 2 + 2 == 4",
+            instruction="crie smoke_test.py contendo def test_smoke(): assert 2 + 2 == 4",
             metadata={"source": "integration"},
         )
     ])
@@ -206,10 +230,69 @@ def test_autonomy_loop_real_gateway_creates_pending_proposal(tmp_path):
     assert proposal.status == "pending"
     assert proposal.approval_id
     assert proposal.instruction == (
-        "crie smoke_test.py contendo assert 2 + 2 == 4"
+        "crie smoke_test.py contendo def test_smoke(): assert 2 + 2 == 4"
     )
 
     task = gateway.get_task(proposal.approval_id)
 
     assert task["status"] == "pending"
+    assert task["approval_id"] == proposal.approval_id
+
+def test_autonomy_loop_proposal_can_be_approved_through_real_gateway(tmp_path):
+    from agent import DevAgent
+    from core.gateway import DevAgentGateway
+    from core.observation import Observation
+    from core.observer import Observer
+
+    import subprocess
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "devagent@test.local"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    agent = DevAgent(tmp_path)
+    gateway = DevAgentGateway(agent, tmp_path)
+    observer = Observer([
+        Observation(
+            instruction="crie smoke_test.py contendo def test_smoke(): assert 2 + 2 == 4",
+            metadata={"source": "integration"},
+        )
+    ])
+    worker = Worker(gateway, observer)
+    loop = AutonomyLoop(worker)
+
+    result = loop.run_once()
+    proposal = result.proposals[0]
+
+    assert proposal.status == "pending"
+
+    approval_result = gateway.approve(proposal.approval_id)
+
+    assert approval_result["status"] == "committed"
+    assert (tmp_path / "smoke_test.py").exists()
+    assert (tmp_path / "smoke_test.py").read_text() == (
+        "def test_smoke(): assert 2 + 2 == 4"
+    )
+
+    task = gateway.get_task(proposal.approval_id)
+
+    assert task["status"] == "committed"
     assert task["approval_id"] == proposal.approval_id
