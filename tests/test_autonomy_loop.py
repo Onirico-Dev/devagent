@@ -184,7 +184,7 @@ def test_autonomy_loop_real_gateway_creates_pending_proposal(tmp_path):
     from core.observation import Observation
     from core.observer import Observer
 
-    
+
     subprocess.run(
         ["git", "init"],
         cwd=tmp_path,
