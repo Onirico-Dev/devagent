@@ -539,6 +539,48 @@ def test_rollback_removes_created_file(tmp_path):
     assert transaction.status == TransactionStatus.ROLLED_BACK
 
 
+
+def test_rollback_recovers_when_final_manifest_persist_fails(
+    tmp_path,
+    monkeypatch,
+):
+    manager, transaction = make_started_transaction(tmp_path)
+
+    source = tmp_path / "arquivo.py"
+    source.write_text("ORIGINAL\n", encoding="utf-8")
+
+    manager.backup_file(transaction, "arquivo.py")
+    source.write_text("ALTERADO\n", encoding="utf-8")
+
+    def fail_persist(_transaction):
+        raise OSError("simulated rollback persist failure")
+
+    monkeypatch.setattr(manager, "persist_manifest", fail_persist)
+
+    with pytest.raises(
+        OSError,
+        match="simulated rollback persist failure",
+    ):
+        manager.rollback(transaction)
+
+    assert source.read_text(encoding="utf-8") == "ORIGINAL\n"
+    assert transaction.status == TransactionStatus.ROLLED_BACK
+
+    persisted = manager.load_manifest(transaction.transaction_id)
+    assert persisted.status == TransactionStatus.EXECUTING
+
+    monkeypatch.undo()
+
+    recovered = manager.recover_incomplete_transactions()
+
+    assert len(recovered) == 1
+    assert recovered[0].status == TransactionStatus.ROLLED_BACK
+
+    persisted = manager.load_manifest(transaction.transaction_id)
+    assert persisted.status == TransactionStatus.ROLLED_BACK
+    assert source.read_text(encoding="utf-8") == "ORIGINAL\n"
+
+
 def test_rollback_ignores_missing_created_file(tmp_path):
     manager, transaction = make_started_transaction(tmp_path)
 
