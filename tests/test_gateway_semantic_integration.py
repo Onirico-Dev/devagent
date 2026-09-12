@@ -73,6 +73,99 @@ class FakeAgent:
         )
 
 
+
+def test_gateway_persists_rolled_back_status_after_multi_file_failure(tmp_path):
+    (tmp_path / "example.py").write_text(
+        'def hello():\n'
+        '    return "hello"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "version.py").write_text(
+        'def version():\n'
+        '    return "0.1"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "test_version.py").write_text(
+        'from version import version\n\n'
+        'def test_version():\n'
+        '    assert version() == "0.2"\n',
+        encoding="utf-8",
+    )
+
+    import subprocess
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "add", "."],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "test: initial fixture"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    gateway = DevAgentGateway(FakeAgent(), root=tmp_path)
+    gateway.repair_engine = FakeRepairEngine()
+
+    task = gateway.create_task("alterar example.py e version.py")
+    approval_id = task["approval_id"]
+
+    result = gateway.approve(approval_id)
+
+    assert result["status"] == "rolled_back"
+
+    assert (
+        (tmp_path / "example.py").read_text(encoding="utf-8")
+        == 'def hello():\n'
+        '    return "hello"\n'
+    )
+    assert (
+        (tmp_path / "version.py").read_text(encoding="utf-8")
+        == 'def version():\n'
+        '    return "0.1"\n'
+    )
+
+    persisted = gateway.get_task(approval_id)
+
+    assert persisted["status"] == "rolled_back"
+    assert persisted["approval_id"] == approval_id
+
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--", "example.py", "version.py"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    assert status == ""
+
 def test_gateway_rolls_back_multi_file_transaction_on_declared_semantic_failure(
     tmp_path,
 ):
