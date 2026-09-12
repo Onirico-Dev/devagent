@@ -1,4 +1,5 @@
 import copy
+import fcntl
 import json
 import os
 import tempfile
@@ -49,6 +50,14 @@ class Supervisor:
             self.storage_path
         )
         self._load()
+
+    def _process_lock(self):
+        lock_path = self.storage_path.with_name(
+            f".{self.storage_path.name}.lock"
+        )
+        handle = lock_path.open("a+", encoding="utf-8")
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        return handle
 
     def _now(self):
         return datetime.now(
@@ -208,22 +217,30 @@ class Supervisor:
             raise
 
     def request_approval(self, plan):
-        self._validate_approval_plan(plan)
+        process_lock = self._process_lock()
+        try:
+                    self._validate_approval_plan(plan)
 
-        with self._lock:
-            previous_pending = self.pending
-            self._load()
+                    with self._lock:
+                        previous_pending = self.pending
+                        self._load()
 
-            approval_id = self._next_approval_id()
-            request = self._build_approval_request(plan)
+                        approval_id = self._next_approval_id()
+                        request = self._build_approval_request(plan)
 
-            self._persist_approval_request(
-                approval_id,
-                request,
-                previous_pending,
+                        self._persist_approval_request(
+                            approval_id,
+                            request,
+                            previous_pending,
+                        )
+
+                        return approval_id
+        finally:
+            fcntl.flock(
+                process_lock.fileno(),
+                fcntl.LOCK_UN,
             )
-
-            return approval_id
+            process_lock.close()
     def prepare_approval(self, approval_id):
         request = self.pending.get(
             approval_id
@@ -244,85 +261,101 @@ class Supervisor:
         return copy.deepcopy(request)
 
     def approve(self, approval_id):
-        with self._lock:
-            previous_pending = self.pending
-            self._load()
+        process_lock = self._process_lock()
+        try:
+                    with self._lock:
+                        previous_pending = self.pending
+                        self._load()
 
-            request = self.pending.get(
-                approval_id
+                        request = self.pending.get(
+                            approval_id
+                        )
+
+                        if request is None:
+                            raise KeyError(
+                                "Tarefa não encontrada."
+                            )
+
+                        if request["status"] != (
+                            ApprovalStatus.PENDING.value
+                        ):
+                            raise ValueError(
+                                "Solicitação não está pendente."
+                            )
+
+                        updated_request = {
+                            **request,
+                            "status": ApprovalStatus.APPROVED.value,
+                            "updated_at": self._now(),
+                        }
+
+                        updated_pending = {
+                            **self.pending,
+                            approval_id: updated_request,
+                        }
+
+                        try:
+                            self.pending = updated_pending
+                            self._save()
+                        except Exception:
+                            self.pending = previous_pending
+                            raise
+
+                        return copy.deepcopy(updated_request)
+        finally:
+            fcntl.flock(
+                process_lock.fileno(),
+                fcntl.LOCK_UN,
             )
-
-            if request is None:
-                raise KeyError(
-                    "Tarefa não encontrada."
-                )
-
-            if request["status"] != (
-                ApprovalStatus.PENDING.value
-            ):
-                raise ValueError(
-                    "Solicitação não está pendente."
-                )
-
-            updated_request = {
-                **request,
-                "status": ApprovalStatus.APPROVED.value,
-                "updated_at": self._now(),
-            }
-
-            updated_pending = {
-                **self.pending,
-                approval_id: updated_request,
-            }
-
-            try:
-                self.pending = updated_pending
-                self._save()
-            except Exception:
-                self.pending = previous_pending
-                raise
-
-            return copy.deepcopy(updated_request)
+            process_lock.close()
     def reject(self, approval_id):
-        with self._lock:
-            previous_pending = self.pending
-            self._load()
+        process_lock = self._process_lock()
+        try:
+                    with self._lock:
+                        previous_pending = self.pending
+                        self._load()
 
-            request = self.pending.get(
-                approval_id
+                        request = self.pending.get(
+                            approval_id
+                        )
+
+                        if request is None:
+                            raise KeyError(
+                                "Solicitação não encontrada."
+                            )
+
+                        if request["status"] != (
+                            ApprovalStatus.PENDING.value
+                        ):
+                            raise ValueError(
+                                "Solicitação não está pendente."
+                            )
+
+                        updated_request = {
+                            **request,
+                            "status": ApprovalStatus.REJECTED.value,
+                            "updated_at": self._now(),
+                        }
+
+                        updated_pending = {
+                            **self.pending,
+                            approval_id: updated_request,
+                        }
+
+                        try:
+                            self.pending = updated_pending
+                            self._save()
+                        except Exception:
+                            self.pending = previous_pending
+                            raise
+
+                        return copy.deepcopy(updated_request)
+        finally:
+            fcntl.flock(
+                process_lock.fileno(),
+                fcntl.LOCK_UN,
             )
-
-            if request is None:
-                raise KeyError(
-                    "Solicitação não encontrada."
-                )
-
-            if request["status"] != (
-                ApprovalStatus.PENDING.value
-            ):
-                raise ValueError(
-                    "Solicitação não está pendente."
-                )
-
-            updated_request = {
-                **request,
-                "status": ApprovalStatus.REJECTED.value,
-                "updated_at": self._now(),
-            }
-
-            updated_pending = {
-                **self.pending,
-                approval_id: updated_request,
-            }
-
-            try:
-                self.pending = updated_pending
-                self._save()
-            except Exception:
-                self.pending = previous_pending
-                raise
-
-            return copy.deepcopy(updated_request)
+            process_lock.close()
     def get(self, approval_id):
         request = self.pending.get(
             approval_id

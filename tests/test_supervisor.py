@@ -810,3 +810,58 @@ def test_supervisor_write_pending_to_temporary_ignores_unlink_oserror(
     assert len(temporary_files) == 1
 
     original_unlink(temporary_files[0])
+import multiprocessing as mp
+
+
+def _request_approval_process(storage_path, index, queue):
+    try:
+        supervisor = Supervisor(storage_path)
+        approval_id = supervisor.request_approval(
+            {"index": index}
+        )
+        queue.put(("ok", approval_id))
+    except Exception as error:
+        queue.put(
+            (
+                "error",
+                type(error).__name__,
+                str(error),
+            )
+        )
+
+
+def test_request_approval_is_safe_across_processes(tmp_path):
+    storage_path = tmp_path / "approvals.json"
+    context = mp.get_context("spawn")
+    queue = context.Queue()
+
+    processes = [
+        context.Process(
+            target=_request_approval_process,
+            args=(storage_path, index, queue),
+        )
+        for index in range(20)
+    ]
+
+    for process in processes:
+        process.start()
+
+    for process in processes:
+        process.join()
+
+    results = [queue.get() for _ in processes]
+
+    assert all(result[0] == "ok" for result in results), results
+
+    approval_ids = [result[1] for result in results]
+
+    assert len(set(approval_ids)) == 20
+
+    supervisor = Supervisor(storage_path)
+    requests = supervisor.list_all()
+
+    assert len(requests) == 20
+    assert {
+        request["plan"]["index"]
+        for request in requests.values()
+    } == set(range(20))
