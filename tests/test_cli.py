@@ -378,3 +378,43 @@ def test_main_observe_and_autonomy_missing_arguments(
     assert "Nenhuma nova proposta." in output
     assert "Rodada: 1" in output
     assert "Propostas: 0" in output
+
+def test_read_command_continuation_keyboard_interrupt(monkeypatch, capsys):
+    inputs = iter(["linha:", KeyboardInterrupt()])
+
+    def fake_input(_):
+        value = next(inputs)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    assert cli._read_command() == "linha:"
+    assert capsys.readouterr().out == "\n"
+
+
+def test_read_command_continuation_eof_error(monkeypatch, capsys):
+    inputs = iter(["linha:", EOFError()])
+
+    def fake_input(_):
+        value = next(inputs)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    assert cli._read_command() == "linha:"
+    assert capsys.readouterr().out == "\n"
+
+
+def test_read_command_empty_continuation(monkeypatch):
+    inputs = iter(["linha:", ""])
+
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda _: next(inputs),
+    )
+
+    assert cli._read_command() == "linha:"
