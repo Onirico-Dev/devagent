@@ -937,3 +937,120 @@ def test_gateway_serializes_concurrent_approve_for_same_task(tmp_path):
 
     final_task = gateway.get_task(approval_id)
     assert final_task["status"] == "committed"
+
+def test_gateway_recovers_commit_failure_after_restart(tmp_path, monkeypatch):
+    import pytest
+    import subprocess
+
+    target = tmp_path / "commit-restart.py"
+    target.write_text(
+        'VALUE = "original"\n',
+        encoding="utf-8",
+    )
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "add", "."],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "test: initial fixture"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    from core.engine.repair_cycle_state import RepairCycleState
+    from core.gateway import DevAgentGateway
+    from core.schemas.models import Change, ChangeType, Transaction
+    from core.gateway import CommitTransactionError
+
+    gateway = DevAgentGateway(None, root=tmp_path)
+
+    transaction = Transaction(
+        transaction_id="commit-restart-recovery",
+        changes=[
+            Change(
+                change_type=ChangeType.MODIFY,
+                path="commit-restart.py",
+                content='VALUE = "changed"\n',
+                reason="Teste de recovery após falha de commit",
+            )
+        ],
+    )
+
+    transaction = gateway.transactions.begin(transaction)
+
+    for change in transaction.changes:
+        gateway.security.validate_path(change.path)
+        gateway.transactions.backup_file(transaction, change.path)
+
+    gateway.executor.execute(transaction)
+
+    assert target.read_text(encoding="utf-8") == 'VALUE = "changed"\n'
+    assert transaction.status.value == "executing"
+
+    repair_state = RepairCycleState(
+        transaction_id=transaction.transaction_id,
+    )
+
+    def failing_commit(*args, **kwargs):
+        raise CommitTransactionError(
+            "COMMIT_FAILURE_RESTART_TEST",
+            result={
+                "status": "failed",
+                "message": "COMMIT_FAILURE_RESTART_TEST",
+            },
+        )
+
+    monkeypatch.setattr(
+        gateway.git,
+        "commit_transaction",
+        failing_commit,
+    )
+
+    with pytest.raises(CommitTransactionError, match="COMMIT_FAILURE_RESTART_TEST"):
+        gateway.transaction_flow.commit_transaction(
+            approval_id="commit-restart-approval",
+            instruction="alterar commit-restart.py",
+            transaction=transaction,
+            test_result={"success": True},
+            repair_state=repair_state,
+        )
+
+    assert transaction.status.value == "executing"
+    assert target.read_text(encoding="utf-8") == 'VALUE = "changed"\n'
+
+    restarted_gateway = DevAgentGateway(None, root=tmp_path)
+
+    assert target.read_text(encoding="utf-8") == 'VALUE = "original"\n'
+
+    recovered = restarted_gateway.transactions.load_manifest(
+        "commit-restart-recovery",
+    )
+    assert recovered.status.value == "rolled_back"
+    assert restarted_gateway.transactions.list_recoverable_transactions() == []
