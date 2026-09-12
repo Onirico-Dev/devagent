@@ -177,3 +177,39 @@ def test_loop_iterations_are_runtime_state_only(tmp_path):
     assert second_loop.iterations == 0
     second_loop.run_once()
     assert second_loop.iterations == 1
+
+def test_autonomy_loop_real_gateway_creates_pending_proposal(tmp_path):
+    from agent import DevAgent
+    from core.gateway import DevAgentGateway
+    from core.observation import Observation
+    from core.observer import Observer
+
+    agent = DevAgent(tmp_path)
+    gateway = DevAgentGateway(agent, tmp_path)
+    observer = Observer([
+        Observation(
+            instruction="crie smoke_test.py contendo assert 2 + 2 == 4",
+            metadata={"source": "integration"},
+        )
+    ])
+    worker = Worker(gateway, observer)
+    loop = AutonomyLoop(worker)
+
+    result = loop.run_once()
+
+    assert result.stopped is False
+    assert result.metadata["iterations"] == 1
+    assert result.metadata["proposal_count"] == 1
+
+    proposal = result.proposals[0]
+
+    assert proposal.status == "pending"
+    assert proposal.approval_id
+    assert proposal.instruction == (
+        "crie smoke_test.py contendo assert 2 + 2 == 4"
+    )
+
+    task = gateway.get_task(proposal.approval_id)
+
+    assert task["status"] == "pending"
+    assert task["approval_id"] == proposal.approval_id
