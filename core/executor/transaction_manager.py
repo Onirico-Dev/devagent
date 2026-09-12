@@ -403,7 +403,10 @@ class TransactionManager:
 
 
     def begin(self, transaction):
-        if not getattr(transaction, "transaction_id", None) or transaction.transaction_id == "unused":
+        if (
+            not getattr(transaction, "transaction_id", None)
+            or transaction.transaction_id == "unused"
+        ):
             transaction.transaction_id = str(uuid.uuid4())
 
         transaction.status = TransactionStatus.EXECUTING
@@ -435,7 +438,16 @@ class TransactionManager:
         backup = self.backup_dir / transaction.transaction_id
         transaction.metadata["backup"] = str(backup)
         transaction.metadata["created"] = []
-        self.persist_manifest(transaction)
+
+        try:
+            self.persist_manifest(transaction)
+        except Exception:
+            try:
+                backup.rmdir()
+            except OSError:
+                pass
+            raise
+
         return transaction
 
     @staticmethod

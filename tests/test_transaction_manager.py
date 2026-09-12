@@ -226,6 +226,26 @@ def test_begin_creates_transaction_backup_directory(tmp_path):
     assert transaction.metadata["created"] == []
 
 
+def test_begin_cleans_transaction_directory_when_manifest_persist_fails(
+    tmp_path,
+    monkeypatch,
+):
+    manager = TransactionManager(tmp_path)
+    transaction = make_transaction(tmp_path)
+
+    def fail_persist(_transaction):
+        raise OSError("simulated manifest persist failure")
+
+    monkeypatch.setattr(manager, "persist_manifest", fail_persist)
+
+    with pytest.raises(OSError, match="simulated manifest persist failure"):
+        manager.begin(transaction)
+
+    assert not (
+        manager.backup_dir / transaction.transaction_id
+    ).exists()
+
+
 def test_backup_file_returns_for_missing_file(tmp_path):
     manager, transaction = make_started_transaction(tmp_path)
 
