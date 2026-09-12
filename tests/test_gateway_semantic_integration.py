@@ -166,6 +166,104 @@ def test_gateway_persists_rolled_back_status_after_multi_file_failure(tmp_path):
 
     assert status == ""
 
+
+def test_gateway_recovers_incomplete_transaction_after_restart(tmp_path):
+    import subprocess
+
+    target = tmp_path / "example.py"
+    target.write_text(
+        'def hello():\n'
+        '    return "hello"\n',
+        encoding="utf-8",
+    )
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "add", "."],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "test: initial fixture"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    from core.schemas.models import Change, ChangeType, Transaction
+
+    gateway = DevAgentGateway(None, root=tmp_path)
+
+    transaction = Transaction(
+        transaction_id="restart-recovery",
+        changes=[
+            Change(
+                change_type=ChangeType.MODIFY,
+                path="example.py",
+                content=(
+                    'def hello():\n'
+                    '    return "changed"\n'
+                ),
+                reason="Teste de recovery após restart",
+            )
+        ],
+    )
+
+    transaction = gateway.transactions.begin(transaction)
+    for change in transaction.changes:
+        gateway.security.validate_path(change.path)
+        gateway.transactions.backup_file(
+            transaction,
+            change.path,
+        )
+
+    gateway.executor.execute(transaction)
+
+    assert transaction.status.value == "executing"
+    assert target.read_text(encoding="utf-8") == (
+        'def hello():\n'
+        '    return "changed"\n'
+    )
+
+    restarted_gateway = DevAgentGateway(None, root=tmp_path)
+
+    assert target.read_text(encoding="utf-8") == (
+        'def hello():\n'
+        '    return "hello"\n'
+    )
+
+    recovered = restarted_gateway.transactions.load_manifest(
+        "restart-recovery"
+    )
+
+    assert recovered.status.value == "rolled_back"
+    assert restarted_gateway.transactions.list_recoverable_transactions() == []
+
+
+
 def test_gateway_rolls_back_multi_file_transaction_on_declared_semantic_failure(
     tmp_path,
 ):

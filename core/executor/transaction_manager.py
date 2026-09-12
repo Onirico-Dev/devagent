@@ -220,9 +220,13 @@ class TransactionManager:
                 continue
 
             try:
-                transactions.append(
-                    self.load_manifest(transaction_id)
-                )
+                transaction = self.load_manifest(transaction_id)
+                if transaction.status not in (
+                    TransactionStatus.EXECUTING,
+                    TransactionStatus.TESTING,
+                ):
+                    continue
+                transactions.append(transaction)
             except ValueError:
                 continue
 
