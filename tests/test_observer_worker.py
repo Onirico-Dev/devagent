@@ -568,3 +568,81 @@ def test_worker_load_state_rejects_invalid_metadata():
             "processed": [{"instruction": "teste", "metadata": []}],
             "processed_ids": [],
         })
+
+def test_worker_persists_processed_observation_across_restart(tmp_path):
+    from agent import DevAgent
+    from core.gateway import DevAgentGateway
+    from core.observation import Observation
+    from core.observation_store import ObservationStore
+    from core.observer import Observer
+    from core.worker import Worker
+    from core.worker_state_store import WorkerStateStore
+
+    import subprocess
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "devagent@test.local"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    observation_store = ObservationStore(
+        tmp_path / "observations.json"
+    )
+    worker_state_store = WorkerStateStore(
+        tmp_path / "worker.json"
+    )
+
+    observation = Observation(
+        instruction=(
+            "crie restart_test.py contendo "
+            "def test_restart(): assert 2 + 2 == 4"
+        ),
+        metadata={"source": "restart"},
+    )
+
+    observer = Observer(store=observation_store)
+    observer.add(observation)
+
+    agent = DevAgent(tmp_path)
+    gateway = DevAgentGateway(agent, tmp_path)
+
+    worker = Worker(
+        gateway,
+        observer,
+        store=worker_state_store,
+    )
+
+    first = worker.run_once()
+
+    assert len(first) == 1
+    assert first[0].status == "pending"
+
+    restarted_observer = Observer(store=observation_store)
+    restarted_worker = Worker(
+        gateway,
+        restarted_observer,
+        store=worker_state_store,
+    )
+
+    second = restarted_worker.run_once()
+
+    assert second == []
+    assert len(restarted_worker.processed_ids) == 1
+    assert first[0].approval_id in restarted_worker.processed_ids
