@@ -1368,3 +1368,238 @@ def test_gateway_recovers_after_crash_after_history_executing_before_execution(
     recovered_history = restarted.history.get(approval_id)
     assert recovered_history is not None
     assert recovered_history["status"] == TaskHistoryStatus.ROLLED_BACK.value
+
+
+def test_gateway_recovers_testing_transaction_after_tests_run_crash(
+    tmp_path,
+    monkeypatch,
+):
+    import subprocess
+
+    from core.gateway import DevAgentGateway
+    from core.memory.task_history import TaskHistoryStatus
+
+    (tmp_path / "example.py").write_text(
+        'def hello():\n'
+        '    return "hello"\n',
+        encoding="utf-8",
+    )
+
+    target = tmp_path / "version.py"
+    target.write_text(
+        "old\n",
+        encoding="utf-8",
+    )
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "add", "."],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "test: initial fixture"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+
+    gateway = DevAgentGateway(FakeAgent(), root=tmp_path)
+
+    task = gateway.create_task("alterar version.py")
+    approval_id = task["approval_id"]
+
+    def crash_during_tests(paths):
+        raise SystemExit("CRASH_DURING_TESTS")
+
+    monkeypatch.setattr(
+        gateway.tests,
+        "run",
+        crash_during_tests,
+    )
+
+    with pytest.raises(
+        SystemExit,
+        match="CRASH_DURING_TESTS",
+    ):
+        gateway.approve(approval_id)
+
+    history = gateway.history.get(approval_id)
+    assert history["status"] == TaskHistoryStatus.TESTING.value
+    assert history["transaction_id"]
+
+    recoverable = (
+        gateway.transactions.list_recoverable_transactions()
+    )
+    assert len(recoverable) == 1
+
+    restarted_gateway = DevAgentGateway(
+        FakeAgent(),
+        root=tmp_path,
+    )
+
+    assert (
+        (tmp_path / "version.py").read_text(
+            encoding="utf-8",
+        )
+        == "old\n"
+    )
+
+    assert (
+        restarted_gateway.transactions
+        .list_recoverable_transactions()
+        == []
+    )
+
+    recovered_history = (
+        restarted_gateway.history.get(approval_id)
+    )
+    assert (
+        recovered_history["status"]
+        == TaskHistoryStatus.ROLLED_BACK.value
+    )
+
+def test_gateway_recovers_after_testing_persist_before_history_update_crash(
+    tmp_path,
+    monkeypatch,
+):
+    import subprocess
+
+    from core.gateway import DevAgentGateway
+    from core.schemas.models import TransactionStatus
+    from core.memory.task_history import TaskHistoryStatus
+
+    (tmp_path / "example.py").write_text(
+        'def hello():\n'
+        '    return "hello"\n',
+        encoding="utf-8",
+    )
+
+    target = tmp_path / "version.py"
+    target.write_text(
+        "old\\n",
+        encoding="utf-8",
+    )
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "add", "."],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "test: initial fixture"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+
+    gateway = DevAgentGateway(FakeAgent(), root=tmp_path)
+
+    task = gateway.create_task(
+        "alterar version.py"
+    )
+    approval_id = task["approval_id"]
+
+    original_history_update = (
+        gateway.transaction_flow._history_update
+    )
+
+    def crash_on_testing(
+        approval,
+        *,
+        status,
+        transaction_id,
+        **kwargs,
+    ):
+        if status == TaskHistoryStatus.TESTING.value:
+            raise SystemExit("CRASH_AFTER_TESTING_PERSIST")
+        return original_history_update(
+            approval,
+            status=status,
+            transaction_id=transaction_id,
+            **kwargs,
+        )
+
+
+    monkeypatch.setattr(
+        gateway.transaction_flow,
+        "_history_update",
+        crash_on_testing,
+    )
+
+    with pytest.raises(
+        SystemExit,
+        match="CRASH_AFTER_TESTING_PERSIST",
+    ):
+        gateway.approve(approval_id)
+
+    task = gateway.history.get(approval_id)
+    assert task is not None
+    assert task["status"] == TaskHistoryStatus.EXECUTING.value
+    assert task["transaction_id"]
+
+    recoverable = (
+        gateway.transactions.list_recoverable_transactions()
+    )
+    assert len(recoverable) == 1
+    assert recoverable[0].status == TransactionStatus.TESTING
+
+    restarted_gateway = DevAgentGateway(
+        FakeAgent(),
+        root=tmp_path,
+    )
+
+    assert target.read_text(
+        encoding="utf-8"
+    ) == "old\\n"
+
+    assert (
+        restarted_gateway.transactions.list_recoverable_transactions()
+        == []
+    )
+
+    recovered_task = restarted_gateway.history.get(
+        approval_id
+    )
+    assert recovered_task is not None
+    assert (
+        recovered_task["status"]
+        == TaskHistoryStatus.ROLLED_BACK.value
+    )

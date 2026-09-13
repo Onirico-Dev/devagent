@@ -157,7 +157,9 @@ class TransactionFlow:
         )
 
         repair_state.mark_testing()
+        transaction.status = TransactionStatus.TESTING
         repair_state.persist(transaction)
+        self.transactions.persist_manifest(transaction)
 
         self._history_update(
             approval_id,
