@@ -1,3 +1,4 @@
+import pytest
 from core.gateway import DevAgentGateway
 from core.schemas.models import Change, ChangeType, Transaction
 
@@ -1169,3 +1170,63 @@ def test_gateway_recovers_testing_transaction_after_restart(tmp_path):
     history_task = restarted_gateway.history.get(approval_id)
     assert history_task["status"] == TaskHistoryStatus.ROLLED_BACK.value
     assert history_task["transaction_id"] == transaction.transaction_id
+
+def test_gateway_recovers_transaction_started_before_supervisor_approval_after_restart(tmp_path, monkeypatch):
+    import subprocess
+
+    target = tmp_path / "example.py"
+    target.write_text("old\\n", encoding="utf-8")
+
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "test: initial fixture"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+
+    gateway = DevAgentGateway(FakeAgent(), root=tmp_path)
+
+    task = gateway.create_task("alterar example.py")
+    approval_id = task["approval_id"]
+
+    original_approve = gateway.supervisor.approve
+
+    def crash_before_approval(*args, **kwargs):
+        raise RuntimeError("CRASH_BEFORE_APPROVAL")
+
+    monkeypatch.setattr(
+        gateway.supervisor,
+        "approve",
+        crash_before_approval,
+    )
+
+    with pytest.raises(RuntimeError, match="CRASH_BEFORE_APPROVAL"):
+        gateway.approve(approval_id)
+
+    assert target.read_text(encoding="utf-8") == "old\\n"
+
+    recoverable = gateway.transactions.list_recoverable_transactions()
+    assert len(recoverable) == 1
+
+    restarted = DevAgentGateway(FakeAgent(), root=tmp_path)
+
+    assert target.read_text(encoding="utf-8") == "old\\n"
+    assert restarted.transactions.list_recoverable_transactions() == []
+
+    approval_after_restart = restarted.supervisor.get(approval_id)
+    assert approval_after_restart is not None
+    assert approval_after_restart["status"] != "approved"
