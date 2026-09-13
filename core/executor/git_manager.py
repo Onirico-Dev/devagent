@@ -329,6 +329,56 @@ class GitManager:
             "message": message,
         }
 
+    def find_transaction_commit(self, transaction_id):
+        if not isinstance(transaction_id, str):
+            raise ValueError("transaction_id deve ser uma string.")
+
+        transaction_id = transaction_id.strip()
+
+        if not transaction_id:
+            raise ValueError("transaction_id não pode ser vazio.")
+
+        self._ensure_git_repository()
+
+        result = subprocess.run(
+            [
+                "git",
+                "log",
+                "--all",
+                "--fixed-strings",
+                "--grep",
+                f"DevAgent: transação {transaction_id} —",
+                "--format=%H%x00%s",
+            ],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        prefix = (
+            f"DevAgent: transação {transaction_id} —"
+        )
+
+        for line in result.stdout.splitlines():
+            if not line.strip():
+                continue
+
+            commit_hash, separator, subject = line.partition("\x00")
+
+            if (
+                separator
+                and subject.startswith(prefix)
+            ):
+                return {
+                    "status": GitStatus.COMMITTED.value,
+                    "transaction_id": transaction_id,
+                    "commit_hash": commit_hash,
+                    "message": subject,
+                }
+
+        return None
+
     def commit_transaction(
         self,
         transaction_id,

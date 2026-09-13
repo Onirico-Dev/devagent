@@ -242,7 +242,7 @@ class TransactionManager:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         return handle
 
-    def recover_incomplete_transactions(self):
+    def recover_incomplete_transactions(self, commit_detector=None):
         recovered = []
 
         for transaction in self.list_recoverable_transactions():
@@ -260,6 +260,18 @@ class TransactionManager:
                     TransactionStatus.TESTING,
                 ):
                     continue
+
+                if commit_detector is not None:
+                    commit_result = commit_detector(current.transaction_id)
+
+                    if commit_result is not None:
+                        current.status = TransactionStatus.COMMITTED
+                        current.metadata["recovery_git"] = dict(
+                            commit_result
+                        )
+                        self.persist_manifest(current)
+                        recovered.append(current)
+                        continue
 
                 try:
                     self.rollback(current)

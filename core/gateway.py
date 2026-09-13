@@ -83,7 +83,9 @@ class DevAgentGateway:
             )
         )
         self._reconcile_recovered_transactions(
-            self.transactions.recover_incomplete_transactions()
+            self.transactions.recover_incomplete_transactions(
+                commit_detector=self.git.find_transaction_commit
+            )
         )
 
         self.repair_flow = RepairFlow(
@@ -120,6 +122,7 @@ class DevAgentGateway:
             status = getattr(transaction.status, "value", transaction.status)
 
             if status not in {
+                TaskHistoryStatus.COMMITTED.value,
                 TaskHistoryStatus.ROLLED_BACK.value,
                 TaskHistoryStatus.FAILED.value,
             }:

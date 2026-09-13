@@ -1370,6 +1370,151 @@ def test_gateway_recovers_after_crash_after_history_executing_before_execution(
     assert recovered_history["status"] == TaskHistoryStatus.ROLLED_BACK.value
 
 
+
+def test_gateway_handles_crash_after_git_commit_before_final_persistence(
+    tmp_path,
+    monkeypatch,
+):
+    import subprocess
+
+    from core.gateway import DevAgentGateway
+    from core.memory.task_history import TaskHistoryStatus
+
+    (tmp_path / "example.py").write_text(
+        'def hello():\n'
+        '    return "hello"\n',
+        encoding="utf-8",
+    )
+
+    target = tmp_path / "version.py"
+    target.write_text(
+        "old\n",
+        encoding="utf-8",
+    )
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "add", "."],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "test: initial fixture"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+
+    gateway = DevAgentGateway(FakeAgent(), root=tmp_path)
+    monkeypatch.setattr(
+        gateway.tests,
+        "run_tests",
+        lambda tests: {
+            "success": True,
+            "returncode": 0,
+            "stdout": "",
+            "stderr": "",
+        },
+    )
+
+    task = gateway.create_task("alterar version.py")
+    approval_id = task["approval_id"]
+
+    original_commit = gateway.git.commit_transaction
+
+    def commit_then_crash(*args, **kwargs):
+        result = original_commit(*args, **kwargs)
+        raise SystemExit("CRASH_AFTER_GIT_COMMIT")
+
+    monkeypatch.setattr(
+        gateway.git,
+        "commit_transaction",
+        commit_then_crash,
+    )
+
+    with pytest.raises(
+        SystemExit,
+        match="CRASH_AFTER_GIT_COMMIT",
+    ):
+        gateway.approve(approval_id)
+
+    assert (
+        target.read_text(encoding="utf-8")
+        != "old\n"
+    )
+
+    assert (
+        gateway.history.get(approval_id)["status"]
+        == TaskHistoryStatus.TESTING.value
+    )
+
+    restarted_gateway = DevAgentGateway(
+        FakeAgent(),
+        root=tmp_path,
+    )
+
+    assert (
+        target.read_text(encoding="utf-8")
+        != "old\n"
+    )
+
+    import subprocess
+
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    log = subprocess.run(
+        ["git", "log", "-1", "--pretty=%s"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    print(f"POST_RECOVERY_HEAD={head}")
+    print(f"POST_RECOVERY_LOG={log}")
+    print(f"POST_RECOVERY_STATUS={status!r}")
+
+    recovered_history = (
+        restarted_gateway.history.get(approval_id)
+    )
+    assert recovered_history is not None
+    assert (
+        recovered_history["status"]
+        == TaskHistoryStatus.COMMITTED.value
+    )
+
 def test_gateway_recovers_testing_transaction_after_tests_run_crash(
     tmp_path,
     monkeypatch,

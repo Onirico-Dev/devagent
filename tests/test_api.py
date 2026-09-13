@@ -4718,7 +4718,7 @@ def test_gateway_recovers_incomplete_transactions_on_startup(tmp_path, monkeypat
     calls = []
     original = gateway_module.TransactionManager.recover_incomplete_transactions
 
-    def track_recovery(self):
+    def track_recovery(self, commit_detector=None):
         calls.append(self.root)
         return []
 
