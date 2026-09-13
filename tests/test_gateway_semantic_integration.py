@@ -1306,3 +1306,65 @@ def test_gateway_recovers_after_history_update_crash_after_supervisor_approval(
     history_task = restarted.history.get(approval_id)
     assert history_task is not None
     assert history_task["status"] == TaskHistoryStatus.ROLLED_BACK.value
+
+def test_gateway_recovers_after_crash_after_history_executing_before_execution(
+    tmp_path,
+    monkeypatch,
+):
+    import subprocess
+
+    target = tmp_path / "example.py"
+    target.write_text("old\n", encoding="utf-8")
+
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "test: initial fixture"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+
+    gateway = DevAgentGateway(FakeAgent(), root=tmp_path)
+    task = gateway.create_task("alterar example.py")
+    approval_id = task["approval_id"]
+
+    def crash_before_execution(transaction):
+        raise SystemExit("CRASH_BEFORE_EXECUTION")
+
+    monkeypatch.setattr(
+        gateway.executor,
+        "execute",
+        crash_before_execution,
+    )
+
+    with pytest.raises(SystemExit, match="CRASH_BEFORE_EXECUTION"):
+        gateway.approve(approval_id)
+
+    history_task = gateway.history.get(approval_id)
+    assert history_task is not None
+    assert history_task["status"] == TaskHistoryStatus.EXECUTING.value
+    assert history_task["transaction_id"] is not None
+
+    assert len(gateway.transactions.list_recoverable_transactions()) == 1
+
+    restarted = DevAgentGateway(FakeAgent(), root=tmp_path)
+
+    assert target.read_text(encoding="utf-8") == "old\n"
+    assert restarted.transactions.list_recoverable_transactions() == []
+
+    recovered_history = restarted.history.get(approval_id)
+    assert recovered_history is not None
+    assert recovered_history["status"] == TaskHistoryStatus.ROLLED_BACK.value
