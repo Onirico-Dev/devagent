@@ -117,24 +117,33 @@ class DevAgentGateway:
     # ------------------------------------------------------------------
     def _reconcile_recovered_transactions(self, transactions):
         for transaction in transactions:
-            task = next(
-                (
-                    item
-                    for item in self.history.list_all()
-                    if item.get("transaction_id")
-                    == transaction.transaction_id
-                ),
-                None,
-            )
-            if task is None:
-                continue
-
             status = getattr(transaction.status, "value", transaction.status)
 
             if status not in {
                 TaskHistoryStatus.ROLLED_BACK.value,
                 TaskHistoryStatus.FAILED.value,
             }:
+                continue
+
+            approval_id = transaction.metadata.get("approval_id")
+
+            task = None
+
+            if approval_id:
+                task = self.history.get(approval_id)
+
+            if task is None:
+                task = next(
+                    (
+                        item
+                        for item in self.history.list_all()
+                        if item.get("transaction_id")
+                        == transaction.transaction_id
+                    ),
+                    None,
+                )
+
+            if task is None:
                 continue
 
             self.history.update(

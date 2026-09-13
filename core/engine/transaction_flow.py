@@ -92,6 +92,7 @@ class TransactionFlow:
         transaction = self._build_transaction(
             request["plan"]
         )
+        transaction.metadata["approval_id"] = approval_id
 
         transaction = self.transactions.begin(
             transaction

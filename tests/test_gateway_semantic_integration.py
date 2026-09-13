@@ -1,3 +1,4 @@
+from core.memory.task_history import TaskHistoryStatus
 import pytest
 from core.gateway import DevAgentGateway
 from core.schemas.models import Change, ChangeType, Transaction
@@ -1230,3 +1231,78 @@ def test_gateway_recovers_transaction_started_before_supervisor_approval_after_r
     approval_after_restart = restarted.supervisor.get(approval_id)
     assert approval_after_restart is not None
     assert approval_after_restart["status"] != "approved"
+
+
+def test_gateway_recovers_after_history_update_crash_after_supervisor_approval(
+    tmp_path,
+    monkeypatch,
+):
+    import subprocess
+
+    target = tmp_path / "example.py"
+    target.write_text("old\n", encoding="utf-8")
+
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "test: initial fixture"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+
+    gateway = DevAgentGateway(FakeAgent(), root=tmp_path)
+    task = gateway.create_task("alterar example.py")
+    approval_id = task["approval_id"]
+
+    original_history_update = gateway.transaction_flow._history_update
+
+    def crash_on_executing(approval_id_arg, status, transaction_id=None, **kwargs):
+        if status == TaskHistoryStatus.EXECUTING.value:
+            raise RuntimeError("CRASH_AFTER_APPROVAL")
+        return original_history_update(
+            approval_id_arg,
+            status=status,
+            transaction_id=transaction_id,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(
+        gateway.transaction_flow,
+        "_history_update",
+        crash_on_executing,
+    )
+
+    with pytest.raises(RuntimeError, match="CRASH_AFTER_APPROVAL"):
+        gateway.approve(approval_id)
+
+    approval = gateway.supervisor.get(approval_id)
+    assert approval["status"] == "approved"
+
+    recoverable = gateway.transactions.list_recoverable_transactions()
+    assert len(recoverable) == 1
+
+    restarted = DevAgentGateway(FakeAgent(), root=tmp_path)
+
+    assert target.read_text(encoding="utf-8") == "old\n"
+    assert restarted.transactions.list_recoverable_transactions() == []
+
+    recovered_approval = restarted.supervisor.get(approval_id)
+    assert recovered_approval is not None
+    assert recovered_approval["status"] == "approved"
+
+    history_task = restarted.history.get(approval_id)
+    assert history_task is not None
+    assert history_task["status"] == TaskHistoryStatus.ROLLED_BACK.value
