@@ -769,9 +769,9 @@ def test_gateway_rolls_back_after_persistent_declared_semantic_failure(
 
 
 def test_gateway_rolls_back_real_executor_failure_on_second_change(tmp_path):
+    from agent import DevAgent
     import subprocess
 
-    from agent import DevAgent
     from core.gateway import DevAgentGateway
 
     example = tmp_path / "example.py"
@@ -866,6 +866,137 @@ def test_gateway_rolls_back_real_executor_failure_on_second_change(tmp_path):
     ).stdout
     assert status == ""
 
+
+def test_gateway_recovers_after_crash_during_repair_execution(tmp_path):
+    import subprocess
+
+    from agent import DevAgent
+    from core.gateway import DevAgentGateway
+
+    example = tmp_path / "example.py"
+    version = tmp_path / "version.py"
+    test_version = tmp_path / "test_version.py"
+
+    original_example = (
+        'def hello():\n'
+        '    return "hello"\n'
+    )
+    original_version = (
+        'def version():\n'
+        '    return "0.1"\n'
+    )
+
+    example.write_text(original_example, encoding="utf-8")
+    version.write_text(original_version, encoding="utf-8")
+    test_version.write_text(
+        'from version import version\n\n'
+        'def test_version():\n'
+        '    assert version() == "0.2"\n',
+        encoding="utf-8",
+    )
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "add", "."],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "test: repair crash fixture"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    class RepairingFakeEngine:
+        def analyze_failure(
+            self,
+            instruction,
+            error,
+            test_output,
+        ):
+            return {
+                "action": "modify",
+                "risk": "baixo",
+                "path": "version.py",
+                "content": (
+                    'def version():\n'
+                    '    return "0.2"\n'
+                ),
+                "diagnosis": "A versão falhou no teste semântico.",
+                "correction": "Atualizar version.py para retornar 0.2.",
+            }
+
+    gateway = DevAgentGateway(
+        FakeAgent(),
+        root=tmp_path,
+    )
+    gateway.repair_engine = RepairingFakeEngine()
+
+    original_execute_change = gateway.executor.execute_change
+    calls = []
+
+    def crash_after_repair(change):
+        calls.append(change.path)
+        original_execute_change(change)
+        if len(calls) == 3:
+            raise SystemExit("CRASH_DURING_REPAIR")
+
+    gateway.executor.execute_change = crash_after_repair
+
+    task = gateway.create_task(
+        "plan alterar example.py e version.py"
+    )
+    approval_id = task["approval_id"]
+
+    try:
+        gateway.approve(approval_id)
+    except SystemExit as exc:
+        assert str(exc) == "CRASH_DURING_REPAIR"
+    else:
+        raise AssertionError("O crash durante o reparo deveria interromper o processo.")
+
+    assert version.read_text(encoding="utf-8") == (
+        'def version():\n'
+        '    return "0.2"\n'
+    )
+
+    restarted_gateway = DevAgentGateway(
+        DevAgent(tmp_path),
+        root=tmp_path,
+    )
+
+    assert example.read_text(encoding="utf-8") == original_example
+    assert version.read_text(encoding="utf-8") == original_version
+
+    persisted = restarted_gateway.get_task(approval_id)
+    assert persisted["status"] == "rolled_back"
+    assert persisted["approval_id"] == approval_id
+
+    assert restarted_gateway.transactions.list_recoverable_transactions() == []
 
 def test_gateway_serializes_concurrent_approve_for_same_task(tmp_path):
     from concurrent.futures import ThreadPoolExecutor
