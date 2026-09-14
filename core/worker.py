@@ -113,7 +113,13 @@ class Worker:
             instruction=instruction,
             metadata=dict(observation.metadata),
         )
-        self._persist_state()
+        try:
+            self._persist_state()
+        except Exception:
+            self._processed.discard(key)
+            self._processed_ids.discard(approval_id)
+            self._processed_observations.pop(key, None)
+            raise
 
         return Proposal(
             instruction=instruction,

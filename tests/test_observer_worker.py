@@ -417,6 +417,37 @@ def test_worker_restores_failed_observation_as_retryable(tmp_path):
     }
 
 
+def test_worker_retries_observation_when_state_persistence_fails(monkeypatch):
+    gateway = FakeGateway()
+    observer = Observer(
+        [Observation("persistir com falha", {"source": "test"})]
+    )
+    worker = Worker(gateway, observer)
+
+    calls = {"count": 0}
+
+    def fail_persist():
+        calls["count"] += 1
+        raise OSError("falha ao persistir estado")
+
+    monkeypatch.setattr(worker, "_persist_state", fail_persist)
+
+    first = worker.run_once()
+    second = worker.run_once()
+
+    assert first == []
+    assert second == []
+    assert calls["count"] == 2
+    assert len(gateway.calls) == 2
+    assert worker.processed_ids == set()
+    assert worker.errors == [
+        {
+            "instruction": "persistir com falha",
+            "error": "falha ao persistir estado",
+        }
+    ]
+
+
 def test_worker_persists_only_successfully_processed_observations(tmp_path):
     from core.worker_state_store import WorkerStateStore
 
