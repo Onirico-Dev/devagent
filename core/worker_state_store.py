@@ -1,5 +1,6 @@
 import json
 import os
+import tempfile
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -20,10 +21,10 @@ class WorkerStateStore:
             with self.path.open("r", encoding="utf-8") as handle:
                 data = json.load(handle)
 
-        if not isinstance(data, dict):
-            raise ValueError("Armazenamento do Worker inválido.")
+            if not isinstance(data, dict):
+                raise ValueError("Armazenamento do Worker inválido.")
 
-        return data
+            return data
 
     def save(self, state: dict[str, Any]) -> None:
         if not isinstance(state, dict):
@@ -32,12 +33,16 @@ class WorkerStateStore:
         with self._lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
 
-            temporary = self.path.with_suffix(
-                self.path.suffix + ".tmp"
-            )
+            temporary_path = None
 
             try:
-                with temporary.open("w", encoding="utf-8") as handle:
+                fd, temporary_path = tempfile.mkstemp(
+                    prefix=f".{self.path.name}.",
+                    suffix=".tmp",
+                    dir=self.path.parent,
+                )
+
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
                     json.dump(
                         state,
                         handle,
@@ -47,7 +52,8 @@ class WorkerStateStore:
                     handle.flush()
                     os.fsync(handle.fileno())
 
-                temporary.replace(self.path)
+                os.replace(temporary_path, self.path)
+                temporary_path = None
 
                 directory_fd = os.open(
                     self.path.parent,
@@ -57,6 +63,10 @@ class WorkerStateStore:
                     os.fsync(directory_fd)
                 finally:
                     os.close(directory_fd)
+
             finally:
-                if temporary.exists():
-                    temporary.unlink()
+                if temporary_path is not None:
+                    try:
+                        os.unlink(temporary_path)
+                    except FileNotFoundError:
+                        pass

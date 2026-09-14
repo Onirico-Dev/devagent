@@ -73,3 +73,46 @@ def test_save_removes_temporary_file_on_failure(monkeypatch, tmp_path):
         store.save({"processed": [], "processed_ids": []})
 
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def _save_worker_state_process(path, index):
+    from core.worker_state_store import WorkerStateStore
+
+    WorkerStateStore(path).save(
+        {
+            "processed": [
+                {
+                    "instruction": f"instrucao-{index}",
+                    "metadata": {"index": index},
+                }
+            ],
+            "processed_ids": [str(index)],
+        }
+    )
+
+
+def test_store_concurrent_process_saves_leave_valid_state(tmp_path):
+    import multiprocessing
+
+    path = tmp_path / "worker.json"
+    ctx = multiprocessing.get_context("fork")
+    processes = [
+        ctx.Process(
+            target=_save_worker_state_process,
+            args=(path, index),
+        )
+        for index in range(8)
+    ]
+
+    for process in processes:
+        process.start()
+
+    for process in processes:
+        process.join(timeout=10)
+        assert process.exitcode == 0
+
+    state = WorkerStateStore(path).load()
+
+    assert isinstance(state, dict)
+    assert len(state["processed"]) == 1
+    assert len(state["processed_ids"]) == 1
