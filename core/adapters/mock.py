@@ -152,6 +152,15 @@ class MockAdapter(AIAdapter):
         request = (modify_match.group(2) or "").strip()
         content = request
 
+        for prefix in (
+            "com conteúdo ",
+            "com conteudo ",
+            "contendo ",
+        ):
+            if request.lower().startswith(prefix):
+                content = request[len(prefix):].strip()
+                break
+
         addition = None
         for prefix in (
             "adicionando ",

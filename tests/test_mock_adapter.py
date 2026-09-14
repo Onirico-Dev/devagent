@@ -414,3 +414,22 @@ def test_extract_create_content_natural_test_smoke():
         "def test_smoke():\n"
         "    assert 2 + 2 == 4"
     )
+
+
+def test_mock_modify_content_marker_is_extracted():
+    from core.adapters.mock import MockAdapter
+
+    adapter = MockAdapter()
+
+    cases = (
+        'modifique app.py com conteúdo print("ok")',
+        'modifique app.py com conteudo print("ok")',
+        'modifique app.py contendo print("ok")',
+    )
+
+    for instruction in cases:
+        change = adapter._build_modify_change(instruction)
+
+        assert change["type"] == "modify"
+        assert change["path"] == "app.py"
+        assert change["content"] == 'print("ok")'
