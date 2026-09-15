@@ -35,7 +35,7 @@ def _version():
     try:
         return version("devagent")
     except PackageNotFoundError:
-        return "0.4.8"
+        return "0.6.8"
 
 
 def main():
