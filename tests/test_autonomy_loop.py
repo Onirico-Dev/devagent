@@ -670,3 +670,50 @@ def test_worker_creates_new_proposal_after_previous_is_no_longer_pending():
     assert len(second) == 1
     assert second[0].approval_id != first[0].approval_id
     assert len(gateway.calls) == 2
+
+def test_run_stops_when_requested_between_iterations():
+    gateway = FakeGateway()
+    observer = Observer(
+        [
+            Observation("primeira", {}),
+            Observation("segunda", {}),
+        ],
+    )
+    worker = Worker(gateway, observer)
+    loop = AutonomyLoop(worker)
+
+    original_run_once = loop.run_once
+    calls = 0
+
+    def run_once_and_stop():
+        nonlocal calls
+        calls += 1
+        result = original_run_once()
+        loop.stop()
+        return result
+
+    loop.run_once = run_once_and_stop
+
+    results = loop.run(10)
+
+    assert len(results) == 1
+    assert calls == 1
+    assert loop.stopped is True
+    assert results[0].stopped is False
+
+
+def test_run_returns_empty_after_being_stopped_before_start():
+    gateway = FakeGateway()
+    worker = Worker(
+        gateway,
+        Observer([Observation("verificar projeto", {})]),
+    )
+    loop = AutonomyLoop(worker)
+
+    loop.stop()
+
+    results = loop.run(10)
+
+    assert results == []
+    assert loop.stopped is True
+    assert loop.iterations == 0
