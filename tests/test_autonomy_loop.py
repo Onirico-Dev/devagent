@@ -717,3 +717,115 @@ def test_run_returns_empty_after_being_stopped_before_start():
     assert results == []
     assert loop.stopped is True
     assert loop.iterations == 0
+
+def test_loop_persists_successful_observation_after_previous_failure(tmp_path):
+    gateway = FakeGateway()
+
+    class FailingWorker(Worker):
+        def process_observation(self, observation):
+            if observation.instruction == "falhar":
+                raise RuntimeError("erro simulado")
+            return super().process_observation(observation)
+
+    observer = Observer(
+        [
+            Observation("falhar", {}),
+            Observation("continuar", {}),
+        ],
+    )
+    state_store = WorkerStateStore(tmp_path / "worker_state.json")
+    worker = FailingWorker(gateway, observer, store=state_store)
+    loop = AutonomyLoop(worker)
+
+    result = loop.run_once()
+
+    assert len(result.proposals) == 1
+    assert result.proposals[0].instruction == "continuar"
+
+    persisted = state_store.load()
+
+    assert "continuar" in str(persisted)
+    assert len(worker._errors) == 1
+
+
+def test_worker_restores_persisted_processed_observation_after_failure(tmp_path):
+    gateway = FakeGateway()
+    state_store = WorkerStateStore(tmp_path / "worker_state.json")
+
+    class FailingWorker(Worker):
+        def process_observation(self, observation):
+            if observation.instruction == "falhar":
+                raise RuntimeError("erro simulado")
+            return super().process_observation(observation)
+
+    worker = FailingWorker(
+        gateway,
+        Observer(
+            [
+                Observation("falhar", {}),
+                Observation("continuar", {}),
+            ]
+        ),
+        store=state_store,
+    )
+
+    first = worker.run_once()
+
+    assert len(first) == 1
+    assert first[0].instruction == "continuar"
+    assert len(gateway.calls) == 1
+
+    restored = Worker(
+        gateway,
+        Observer([Observation("continuar", {})]),
+        store=state_store,
+    )
+
+    second = restored.run_once()
+
+    assert second == []
+    assert len(gateway.calls) == 1
+    assert restored._errors == []
+
+
+def test_failed_observation_is_retryable_after_worker_restore(tmp_path):
+    gateway = FakeGateway()
+    state_store = WorkerStateStore(tmp_path / "worker_state.json")
+
+    class FailingWorker(Worker):
+        def process_observation(self, observation):
+            if observation.instruction == "falhar":
+                raise RuntimeError("erro simulado")
+            return super().process_observation(observation)
+
+    worker = FailingWorker(
+        gateway,
+        Observer(
+            [
+                Observation("falhar", {}),
+                Observation("continuar", {}),
+            ]
+        ),
+        store=state_store,
+    )
+
+    first = worker.run_once()
+
+    assert len(first) == 1
+    assert first[0].instruction == "continuar"
+    assert len(worker._errors) == 1
+    assert len(gateway.calls) == 1
+
+    retry_worker = FailingWorker(
+        gateway,
+        Observer([Observation("falhar", {})]),
+        store=state_store,
+    )
+
+    second = retry_worker.run_once()
+
+    assert second == []
+    assert len(retry_worker._errors) == 1
+    assert retry_worker._errors[0]["instruction"] == "falhar"
+    assert len(gateway.calls) == 1
+
