@@ -13,17 +13,34 @@ from core.worker import Worker
 class FakeGateway:
     def __init__(self):
         self.calls = []
+        self.tasks = []
 
     def create_task(self, instruction):
         self.calls.append(instruction)
-        return {
-            "approval_id": str(len(self.calls)),
+        approval_id = str(len(self.calls))
+        task = {
+            "task_id": approval_id,
+            "approval_id": approval_id,
+            "instruction": instruction,
             "status": "pending",
             "plan": {
                 "instruction": instruction,
                 "changes": [],
             },
         }
+        self.tasks.append(task)
+        return {
+            "approval_id": approval_id,
+            "status": "pending",
+            "plan": task["plan"],
+        }
+
+    def list_pending(self):
+        return [
+            task
+            for task in self.tasks
+            if task["status"] == "pending"
+        ]
 
 
 def test_loop_requires_worker():
@@ -602,3 +619,54 @@ def test_run_rejects_invalid_max_iterations():
 
     with pytest.raises(ValueError, match="max_iterations"):
         loop.run(max_iterations="3")
+
+
+def test_worker_reuses_equivalent_pending_proposal():
+    gateway = FakeGateway()
+    first_observer = Observer(
+        [Observation("verificar   projeto", {})],
+    )
+    worker = Worker(gateway, first_observer)
+
+    first = worker.run_once()
+
+    assert len(first) == 1
+    assert len(gateway.calls) == 1
+    first_id = first[0].approval_id
+
+    second_observer = Observer(
+        [Observation("  verificar projeto  ", {"source": "second"})],
+    )
+    worker.observer = second_observer
+
+    second = worker.run_once()
+
+    assert len(second) == 1
+    assert second[0].approval_id == first_id
+    assert second[0].status == "pending"
+    assert len(gateway.calls) == 1
+
+
+def test_worker_creates_new_proposal_after_previous_is_no_longer_pending():
+    gateway = FakeGateway()
+    observer = Observer(
+        [Observation("verificar projeto", {})],
+    )
+    worker = Worker(gateway, observer)
+
+    first = worker.run_once()
+
+    assert len(first) == 1
+    assert len(gateway.calls) == 1
+
+    gateway.tasks[0]["status"] = "committed"
+
+    worker.observer = Observer(
+        [Observation("verificar projeto", {"retry": "yes"})],
+    )
+
+    second = worker.run_once()
+
+    assert len(second) == 1
+    assert second[0].approval_id != first[0].approval_id
+    assert len(gateway.calls) == 2

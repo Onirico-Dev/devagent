@@ -27,6 +27,11 @@ class Worker:
 
     O estado processado pode ser persistido opcionalmente por meio de
     WorkerStateStore.
+
+    Propostas pendentes equivalentes não são duplicadas. Quando uma
+    observação corresponde a uma proposta já pendente, a proposta
+    existente é reutilizada e a observação passa a ser considerada
+    processada.
     """
 
     def __init__(
@@ -45,9 +50,7 @@ class Worker:
         self.gateway = gateway
         self.observer = observer
         self.store = store
-        self._processed: set[
-            tuple[str, tuple[tuple[str, str], ...]]
-        ] = set()
+        self._processed: set[tuple[str, tuple[tuple[str, str], ...]]] = set()
         self._processed_ids: set[str] = set()
         self._processed_observations: dict[
             tuple[str, tuple[tuple[str, str], ...]],
@@ -81,9 +84,76 @@ class Worker:
             cls._metadata_key(observation.metadata),
         )
 
+    @staticmethod
+    def _normalize_instruction(instruction: str) -> str:
+        return " ".join(instruction.split())
+
     def _persist_state(self) -> None:
         if self.store is not None:
             self.store.save(self.export_state())
+
+    def _find_pending_proposal(
+        self,
+        instruction: str,
+    ) -> Proposal | None:
+        list_pending = getattr(self.gateway, "list_pending", None)
+
+        if callable(list_pending):
+            pending_tasks = list_pending()
+        else:
+            history = getattr(self.gateway, "history", None)
+            list_pending = getattr(history, "list_pending", None)
+
+            if not callable(list_pending):
+                return None
+
+            pending_tasks = list_pending()
+
+        normalized_instruction = self._normalize_instruction(instruction)
+
+        for task in pending_tasks:
+            if not isinstance(task, dict):
+                continue
+
+            task_instruction = task.get("instruction")
+            if not isinstance(task_instruction, str):
+                continue
+
+            if (
+                self._normalize_instruction(task_instruction)
+                != normalized_instruction
+            ):
+                continue
+
+            approval_id = task.get("approval_id", task.get("task_id"))
+            if not isinstance(approval_id, str) or not approval_id:
+                continue
+
+            plan = task.get("plan")
+            if not isinstance(plan, dict):
+                continue
+
+            return Proposal(
+                instruction=task_instruction.strip(),
+                approval_id=approval_id,
+                status=str(task.get("status", "pending")),
+                plan=dict(plan),
+            )
+
+        return None
+
+    def _mark_processed(
+        self,
+        key: tuple[str, tuple[tuple[str, str], ...]],
+        observation: Observation,
+        approval_id: str,
+    ) -> None:
+        self._processed.add(key)
+        self._processed_ids.add(approval_id)
+        self._processed_observations[key] = Observation(
+            instruction=observation.instruction.strip(),
+            metadata=dict(observation.metadata),
+        )
 
     def process_observation(
         self,
@@ -93,6 +163,7 @@ class Worker:
             raise ValueError("Observação inválida.")
 
         instruction = observation.instruction.strip()
+
         if not instruction:
             raise ValueError(
                 "A instrução da observação não pode ser vazia."
@@ -103,16 +174,34 @@ class Worker:
         if key in self._processed:
             raise ValueError("Observação já processada.")
 
-        result = self.gateway.create_task(instruction)
+        existing = self._find_pending_proposal(instruction)
 
+        if existing is not None:
+            self._mark_processed(
+                key=key,
+                observation=observation,
+                approval_id=existing.approval_id,
+            )
+
+            try:
+                self._persist_state()
+            except Exception:
+                self._processed.discard(key)
+                self._processed_ids.discard(existing.approval_id)
+                self._processed_observations.pop(key, None)
+                raise
+
+            return existing
+
+        result = self.gateway.create_task(instruction)
         approval_id = result["approval_id"]
 
-        self._processed.add(key)
-        self._processed_ids.add(approval_id)
-        self._processed_observations[key] = Observation(
-            instruction=instruction,
-            metadata=dict(observation.metadata),
+        self._mark_processed(
+            key=key,
+            observation=observation,
+            approval_id=approval_id,
         )
+
         try:
             self._persist_state()
         except Exception:
@@ -139,9 +228,7 @@ class Worker:
                 continue
 
             try:
-                proposals.append(
-                    self.process_observation(observation)
-                )
+                proposals.append(self.process_observation(observation))
             except Exception as exc:
                 self._errors.append(
                     {
