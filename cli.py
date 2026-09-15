@@ -131,7 +131,7 @@ def main(state_root: str | Path = "transactions"):
     print("\nComandos:")
     print("  plan <instrução>")
     print("  observe <instrução>")
-    print("  autonomy")
+    print("  autonomy [iterações]")
     print("  tasks")
     print("  latest")
     print("  status <id>")
@@ -183,14 +183,24 @@ def main(state_root: str | Path = "transactions"):
                 print("\nObservação adicionada.")
 
             elif action == "autonomy":
-                result = autonomy_loop.run_once()
+                if len(parts) == 1:
+                    results = [autonomy_loop.run_once()]
+                else:
+                    try:
+                        max_iterations = int(parts[1])
+                    except ValueError:
+                        print("Uso: autonomy [iterações]")
+                        continue
 
-                print_proposals(result.proposals)
-                print(
-                    f"Rodada: {result.metadata['iterations']} | "
-                    f"Propostas: "
-                    f"{result.metadata.get('proposal_count', 0)}"
-                )
+                    results = autonomy_loop.run(max_iterations=max_iterations)
+
+                for result in results:
+                    print_proposals(result.proposals)
+                    print(
+                        f"Rodada: {result.metadata['iterations']} | "
+                        f"Propostas: "
+                        f"{result.metadata.get('proposal_count', 0)}"
+                    )
 
             elif action == "tasks":
                 print_tasks(gateway.list_tasks())

@@ -418,3 +418,73 @@ def test_read_command_empty_continuation(monkeypatch):
     )
 
     assert cli._read_command() == "linha:"
+
+def test_main_autonomy_multiple_iterations(monkeypatch, capsys):
+    gateway = FakeGateway(None, ".")
+    monkeypatch.setattr(cli, "DevAgent", lambda root: object())
+    monkeypatch.setattr(cli, "DevAgentGateway", lambda agent, root: gateway)
+
+    commands = iter([
+        "observe verificar o projeto",
+        "autonomy 3",
+        "sair",
+    ])
+    monkeypatch.setattr(
+        builtins,
+        "input",
+        lambda _: next(commands),
+    )
+
+    cli.main()
+
+    output = capsys.readouterr().out
+
+    assert output.count("Rodada: 1") == 1
+    assert output.count("Rodada: 2") == 1
+    assert output.count("Rodada: 3") == 1
+    assert output.count("Propostas: 1") == 1
+    assert output.count("Propostas: 0") == 2
+
+
+def test_main_autonomy_rejects_invalid_iterations(monkeypatch, capsys):
+    gateway = FakeGateway(None, ".")
+    monkeypatch.setattr(cli, "DevAgent", lambda root: object())
+    monkeypatch.setattr(cli, "DevAgentGateway", lambda agent, root: gateway)
+
+    commands = iter([
+        "autonomy 0",
+        "sair",
+    ])
+    monkeypatch.setattr(
+        builtins,
+        "input",
+        lambda _: next(commands),
+    )
+
+    cli.main()
+
+    output = capsys.readouterr().out
+
+    assert "max_iterations deve ser um inteiro positivo." in output
+
+
+def test_main_autonomy_rejects_non_integer_iterations(monkeypatch, capsys):
+    gateway = FakeGateway(None, ".")
+    monkeypatch.setattr(cli, "DevAgent", lambda root: object())
+    monkeypatch.setattr(cli, "DevAgentGateway", lambda agent, root: gateway)
+
+    commands = iter([
+        "autonomy abc",
+        "sair",
+    ])
+    monkeypatch.setattr(
+        builtins,
+        "input",
+        lambda _: next(commands),
+    )
+
+    cli.main()
+
+    output = capsys.readouterr().out
+
+    assert "Uso: autonomy [iterações]" in output

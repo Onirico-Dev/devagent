@@ -550,3 +550,55 @@ def test_autonomy_loop_processes_new_observation_on_next_iteration(tmp_path):
 
     assert first_task["status"] == "pending"
     assert second_task["status"] == "pending"
+
+def test_run_executes_multiple_iterations():
+    gateway = FakeGateway()
+    worker = Worker(
+        gateway,
+        Observer([Observation("verificar projeto", {})]),
+    )
+    loop = AutonomyLoop(worker)
+
+    results = loop.run(max_iterations=3)
+
+    assert len(results) == 3
+    assert loop.iterations == 3
+    assert all(not result.stopped for result in results)
+    assert len(results[0].proposals) == 1
+    assert results[1].proposals == []
+    assert results[2].proposals == []
+
+
+def test_run_respects_stop():
+    gateway = FakeGateway()
+    worker = Worker(
+        gateway,
+        Observer([Observation("verificar projeto", {})]),
+    )
+    loop = AutonomyLoop(worker)
+    loop.stop()
+
+    results = loop.run(max_iterations=3)
+
+    assert results == []
+    assert loop.stopped is True
+    assert loop.iterations == 0
+    assert gateway.calls == []
+
+
+def test_run_rejects_invalid_max_iterations():
+    gateway = FakeGateway()
+    worker = Worker(
+        gateway,
+        Observer([Observation("verificar projeto", {})]),
+    )
+    loop = AutonomyLoop(worker)
+
+    with pytest.raises(ValueError, match="max_iterations"):
+        loop.run(max_iterations=0)
+
+    with pytest.raises(ValueError, match="max_iterations"):
+        loop.run(max_iterations=-1)
+
+    with pytest.raises(ValueError, match="max_iterations"):
+        loop.run(max_iterations="3")
