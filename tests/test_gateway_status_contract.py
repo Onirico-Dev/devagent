@@ -114,3 +114,45 @@ def test_gateway_create_task_deduplicates_concurrent_equivalent_proposals(
 
     gateway = DevAgentGateway(Agent(), str(tmp_path))
     assert len(gateway.list_pending()) == 1
+
+def _create_gateway_task_in_process(root):
+    class Agent:
+        def process(self, instruction):
+            return {
+                "instruction": instruction,
+                "changes": [],
+            }
+
+    gateway = DevAgentGateway(Agent(), root)
+    return gateway.create_task("verificar   projeto")
+
+
+def test_gateway_create_task_deduplicates_across_processes(tmp_path):
+    from concurrent.futures import ProcessPoolExecutor
+
+    root = str(tmp_path)
+
+    with ProcessPoolExecutor(max_workers=4) as executor:
+        results = list(
+            executor.map(
+                _create_gateway_task_in_process,
+                [root] * 4,
+            )
+        )
+
+    approval_ids = {
+        result["approval_id"]
+        for result in results
+    }
+
+    assert len(approval_ids) == 1
+
+    class Agent:
+        def process(self, instruction):
+            return {
+                "instruction": instruction,
+                "changes": [],
+            }
+
+    gateway = DevAgentGateway(Agent(), root)
+    assert len(gateway.list_pending()) == 1
