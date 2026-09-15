@@ -48,3 +48,23 @@ def test_gateway_exposes_expected_history_status_contract():
     }
 
     assert actual == expected
+
+
+def test_gateway_list_pending_exposes_task_history_pending_tasks(tmp_path):
+    class Agent:
+        def process(self, instruction):
+            return {
+                "instruction": instruction,
+                "changes": [],
+            }
+
+    gateway = DevAgentGateway(Agent(), str(tmp_path))
+
+    created = gateway.create_task("verificar projeto")
+
+    pending = gateway.list_pending()
+
+    assert len(pending) == 1
+    assert pending[0]["approval_id"] == created["approval_id"]
+    assert pending[0]["instruction"] == "verificar projeto"
+    assert pending[0]["status"] == TaskHistoryStatus.PENDING.value

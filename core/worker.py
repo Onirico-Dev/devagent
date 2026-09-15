@@ -97,18 +97,10 @@ class Worker:
         instruction: str,
     ) -> Proposal | None:
         list_pending = getattr(self.gateway, "list_pending", None)
+        if not callable(list_pending):
+            return None
 
-        if callable(list_pending):
-            pending_tasks = list_pending()
-        else:
-            history = getattr(self.gateway, "history", None)
-            list_pending = getattr(history, "list_pending", None)
-
-            if not callable(list_pending):
-                return None
-
-            pending_tasks = list_pending()
-
+        pending_tasks = list_pending()
         normalized_instruction = self._normalize_instruction(instruction)
 
         for task in pending_tasks:
@@ -125,7 +117,10 @@ class Worker:
             ):
                 continue
 
-            approval_id = task.get("approval_id", task.get("task_id"))
+            approval_id = task.get(
+                "approval_id",
+                task.get("task_id"),
+            )
             if not isinstance(approval_id, str) or not approval_id:
                 continue
 

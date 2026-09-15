@@ -191,6 +191,9 @@ class DevAgentGateway:
             extra=extra,
         )
 
+    def list_pending(self):
+        return self.history.list_pending()
+
     # ------------------------------------------------------------------
     # TASK CREATION
     # ------------------------------------------------------------------
