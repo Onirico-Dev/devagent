@@ -68,3 +68,49 @@ def test_gateway_list_pending_exposes_task_history_pending_tasks(tmp_path):
     assert pending[0]["approval_id"] == created["approval_id"]
     assert pending[0]["instruction"] == "verificar projeto"
     assert pending[0]["status"] == TaskHistoryStatus.PENDING.value
+
+def test_gateway_create_task_reuses_equivalent_pending_proposal(tmp_path):
+    class Agent:
+        def process(self, instruction):
+            return {
+                "instruction": instruction,
+                "changes": [],
+            }
+
+    gateway = DevAgentGateway(Agent(), str(tmp_path))
+
+    first = gateway.create_task("verificar   projeto")
+    second = gateway.create_task("  verificar projeto  ")
+
+    assert first["approval_id"] == second["approval_id"]
+    assert len(gateway.list_pending()) == 1
+
+
+def test_gateway_create_task_deduplicates_concurrent_equivalent_proposals(
+    tmp_path,
+):
+    from concurrent.futures import ThreadPoolExecutor
+
+    class Agent:
+        def process(self, instruction):
+            return {
+                "instruction": instruction,
+                "changes": [],
+            }
+
+    def create():
+        gateway = DevAgentGateway(Agent(), str(tmp_path))
+        return gateway.create_task("verificar   projeto")
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(lambda _: create(), range(8)))
+
+    approval_ids = {
+        result["approval_id"]
+        for result in results
+    }
+
+    assert len(approval_ids) == 1
+
+    gateway = DevAgentGateway(Agent(), str(tmp_path))
+    assert len(gateway.list_pending()) == 1

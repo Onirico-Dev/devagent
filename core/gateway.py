@@ -1,3 +1,4 @@
+import fcntl
 from pathlib import Path
 from threading import RLock
 from core.security import SecurityPolicy
@@ -27,6 +28,7 @@ class CommitTransactionError(RuntimeError):
 class DevAgentGateway:
     _approval_locks = {}
     _approval_locks_guard = RLock()
+    _task_creation_guard = RLock()
 
     @classmethod
     def _approval_lock_for(cls, approval_id):
@@ -46,6 +48,11 @@ class DevAgentGateway:
     def __init__(self, agent, root="."):
         self.agent = agent
         self.root = root
+        self._task_creation_lock_path = (
+            Path(root).resolve()
+            / "transactions"
+            / "task_creation.lock"
+        )
 
         self.supervisor = Supervisor(
             storage_path=(
@@ -241,23 +248,47 @@ class DevAgentGateway:
 
                 self.security.validate_content(content)
 
-        approval_id = self.supervisor.request_approval(result)
+        normalized_instruction = " ".join(instruction.split())
 
-        self.history.create(
-            approval_id=approval_id,
-            instruction=instruction,
-            plan=result,
-        )
+        with self._task_creation_guard:
+            with self._task_creation_lock_path.open("a+") as lock_file:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                try:
+                    self.history._load()
 
-        return {
-            "approval_id": approval_id,
-            "status": ApprovalStatus.PENDING.value,
-            "plan": result,
-        }
+                    for task in self.history.list_pending():
+                        task_instruction = task.get("instruction")
 
-    # ------------------------------------------------------------------
-    # EXECUTION DECISION
-    # ------------------------------------------------------------------
+                        if not isinstance(task_instruction, str):
+                            continue
+
+                        if (
+                            " ".join(task_instruction.split())
+                            != normalized_instruction
+                        ):
+                            continue
+
+                        return {
+                            "approval_id": task["approval_id"],
+                            "status": task["status"],
+                            "plan": task["plan"],
+                        }
+
+                    approval_id = self.supervisor.request_approval(result)
+
+                    self.history.create(
+                        approval_id=approval_id,
+                        instruction=instruction,
+                        plan=result,
+                    )
+
+                    return {
+                        "approval_id": approval_id,
+                        "status": ApprovalStatus.PENDING.value,
+                        "plan": result,
+                    }
+                finally:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     def execute_approved(self, approval_id):
         request = self.supervisor.get(approval_id)
