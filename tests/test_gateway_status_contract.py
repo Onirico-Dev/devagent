@@ -156,3 +156,29 @@ def test_gateway_create_task_deduplicates_across_processes(tmp_path):
 
     gateway = DevAgentGateway(Agent(), root)
     assert len(gateway.list_pending()) == 1
+
+def test_gateway_create_task_does_not_reuse_non_pending_equivalent_proposal(
+    tmp_path,
+):
+    class Agent:
+        def process(self, instruction):
+            return {
+                "instruction": instruction,
+                "changes": [],
+            }
+
+    gateway = DevAgentGateway(Agent(), tmp_path)
+
+    first = gateway.create_task("verificar   projeto")
+    first_id = first["approval_id"]
+
+    gateway.reject(first_id)
+
+    second = gateway.create_task("  verificar projeto  ")
+
+    assert second["approval_id"] != first_id
+    assert second["status"] == "pending"
+
+    pending = gateway.list_pending()
+    assert len(pending) == 1
+    assert pending[0]["approval_id"] == second["approval_id"]
