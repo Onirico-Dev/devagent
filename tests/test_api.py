@@ -5008,3 +5008,263 @@ def test_api_rejects_missing_content_length():
     finally:
         server.shutdown()
         server.server_close()
+
+def test_gateway_serializes_concurrent_approve_and_reject_for_same_request(
+    tmp_path,
+    monkeypatch,
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    import subprocess
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test User"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    from core.gateway import DevAgentGateway
+
+    class FakeAgent:
+        ai = None
+
+    gateway = DevAgentGateway(
+        FakeAgent(),
+        root=str(tmp_path),
+    )
+
+    approval_id = gateway.supervisor.request_approval(
+        {
+            "instruction": "Criar app.py",
+            "changes": [
+                {
+                    "path": "app.py",
+                    "action": "create",
+                    "content": "print('hello')",
+                }
+            ],
+        }
+    )
+
+    barrier = Barrier(2)
+
+    original_prepare = gateway.supervisor.prepare_approval
+
+    def synchronized_prepare(request_id):
+        barrier.wait(timeout=5)
+        return original_prepare(request_id)
+
+    monkeypatch.setattr(
+        gateway.supervisor,
+        "prepare_approval",
+        synchronized_prepare,
+    )
+
+    def approve():
+        try:
+            return ("approve", "success", gateway.approve(approval_id))
+        except Exception as exc:
+            return (
+                "approve",
+                "error",
+                type(exc).__name__,
+                str(exc),
+            )
+
+    def reject():
+        try:
+            return ("reject", "success", gateway.reject(approval_id))
+        except Exception as exc:
+            return (
+                "reject",
+                "error",
+                type(exc).__name__,
+                str(exc),
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(approve),
+            executor.submit(reject),
+        ]
+        results = [future.result(timeout=10) for future in futures]
+
+    successes = [
+        result for result in results
+        if result[1] == "success"
+    ]
+    errors = [
+        result for result in results
+        if result[1] == "error"
+    ]
+
+    assert len(successes) == 1
+    assert len(errors) == 1
+
+    request = gateway.supervisor.get(approval_id)
+
+    assert request["status"] in {"approved", "rejected"}
+
+def test_gateway_blocks_reject_while_approve_holds_same_approval_lock(
+    tmp_path,
+    monkeypatch,
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    import subprocess
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test User"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    from core.gateway import DevAgentGateway
+    from core.schemas.models import Change, ChangeType, Transaction
+
+    class FakeAgent:
+        ai = None
+
+        def build_transaction_from_approved_plan(self, plan):
+            return Transaction(
+                transaction_id="",
+                changes=[
+                    Change(
+                        change_type=ChangeType.CREATE,
+                        path="app.py",
+                        content="print('hello')",
+                    )
+                ],
+            )
+
+    gateway = DevAgentGateway(
+        FakeAgent(),
+        root=str(tmp_path),
+    )
+
+    approval_id = gateway.supervisor.request_approval(
+        {
+            "instruction": "Criar app.py",
+            "changes": [
+                {
+                    "path": "app.py",
+                    "action": "create",
+                    "content": "print('hello')",
+                }
+            ],
+        }
+    )
+
+    approve_entered = Event()
+    release_approve = Event()
+    reject_called = Event()
+
+    original_execute = gateway.executor.execute
+    original_reject = gateway.supervisor.reject
+
+    def controlled_execute(transaction):
+        approve_entered.set()
+
+        if not release_approve.wait(timeout=5):
+            raise RuntimeError(
+                "timeout aguardando liberação da aprovação"
+            )
+
+        return original_execute(transaction)
+
+    def controlled_reject(request_id):
+        reject_called.set()
+        return original_reject(request_id)
+
+    monkeypatch.setattr(
+        gateway.executor,
+        "execute",
+        controlled_execute,
+    )
+    monkeypatch.setattr(
+        gateway.supervisor,
+        "reject",
+        controlled_reject,
+    )
+
+    def approve():
+        try:
+            return ("approve", "success", gateway.approve(approval_id))
+        except Exception as exc:
+            return (
+                "approve",
+                "error",
+                type(exc).__name__,
+                str(exc),
+            )
+
+    def reject():
+        try:
+            return ("reject", "success", gateway.reject(approval_id))
+        except Exception as exc:
+            return (
+                "reject",
+                "error",
+                type(exc).__name__,
+                str(exc),
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        approve_future = executor.submit(approve)
+
+        assert approve_entered.wait(timeout=5), (
+            "A aprovação não chegou ao executor."
+        )
+
+        reject_future = executor.submit(reject)
+
+        import time
+
+        time.sleep(0.5)
+
+        assert not reject_called.is_set(), (
+            "reject() entrou no Supervisor enquanto approve() "
+            "ainda executava a mesma aprovação."
+        )
+
+        release_approve.set()
+
+        approve_result = approve_future.result(timeout=10)
+        reject_result = reject_future.result(timeout=10)
+
+    assert approve_result[0] == "approve"
+    assert approve_result[1] == "success"
+
+    assert reject_result[0] == "reject"
+    assert reject_result[1] == "error"
+    assert reject_result[2] == "ValueError"
+    assert reject_result[3] == "Solicitação não está pendente."
+
+    request = gateway.supervisor.get(approval_id)
+    assert request["status"] == "approved"

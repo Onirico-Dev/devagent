@@ -422,16 +422,17 @@ class DevAgentGateway:
         )
 
     def reject(self, approval_id):
-        result = self.supervisor.reject(
-            approval_id
-        )
+        with self._approval_lock_for(approval_id):
+            result = self.supervisor.reject(
+                approval_id
+            )
 
-        self._update_history_safe(
-            approval_id,
-            status=TaskHistoryStatus.REJECTED.value,
-        )
+            self._update_history_safe(
+                approval_id,
+                status=TaskHistoryStatus.REJECTED.value,
+            )
 
-        return result
+            return result
 
     # ------------------------------------------------------------------
     # HISTORY API
