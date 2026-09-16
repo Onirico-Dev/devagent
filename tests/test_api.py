@@ -5268,3 +5268,114 @@ def test_gateway_blocks_reject_while_approve_holds_same_approval_lock(
 
     request = gateway.supervisor.get(approval_id)
     assert request["status"] == "approved"
+
+def _gateway_approve_process(root, approval_id, queue):
+    try:
+        from core.gateway import DevAgentGateway
+
+        class FakeAgent:
+            ai = None
+
+            def build_transaction_from_approved_plan(self, plan):
+                from core.schemas.models import Change, ChangeType, Transaction
+
+                return Transaction(
+                    transaction_id="",
+                    changes=[
+                        Change(
+                            change_type=ChangeType.CREATE,
+                            path="app.py",
+                            content="print('hello')",
+                        )
+                    ],
+                )
+
+        gateway = DevAgentGateway(FakeAgent(), root=str(root))
+        result = gateway.approve(approval_id)
+        queue.put(("success", result))
+    except Exception as exc:
+        queue.put(("error", type(exc).__name__, str(exc)))
+
+
+def test_gateway_serializes_concurrent_approve_across_processes(tmp_path):
+    import multiprocessing as mp
+    import subprocess
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test User"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    from core.gateway import DevAgentGateway
+
+    class FakeAgent:
+        ai = None
+
+    gateway = DevAgentGateway(FakeAgent(), root=str(tmp_path))
+
+    approval_id = gateway.supervisor.request_approval(
+        {
+            "instruction": "Criar app.py",
+            "changes": [
+                {
+                    "path": "app.py",
+                    "action": "create",
+                    "content": "print('hello')",
+                }
+            ],
+        }
+    )
+
+    context = mp.get_context("spawn")
+    queue = context.Queue()
+
+    processes = [
+        context.Process(
+            target=_gateway_approve_process,
+            args=(str(tmp_path), approval_id, queue),
+        )
+        for _ in range(2)
+    ]
+
+    for process in processes:
+        process.start()
+
+    for process in processes:
+        process.join(timeout=15)
+
+    assert all(not process.is_alive() for process in processes)
+
+    results = [queue.get(timeout=5) for _ in processes]
+
+    successes = [
+        result for result in results
+        if result[0] == "success"
+    ]
+    errors = [
+        result for result in results
+        if result[0] == "error"
+    ]
+
+    assert len(successes) == 1
+    assert len(errors) == 1
+    assert errors[0][1] == "ValueError"
+    assert errors[0][2] == "Solicitação não está pendente."
+
+    final_gateway = DevAgentGateway(FakeAgent(), root=str(tmp_path))
+    request = final_gateway.supervisor.get(approval_id)
+
+    assert request["status"] == "approved"
+    assert (tmp_path / "app.py").exists()
