@@ -89,8 +89,48 @@ class Worker:
         return " ".join(instruction.split())
 
     def _persist_state(self) -> None:
-        if self.store is not None:
-            self.store.save(self.export_state())
+        if self.store is None:
+            return
+
+        state = self.export_state()
+
+        def merge(current: dict[str, Any]) -> dict[str, Any]:
+            processed = list(current.get("processed", []))
+            processed_ids = set(current.get("processed_ids", []))
+
+            existing = {
+                (
+                    item.get("instruction"),
+                    self._metadata_key(item.get("metadata", {})),
+                )
+                for item in processed
+                if isinstance(item, dict)
+            }
+
+            for item in state["processed"]:
+                key = (
+                    item["instruction"],
+                    self._metadata_key(item["metadata"]),
+                )
+                if key not in existing:
+                    processed.append(item)
+                    existing.add(key)
+
+            processed_ids.update(state["processed_ids"])
+
+            processed.sort(
+                key=lambda item: (
+                    item["instruction"],
+                    self._metadata_key(item["metadata"]),
+                )
+            )
+
+            return {
+                "processed": processed,
+                "processed_ids": sorted(processed_ids),
+            }
+
+        self.store.update(merge)
 
     def _find_pending_proposal(
         self,
