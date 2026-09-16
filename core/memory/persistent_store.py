@@ -1,3 +1,4 @@
+import fcntl
 import json
 import os
 import tempfile
@@ -22,25 +23,13 @@ class PersistentStore:
 
             return lock
 
-    """
-    Armazenamento JSON simples, atômico e protegido contra concorrência
-    dentro do processo.
-
-    As operações de leitura/escrita utilizam arquivo temporário + os.replace(),
-    evitando que uma interrupção deixe o arquivo principal parcialmente gravado.
-
-    A operação update() mantém o ciclo leitura -> transformação -> escrita
-    protegido pelo mesmo lock, evitando perda de atualizações concorrentes.
-    """
-
     def __init__(self, path):
         self.path = Path(path).resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = self._lock_for_path(self.path)
-
-    def load(self, default=None):
-        with self._lock:
-            return self._load_unlocked(default)
+        self._process_lock_path = self.path.with_name(
+            f".{self.path.name}.lock"
+        )
 
     def _load_unlocked(self, default=None):
         if not self.path.exists():
@@ -54,10 +43,6 @@ class PersistentStore:
             raise ValueError(
                 f"Estado persistido inválido: {self.path}"
             ) from error
-
-    def save(self, data):
-        with self._lock:
-            self._save_unlocked(data)
 
     def _save_unlocked(self, data):
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -87,6 +72,7 @@ class PersistentStore:
                 str(self.path.parent),
                 os.O_RDONLY,
             )
+
             try:
                 os.fsync(directory_fd)
             finally:
@@ -99,24 +85,46 @@ class PersistentStore:
             except OSError:
                 pass
 
+    def _process_lock(self):
+        handle = self._process_lock_path.open(
+            "a+",
+            encoding="utf-8",
+        )
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        return handle
+
+    def load(self, default=None):
+        with self._lock:
+            lock_file = self._process_lock()
+
+            try:
+                return self._load_unlocked(default)
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                lock_file.close()
+
+    def save(self, data):
+        with self._lock:
+            lock_file = self._process_lock()
+
+            try:
+                self._save_unlocked(data)
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                lock_file.close()
+
     def update(self, updater, default=None):
-        """
-        Executa uma transformação atômica:
-
-            estado atual -> updater(estado) -> novo estado
-
-        A leitura e a escrita acontecem dentro do mesmo lock.
-        Isso evita lost updates em operações concorrentes dentro
-        do mesmo processo.
-        """
         if not callable(updater):
             raise TypeError("updater deve ser chamável.")
 
         with self._lock:
-            current = self._load_unlocked(default)
+            lock_file = self._process_lock()
 
-            updated = updater(current)
-
-            self._save_unlocked(updated)
-
-            return updated
+            try:
+                current = self._load_unlocked(default)
+                updated = updater(current)
+                self._save_unlocked(updated)
+                return updated
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                lock_file.close()

@@ -432,3 +432,54 @@ def test_persistent_store_fsyncs_parent_directory_after_replace(
 
     assert directory_fsyncs
 
+
+def _persistent_store_process_update(path, start_event, ready_queue):
+    from core.memory.persistent_store import PersistentStore
+
+    store = PersistentStore(path)
+
+    ready_queue.put("ready")
+    start_event.wait(timeout=10)
+
+    store.update(
+        lambda state: {
+            "count": state["count"] + 1,
+        }
+    )
+
+
+def test_persistent_store_serializes_concurrent_updates_across_processes(
+    tmp_path,
+):
+    import multiprocessing as mp
+
+    path = tmp_path / "state.json"
+    PersistentStore(path).save({"count": 0})
+
+    context = mp.get_context("spawn")
+    start_event = context.Event()
+    ready_queue = context.Queue()
+
+    processes = [
+        context.Process(
+            target=_persistent_store_process_update,
+            args=(str(path), start_event, ready_queue),
+        )
+        for _ in range(2)
+    ]
+
+    for process in processes:
+        process.start()
+
+    ready_queue.get(timeout=10)
+    ready_queue.get(timeout=10)
+
+    start_event.set()
+
+    for process in processes:
+        process.join(timeout=15)
+
+    assert all(not process.is_alive() for process in processes)
+    assert all(process.exitcode == 0 for process in processes)
+
+    assert PersistentStore(path).load() == {"count": 2}
