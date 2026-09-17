@@ -2903,3 +2903,51 @@ def test_recover_incomplete_transactions_is_serialized_across_processes(tmp_path
     )
     assert final_transaction.status == TransactionStatus.ROLLED_BACK
     assert manager.list_recoverable_transactions() == []
+
+def test_persist_manifest_is_serialized_across_processes(tmp_path):
+    import multiprocessing
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Transaction
+
+    transaction = Transaction(transaction_id="concurrent-manifest")
+    manager = TransactionManager(root=tmp_path)
+    manager.begin(transaction)
+
+    ctx = multiprocessing.get_context("fork")
+    barrier = ctx.Barrier(2)
+    results = ctx.Queue()
+
+    def persist_worker(root, sync_barrier, output, marker):
+        worker_manager = TransactionManager(root)
+        item = worker_manager.load_manifest("concurrent-manifest")
+        item.metadata["worker"] = marker
+        sync_barrier.wait()
+        worker_manager.persist_manifest(item)
+        output.put(True)
+
+    processes = [
+        ctx.Process(
+            target=persist_worker,
+            args=(tmp_path, barrier, results, marker),
+        )
+        for marker in ("a", "b")
+    ]
+
+    for process in processes:
+        process.start()
+
+    for process in processes:
+        process.join(timeout=10)
+
+    assert all(process.exitcode == 0 for process in processes)
+
+    results_received = [
+        results.get(timeout=2)
+        for _ in processes
+    ]
+
+    assert results_received == [True, True]
+
+    persisted = manager.load_manifest("concurrent-manifest")
+    assert persisted.transaction_id == "concurrent-manifest"
+    assert persisted.metadata["worker"] in {"a", "b"}
