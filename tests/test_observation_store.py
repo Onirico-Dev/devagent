@@ -135,3 +135,65 @@ def test_save_removes_temporary_file_on_failure(monkeypatch, tmp_path):
         pass
 
     assert not list(tmp_path.glob("*.tmp"))
+
+def _observation_store_append_process(path, start_event, ready_queue, index):
+    from core.observation import Observation
+    from core.observation_store import ObservationStore
+
+    store = ObservationStore(path)
+
+    ready_queue.put("ready")
+    start_event.wait(timeout=10)
+
+    store.append(
+        Observation(
+            instruction=f"observacao-{index}",
+            metadata={"process": index},
+        )
+    )
+
+
+def test_observation_store_serializes_concurrent_appends_across_processes(
+    tmp_path,
+):
+    import multiprocessing as mp
+
+    path = tmp_path / "observations.json"
+    ObservationStore(path).save([])
+
+    context = mp.get_context("spawn")
+    start_event = context.Event()
+    ready_queue = context.Queue()
+
+    processes = [
+        context.Process(
+            target=_observation_store_append_process,
+            args=(str(path), start_event, ready_queue, index),
+        )
+        for index in range(2)
+    ]
+
+    for process in processes:
+        process.start()
+
+    ready_queue.get(timeout=10)
+    ready_queue.get(timeout=10)
+
+    start_event.set()
+
+    for process in processes:
+        process.join(timeout=15)
+
+    assert all(not process.is_alive() for process in processes)
+    assert all(process.exitcode == 0 for process in processes)
+
+    observations = ObservationStore(path).load()
+
+    assert len(observations) == 2
+    assert {
+        observation.instruction
+        for observation in observations
+    } == {
+        "observacao-0",
+        "observacao-1",
+    }
