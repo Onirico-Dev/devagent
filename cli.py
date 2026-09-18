@@ -28,8 +28,12 @@ def print_task(task):
     if changes:
         print("Alterações:")
         for change in changes:
+            change_type = change.get("change_type")
+            if change_type is None:
+                change_type = change.get("type")
+
             print(
-                f"  - {change.get('type')}: "
+                f"  - {change_type}: "
                 f"{change.get('path')}"
             )
 

@@ -107,6 +107,25 @@ def test_print_task_full(capsys):
     assert "extra: valor" in output
 
 
+def test_print_task_change_type(capsys):
+    task = {
+        "approval_id": "a2",
+        "status": "pending",
+        "instruction": "teste atual",
+        "plan": {
+            "changes": [
+                {"change_type": "create", "path": "barrier_e2e.txt"},
+            ]
+        },
+    }
+
+    cli.print_task(task)
+    output = capsys.readouterr().out
+
+    assert "create: barrier_e2e.txt" in output
+    assert "None: barrier_e2e.txt" not in output
+
+
 def test_print_task_without_optional_sections(capsys):
     cli.print_task({
         "approval_id": "a1",
