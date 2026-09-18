@@ -197,3 +197,21 @@ def test_observation_store_serializes_concurrent_appends_across_processes(
         "observacao-0",
         "observacao-1",
     }
+
+
+def test_save_suppresses_temporary_cleanup_error(monkeypatch, tmp_path):
+    from core.observation_store import ObservationStore, Observation
+
+    store = ObservationStore(tmp_path / "observations.json")
+
+    def fail_replace(*args, **kwargs):
+        raise OSError("replace failed")
+
+    def fail_unlink(self, *args, **kwargs):
+        raise OSError("unlink failed")
+
+    monkeypatch.setattr("os.replace", fail_replace)
+    monkeypatch.setattr("pathlib.Path.unlink", fail_unlink)
+
+    with pytest.raises(OSError, match="replace failed"):
+        store.save([Observation("teste", {})])

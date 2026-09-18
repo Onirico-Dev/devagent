@@ -2951,3 +2951,148 @@ def test_persist_manifest_is_serialized_across_processes(tmp_path):
     persisted = manager.load_manifest("concurrent-manifest")
     assert persisted.transaction_id == "concurrent-manifest"
     assert persisted.metadata["worker"] in {"a", "b"}
+
+
+def test_recover_incomplete_transactions_skips_transaction_no_longer_recoverable(
+    tmp_path,
+    monkeypatch,
+):
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Transaction, TransactionStatus
+
+    manager = TransactionManager(tmp_path)
+    transaction = Transaction(transaction_id="tx-no-longer-recoverable")
+
+    monkeypatch.setattr(
+        manager,
+        "list_recoverable_transactions",
+        lambda: [transaction],
+    )
+    monkeypatch.setattr(
+        manager,
+        "load_manifest",
+        lambda _transaction_id: Transaction(
+            transaction_id="tx-no-longer-recoverable",
+            status=TransactionStatus.PENDING,
+        ),
+    )
+
+    recovered = manager.recover_incomplete_transactions()
+
+    assert recovered == []
+
+
+def test_begin_suppresses_backup_cleanup_error_when_manifest_persist_fails(
+    tmp_path,
+    monkeypatch,
+):
+    from core.executor.transaction_manager import TransactionManager
+
+    manager = TransactionManager(tmp_path)
+    transaction = make_transaction(tmp_path)
+
+    def fail_persist(_transaction):
+        raise OSError("simulated manifest persist failure")
+
+    monkeypatch.setattr(manager, "persist_manifest", fail_persist)
+
+    def fail_backup_rmdir(_path):
+        raise OSError("simulated backup cleanup failure")
+
+    monkeypatch.setattr(Path, "rmdir", fail_backup_rmdir)
+
+    with pytest.raises(OSError, match="simulated manifest persist failure"):
+        manager.begin(transaction)
+
+
+def test_backup_file_suppresses_destination_cleanup_error_when_manifest_persist_fails(
+    tmp_path,
+    monkeypatch,
+):
+    from core.executor.transaction_manager import TransactionManager
+
+    manager, transaction = make_started_transaction(tmp_path)
+    source = tmp_path / "arquivo.py"
+    source.write_text("ORIGINAL\n", encoding="utf-8")
+
+    backup = Path(transaction.metadata["backup"])
+    destination = backup / "arquivo.py"
+
+    def fail_persist(_transaction):
+        raise OSError("simulated manifest persist failure")
+
+    monkeypatch.setattr(manager, "persist_manifest", fail_persist)
+
+    original_unlink = Path.unlink
+
+    def fail_destination_unlink(path, *args, **kwargs):
+        if path == destination:
+            raise OSError("simulated destination cleanup failure")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_destination_unlink)
+
+    with pytest.raises(OSError, match="simulated manifest persist failure"):
+        manager.backup_file(transaction, "arquivo.py")
+
+    assert destination.exists()
+
+
+def test_recover_incomplete_transactions_commits_when_commit_detector_finds_commit(
+    tmp_path,
+):
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Transaction, TransactionStatus
+
+    manager = TransactionManager(tmp_path)
+    transaction = Transaction(transaction_id="tx-recovery-commit")
+    manager.begin(transaction)
+
+    result = {
+        "commit_hash": "abc123",
+        "transaction_id": "tx-recovery-commit",
+    }
+
+    calls = []
+
+    def commit_detector(transaction_id):
+        calls.append(transaction_id)
+        return result
+
+    recovered = manager.recover_incomplete_transactions(
+        commit_detector=commit_detector,
+    )
+
+    assert len(recovered) == 1
+    assert recovered[0].status == TransactionStatus.COMMITTED
+    assert recovered[0].metadata["recovery_git"] == result
+    assert calls == ["tx-recovery-commit"]
+
+    persisted = manager.load_manifest("tx-recovery-commit")
+    assert persisted.status == TransactionStatus.COMMITTED
+    assert persisted.metadata["recovery_git"] == result
+
+
+def test_recover_incomplete_transactions_rolls_back_when_commit_detector_returns_none(
+    tmp_path,
+):
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Transaction, TransactionStatus
+
+    manager = TransactionManager(tmp_path)
+    transaction = Transaction(transaction_id="tx-recovery-no-commit")
+    manager.begin(transaction)
+
+    calls = []
+
+    def commit_detector(transaction_id):
+        calls.append(transaction_id)
+        return None
+
+    recovered = manager.recover_incomplete_transactions(
+        commit_detector=commit_detector,
+    )
+
+    assert len(recovered) == 1
+    assert recovered[0].status == TransactionStatus.ROLLED_BACK
+    assert calls == ["tx-recovery-no-commit"]

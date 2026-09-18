@@ -5379,3 +5379,54 @@ def test_gateway_serializes_concurrent_approve_across_processes(tmp_path):
 
     assert request["status"] == "approved"
     assert (tmp_path / "app.py").exists()
+
+
+def test_gateway_reconcile_recovered_transactions_skips_non_final_status(
+    tmp_path,
+):
+    from core.gateway import DevAgentGateway
+    from agent import DevAgent
+    from core.schemas.models import Transaction, TransactionStatus
+
+    gateway = DevAgentGateway(
+        DevAgent(str(tmp_path)),
+        root=str(tmp_path),
+    )
+
+    transaction = Transaction(
+        transaction_id="tx-non-final",
+        status=TransactionStatus.EXECUTING,
+    )
+
+    assert gateway._reconcile_recovered_transactions([transaction]) is None
+
+
+def test_gateway_create_task_skips_pending_task_with_non_string_instruction(
+    isolated_project,
+    monkeypatch,
+):
+    from core.gateway import DevAgentGateway
+    from agent import DevAgent
+
+    gateway = DevAgentGateway(
+        DevAgent(str(isolated_project)),
+        root=str(isolated_project),
+    )
+
+    monkeypatch.setattr(
+        gateway.history,
+        "list_pending",
+        lambda: [
+            {
+                "approval_id": "invalid-instruction",
+                "status": "pending",
+                "instruction": None,
+                "plan": {},
+            }
+        ],
+    )
+
+    created = gateway.create_task("criar arquivo.py")
+
+    assert created["status"] == "pending"
+    assert created["approval_id"] != "invalid-instruction"

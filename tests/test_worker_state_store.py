@@ -116,3 +116,50 @@ def test_store_concurrent_process_saves_leave_valid_state(tmp_path):
     assert isinstance(state, dict)
     assert len(state["processed"]) == 1
     assert len(state["processed_ids"]) == 1
+
+def test_save_suppresses_temporary_file_not_found(monkeypatch, tmp_path):
+    from core.worker_state_store import WorkerStateStore
+
+    store = WorkerStateStore(tmp_path / "state.json")
+
+    def fail_replace(*args, **kwargs):
+        raise OSError("replace failed")
+
+    def fail_unlink(*args, **kwargs):
+        raise FileNotFoundError("temporary file already gone")
+
+    monkeypatch.setattr("os.replace", fail_replace)
+    monkeypatch.setattr("os.unlink", fail_unlink)
+
+    with pytest.raises(OSError, match="replace failed"):
+        store.save({"processed": [], "processed_ids": []})
+
+
+def test_update_rejects_non_callable_transform(tmp_path):
+    from core.worker_state_store import WorkerStateStore
+
+    store = WorkerStateStore(tmp_path / "state.json")
+
+    with pytest.raises(ValueError, match="Transformação de estado inválida"):
+        store.update(None)
+
+
+def test_update_rejects_non_dict_transform_result(tmp_path):
+    from core.worker_state_store import WorkerStateStore
+
+    store = WorkerStateStore(tmp_path / "state.json")
+
+    with pytest.raises(ValueError, match="Transformação produziu estado inválido"):
+        store.update(lambda state: [])
+
+
+def test_update_accepts_callable_transform(tmp_path):
+    from core.worker_state_store import WorkerStateStore
+
+    store = WorkerStateStore(tmp_path / "state.json")
+    store.save({"count": 1})
+
+    result = store.update(lambda state: {"count": state["count"] + 1})
+
+    assert result == {"count": 2}
+    assert store.load() == {"count": 2}
