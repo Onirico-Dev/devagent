@@ -829,3 +829,89 @@ def test_failed_observation_is_retryable_after_worker_restore(tmp_path):
     assert retry_worker._errors[0]["instruction"] == "falhar"
     assert len(gateway.calls) == 1
 
+
+def test_loop_run_executes_exact_number_of_iterations():
+    gateway = FakeGateway()
+    worker = Worker(
+        gateway,
+        Observer([
+            Observation("tarefa 1", {}),
+            Observation("tarefa 2", {}),
+            Observation("tarefa 3", {}),
+        ]),
+    )
+    loop = AutonomyLoop(worker)
+
+    results = loop.run(3)
+
+    assert len(results) == 3
+    assert [result.metadata["iterations"] for result in results] == [1, 2, 3]
+    assert [result.metadata["proposal_count"] for result in results] == [3, 0, 0]
+    assert loop.iterations == 3
+
+
+@pytest.mark.parametrize("value", [0, -1, True, False, 1.5, "3", None])
+def test_loop_run_rejects_invalid_max_iterations(value):
+    gateway = FakeGateway()
+    worker = Worker(
+        gateway,
+        Observer([Observation("tarefa", {})]),
+    )
+    loop = AutonomyLoop(worker)
+
+    with pytest.raises(
+        ValueError,
+        match="max_iterations deve ser um inteiro positivo",
+    ):
+        loop.run(value)
+
+
+def test_loop_run_respects_stop_before_start():
+    gateway = FakeGateway()
+    worker = Worker(
+        gateway,
+        Observer([Observation("tarefa", {})]),
+    )
+    loop = AutonomyLoop(worker)
+    loop.stop()
+
+    results = loop.run(5)
+
+    assert results == []
+    assert loop.stopped is True
+    assert loop.iterations == 0
+    assert gateway.calls == []
+
+
+def test_loop_run_stops_when_stop_is_requested_between_iterations():
+    gateway = FakeGateway()
+
+    class StoppingWorker(Worker):
+        def __init__(self, gateway, observer, loop_holder):
+            super().__init__(gateway, observer)
+            self.loop_holder = loop_holder
+
+        def run_once(self):
+            result = super().run_once()
+            self.loop_holder["loop"].stop()
+            return result
+
+    holder = {}
+    worker = StoppingWorker(
+        gateway,
+        Observer([
+            Observation("tarefa 1", {}),
+            Observation("tarefa 2", {}),
+        ]),
+        holder,
+    )
+    loop = AutonomyLoop(worker)
+    holder["loop"] = loop
+
+    results = loop.run(5)
+
+    assert len(results) == 1
+    assert results[0].stopped is False
+    assert results[0].metadata["iterations"] == 1
+    assert loop.stopped is True
+    assert loop.iterations == 1
