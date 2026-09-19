@@ -23,16 +23,14 @@ class MockAdapter(AIAdapter):
         return self._generate_planner_response(prompt)
 
     def _generate_repair_response(self, prompt: str) -> str:
-        repair_marker = (
-            "Você é o módulo de reparo automático do DevAgent."
-        )
+        repair_marker = "Você é o módulo de reparo automático do DevAgent."
 
         if not prompt.lstrip().startswith(repair_marker):
             return ""
 
         instruction = ""
-
         marker = "Objetivo original:"
+
         if marker in prompt:
             instruction = (
                 prompt.split(marker, 1)[1]
@@ -40,16 +38,15 @@ class MockAdapter(AIAdapter):
                 .strip()
             )
 
-        path = self._extract_repair_path(
-            instruction
-        )
+        path = self._extract_repair_path(instruction)
 
         if not path:
             path = "reparo.py"
 
-        content = self._extract_invalid_content(
-            instruction
-        )
+        content = self._extract_create_content(instruction)
+
+        if not content:
+            content = self._extract_invalid_content(instruction)
 
         return json.dumps(
             {
@@ -72,6 +69,7 @@ class MockAdapter(AIAdapter):
     def _generate_planner_response(self, prompt: str) -> str:
         marker = "INSTRUÇÃO DO USUÁRIO:"
         context_marker = "CONTEXTO DO PROJETO:"
+
         instruction = ""
         context = ""
 
@@ -86,6 +84,7 @@ class MockAdapter(AIAdapter):
             context = prompt.split(context_marker, 1)[1].strip()
 
         objective = instruction
+
         change = self._build_planner_change(
             instruction,
             context,
@@ -106,7 +105,7 @@ class MockAdapter(AIAdapter):
     def _build_delete_change(self, instruction: str):
         delete_match = re.match(
             r"^\s*"
-            r"(?:delete|apague|remova|remover|remover)"
+            r"(?:delete|apague|remova|remover)"
             r"\s+"
             r"(?:o\s+|a\s+)?(?:arquivo\s+)?"
             r"([A-Za-z0-9_./-]+\.[A-Za-z0-9_-]+)"
@@ -143,12 +142,14 @@ class MockAdapter(AIAdapter):
             instruction,
             flags=re.IGNORECASE,
         )
+
         if not modify_match:
             return None
 
         path = modify_match.group(1).strip(
-            chr(34) + chr(39) + "`.,;:"
+            "\"'`.,;:"
         )
+
         request = (modify_match.group(2) or "").strip()
         content = request
 
@@ -162,6 +163,7 @@ class MockAdapter(AIAdapter):
                 break
 
         addition = None
+
         for prefix in (
             "adicionando ",
             "adicione ",
@@ -173,12 +175,14 @@ class MockAdapter(AIAdapter):
 
         if addition and context:
             file_marker = f"=== ARQUIVO: {path} ===\n"
+
             if file_marker in context:
                 existing = (
                     context.split(file_marker, 1)[1]
                     .split("=== ANÁLISE PYTHON ===", 1)[0]
                     .rstrip()
                 )
+
                 content = f"{existing}\n{addition}\n"
 
         return {
@@ -188,7 +192,10 @@ class MockAdapter(AIAdapter):
             "reason": instruction,
         }
 
-    def _extract_legacy_create_content(self, instruction: str) -> str:
+    def _extract_legacy_create_content(
+        self,
+        instruction: str,
+    ) -> str:
         lower = instruction.lower()
 
         markers = (
@@ -199,8 +206,12 @@ class MockAdapter(AIAdapter):
 
         for marker in markers:
             index = lower.find(marker)
+
             if index != -1:
-                content = instruction[index + len(marker):].strip()
+                content = instruction[
+                    index + len(marker):
+                ].strip()
+
                 if content:
                     return content
 
@@ -220,21 +231,15 @@ class MockAdapter(AIAdapter):
         return ""
 
     def _build_create_change(self, instruction: str):
-        target = self._extract_create_target(
-            instruction
-        )
+        target = self._extract_create_path(instruction)
 
         if not target:
             return None
 
-        content = self._extract_create_content(
-            instruction
-        )
+        content = self._extract_create_content(instruction)
 
         if not content:
-            content = self._extract_legacy_create_content(
-                instruction
-            )
+            content = self._extract_legacy_create_content(instruction)
 
         return {
             "type": "create",
@@ -264,18 +269,12 @@ class MockAdapter(AIAdapter):
 
         return self._build_create_change(instruction)
 
-
     @staticmethod
     def _extract_create_target(instruction: str) -> str:
-        """
-        Reconhece formas comuns de criação:
+        return MockAdapter._extract_create_path(instruction)
 
-        Crie app.py ...
-        Crie um arquivo chamado app.py ...
-        Crie arquivo app.py ...
-        Criar arquivo app.py ...
-        """
-
+    @staticmethod
+    def _extract_create_path(instruction: str) -> str:
         patterns = (
             r"\b(?:crie|criar|create)\s+"
             r"(?:um\s+)?"
@@ -306,7 +305,6 @@ class MockAdapter(AIAdapter):
         return ""
 
     @staticmethod
-    @staticmethod
     def _extract_create_content(
         instruction: str,
     ) -> str:
@@ -333,10 +331,12 @@ class MockAdapter(AIAdapter):
 
         for marker in markers:
             index = lower.find(marker)
+
             if index != -1:
                 content = instruction[
                     index + len(marker):
                 ].strip()
+
                 if content:
                     return content
 
