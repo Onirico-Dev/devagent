@@ -354,3 +354,31 @@ def test_repair_engine_rejects_oversized_repair_content():
         "path": "",
         "content": "",
     }
+
+
+def test_mock_adapter_repairs_natural_language_pytest_request():
+    import json
+
+    from core.adapters.mock import MockAdapter
+
+    instruction = (
+        "crie um arquivo chamado smoke_test.py na raiz do projeto "
+        "contendo um teste pytest chamado test_smoke que faça a "
+        "asserção de que 2 + 2 é igual a 4"
+    )
+
+    prompt = (
+        "Você é o módulo de reparo automático do DevAgent.\n"
+        f"Objetivo original: {instruction}\n"
+        "Erro: SyntaxError\n"
+        "Saída dos testes: SyntaxError: invalid syntax"
+    )
+
+    result = json.loads(MockAdapter().generate(prompt))
+
+    assert result["action"] == "modify"
+    assert result["path"] == "smoke_test.py"
+    assert result["content"] == (
+        "def test_smoke():\n"
+        "    assert 2 + 2 == 4"
+    )
