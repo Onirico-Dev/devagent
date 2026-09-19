@@ -367,14 +367,14 @@ class DevAgentGateway:
                 fcntl.flock(process_lock.fileno(), fcntl.LOCK_UN)
                 process_lock.close()
 
-    def _approve_locked(self, approval_id):
+    def _sync_flow_dependencies(self):
         self.transaction_flow.tests = self.tests
-
         self.repair_flow.repair_engine = self.repair_engine
         self.repair_flow.repair_executor = self.repair_executor
-
         self.repair_executor.test_runner = self.tests
 
+    def _approve_locked(self, approval_id):
+        self._sync_flow_dependencies()
         return self.transaction_flow.approve_locked(
             approval_id=approval_id,
             commit_fn=self._commit_transaction,
