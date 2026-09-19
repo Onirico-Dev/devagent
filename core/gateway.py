@@ -79,7 +79,6 @@ class DevAgentGateway:
             )
         )
         self.security = SecurityPolicy(root)
-        self.task_creator = TaskCreator(self.security)
         self.executor = SafeExecutor(root)
         self.transactions = TransactionManager(root)
         self.tests = TestRunner(root)
@@ -106,6 +105,11 @@ class DevAgentGateway:
                 / "transactions"
                 / "tasks.json"
             )
+        )
+        self.task_creator = TaskCreator(
+            self.security,
+            self.history,
+            self.supervisor,
         )
         self._reconcile_recovered_transactions(
             self.transactions.recover_incomplete_transactions(
@@ -230,45 +234,14 @@ class DevAgentGateway:
         result = self.agent.process(instruction)
         self.task_creator.validate_plan(result)
 
-        normalized_instruction = " ".join(instruction.split())
-
         with self._task_creation_guard:
             with self._task_creation_lock_path.open("a+") as lock_file:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
                 try:
-                    self.history._load()
-
-                    for task in self.history.list_pending():
-                        task_instruction = task.get("instruction")
-
-                        if not isinstance(task_instruction, str):
-                            continue
-
-                        if (
-                            " ".join(task_instruction.split())
-                            != normalized_instruction
-                        ):
-                            continue
-
-                        return {
-                            "approval_id": task["approval_id"],
-                            "status": task["status"],
-                            "plan": task["plan"],
-                        }
-
-                    approval_id = self.supervisor.request_approval(result)
-
-                    self.history.create(
-                        approval_id=approval_id,
-                        instruction=instruction,
-                        plan=result,
+                    return self.task_creator.create_or_reuse(
+                        instruction,
+                        result,
                     )
-
-                    return {
-                        "approval_id": approval_id,
-                        "status": ApprovalStatus.PENDING.value,
-                        "plan": result,
-                    }
                 finally:
                     fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
