@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from typing import Any
 
+from core.loop_controller import LoopController
+
 
 @dataclass(frozen=True)
 class SupervisedLoopResult:
@@ -9,7 +11,7 @@ class SupervisedLoopResult:
     metadata: dict[str, Any]
 
 
-class SupervisedLoop:
+class SupervisedLoop(LoopController):
     """Coordena observação e propostas sem atravessar a barreira de aprovação."""
 
     _TERMINAL_STATUSES = {
@@ -22,18 +24,21 @@ class SupervisedLoop:
     def __init__(self, worker, gateway, state_store=None):
         if not hasattr(worker, "run_once"):
             raise ValueError("Worker inválido.")
+
         if not hasattr(gateway, "list_tasks"):
             raise ValueError("Gateway inválido.")
+
         if state_store is not None and not hasattr(state_store, "load"):
             raise ValueError("Armazenamento de estado inválido.")
+
         if state_store is not None and not hasattr(state_store, "save"):
             raise ValueError("Armazenamento de estado inválido.")
+
+        super().__init__()
 
         self.worker = worker
         self.gateway = gateway
         self.state_store = state_store
-        self._stopped = False
-        self._iterations = 0
 
         if self.state_store is not None:
             self.restore_state(self.state_store.load())
@@ -76,28 +81,6 @@ class SupervisedLoop:
             },
         )
 
-    def run(self, max_iterations: int) -> list[SupervisedLoopResult]:
-        if not isinstance(max_iterations, int) or isinstance(
-            max_iterations, bool
-        ):
-            raise ValueError(
-                "max_iterations deve ser um inteiro positivo."
-            )
-
-        if max_iterations <= 0:
-            raise ValueError(
-                "max_iterations deve ser um inteiro positivo."
-            )
-
-        results = []
-
-        for _ in range(max_iterations):
-            if self._stopped:
-                break
-            results.append(self.run_once())
-
-        return results
-
     def export_state(self) -> dict[str, Any]:
         return {
             "stopped": self._stopped,
@@ -122,11 +105,3 @@ class SupervisedLoop:
 
         self._stopped = stopped
         self._iterations = iterations
-
-    @property
-    def stopped(self) -> bool:
-        return self._stopped
-
-    @property
-    def iterations(self) -> int:
-        return self._iterations
