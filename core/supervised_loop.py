@@ -19,19 +19,32 @@ class SupervisedLoop:
         "failed",
     }
 
-    def __init__(self, worker, gateway):
+    def __init__(self, worker, gateway, state_store=None):
         if not hasattr(worker, "run_once"):
             raise ValueError("Worker inválido.")
         if not hasattr(gateway, "list_tasks"):
             raise ValueError("Gateway inválido.")
+        if state_store is not None and not hasattr(state_store, "load"):
+            raise ValueError("Armazenamento de estado inválido.")
+        if state_store is not None and not hasattr(state_store, "save"):
+            raise ValueError("Armazenamento de estado inválido.")
 
         self.worker = worker
         self.gateway = gateway
+        self.state_store = state_store
         self._stopped = False
         self._iterations = 0
 
+        if self.state_store is not None:
+            self.restore_state(self.state_store.load())
+
+    def _persist_state(self) -> None:
+        if self.state_store is not None:
+            self.state_store.save(self.export_state())
+
     def stop(self) -> None:
         self._stopped = True
+        self._persist_state()
 
     def run_once(self) -> SupervisedLoopResult:
         if self._stopped:
@@ -50,6 +63,8 @@ class SupervisedLoop:
             for task in tasks
             if task.get("status") == "pending"
         )
+
+        self._persist_state()
 
         return SupervisedLoopResult(
             proposals=proposals,

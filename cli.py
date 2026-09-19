@@ -120,6 +120,9 @@ def main(state_root: str | Path = "transactions"):
     worker_state_store = WorkerStateStore(
         state_root / "worker.json"
     )
+    supervised_loop_state_store = WorkerStateStore(
+        state_root / "supervised_loop.json"
+    )
 
     observer = Observer(store=observation_store)
     worker = Worker(
@@ -128,7 +131,11 @@ def main(state_root: str | Path = "transactions"):
         store=worker_state_store,
     )
     autonomy_loop = AutonomyLoop(worker)
-    supervised_loop = SupervisedLoop(worker, gateway)
+    supervised_loop = SupervisedLoop(
+        worker,
+        gateway,
+        state_store=supervised_loop_state_store,
+    )
 
     print("=" * 60)
     print("DevAgent CLI")

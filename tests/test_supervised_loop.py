@@ -330,3 +330,76 @@ def test_supervised_loop_can_observe_after_external_decision():
     assert second.proposals == []
     assert second.metadata["pending_count"] == 0
     assert loop.iterations == 2
+
+def test_supervised_loop_persists_iterations(tmp_path):
+    from core.worker_state_store import WorkerStateStore
+
+    store = WorkerStateStore(tmp_path / "supervised_loop.json")
+
+    first = SupervisedLoop(
+        worker=FakeWorker(),
+        gateway=FakeGateway(),
+        state_store=store,
+    )
+
+    result = first.run_once()
+
+    assert result.metadata["iterations"] == 1
+    assert store.load()["iterations"] == 1
+
+
+def test_supervised_loop_restores_state_across_instances(tmp_path):
+    from core.worker_state_store import WorkerStateStore
+
+    store = WorkerStateStore(tmp_path / "supervised_loop.json")
+
+    first = SupervisedLoop(
+        worker=FakeWorker(),
+        gateway=FakeGateway(),
+        state_store=store,
+    )
+
+    first.run_once()
+    first.run_once()
+
+    second = SupervisedLoop(
+        worker=FakeWorker(),
+        gateway=FakeGateway(),
+        state_store=store,
+    )
+
+    assert second.iterations == 2
+    assert second.stopped is False
+
+
+def test_supervised_loop_persists_stop_state(tmp_path):
+    from core.worker_state_store import WorkerStateStore
+
+    store = WorkerStateStore(tmp_path / "supervised_loop.json")
+
+    first = SupervisedLoop(
+        worker=FakeWorker(),
+        gateway=FakeGateway(),
+        state_store=store,
+    )
+
+    first.stop()
+
+    second = SupervisedLoop(
+        worker=FakeWorker(),
+        gateway=FakeGateway(),
+        state_store=store,
+    )
+
+    assert second.stopped is True
+    assert second.run_once().stopped is True
+
+
+def test_supervised_loop_accepts_missing_state_store(tmp_path):
+    loop = SupervisedLoop(
+        worker=FakeWorker(),
+        gateway=FakeGateway(),
+    )
+
+    assert loop.iterations == 0
+    assert loop.stopped is False

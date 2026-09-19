@@ -524,7 +524,7 @@ def test_main_autonomy_uses_supervised_loop(monkeypatch, capsys, tmp_path):
     class FakeSupervisedLoop:
         instances = []
 
-        def __init__(self, worker, gateway):
+        def __init__(self, worker, gateway, state_store=None):
             self.worker = worker
             self.gateway = gateway
             self.calls = []
@@ -574,7 +574,7 @@ def test_main_autonomy_multiple_iterations_uses_supervised_loop(
     class FakeSupervisedLoop:
         instances = []
 
-        def __init__(self, worker, gateway):
+        def __init__(self, worker, gateway, state_store=None):
             self.calls = []
             FakeSupervisedLoop.instances.append(self)
 
