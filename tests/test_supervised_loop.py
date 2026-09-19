@@ -403,3 +403,99 @@ def test_supervised_loop_accepts_missing_state_store(tmp_path):
 
     assert loop.iterations == 0
     assert loop.stopped is False
+
+def test_supervised_loop_rejects_state_store_without_load():
+    class InvalidStore:
+        def save(self, state):
+            pass
+
+    with pytest.raises(ValueError, match="Armazenamento de estado inválido"):
+        SupervisedLoop(
+            worker=FakeWorker(),
+            gateway=FakeGateway(),
+            state_store=InvalidStore(),
+        )
+
+
+def test_supervised_loop_rejects_state_store_without_save():
+    class InvalidStore:
+        def load(self):
+            return {}
+
+    with pytest.raises(ValueError, match="Armazenamento de estado inválido"):
+        SupervisedLoop(
+            worker=FakeWorker(),
+            gateway=FakeGateway(),
+            state_store=InvalidStore(),
+        )
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_supervised_loop_rejects_non_positive_iterations(value):
+    loop = SupervisedLoop(
+        worker=FakeWorker(),
+        gateway=FakeGateway(),
+    )
+
+    with pytest.raises(ValueError, match="max_iterations deve ser um inteiro positivo"):
+        loop.run(value)
+
+
+@pytest.mark.parametrize("value", [True, False, 1.0, "3", None])
+def test_supervised_loop_rejects_invalid_iteration_type(value):
+    loop = SupervisedLoop(
+        worker=FakeWorker(),
+        gateway=FakeGateway(),
+    )
+
+    with pytest.raises(ValueError, match="max_iterations deve ser um inteiro positivo"):
+        loop.run(value)
+
+
+def test_supervised_loop_run_stops_when_loop_is_stopped():
+    loop = SupervisedLoop(
+        worker=FakeWorker(),
+        gateway=FakeGateway(),
+    )
+
+    loop.stop()
+
+    assert loop.run(3) == []
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        {"stopped": "true", "iterations": 0},
+        {"stopped": False, "iterations": True},
+        {"stopped": False, "iterations": -1},
+    ],
+)
+def test_supervised_loop_rejects_invalid_state_values(state):
+    loop = SupervisedLoop(
+        worker=FakeWorker(),
+        gateway=FakeGateway(),
+    )
+
+    with pytest.raises(ValueError, match="Estado inválido"):
+        loop.restore_state(state)
+
+def test_supervised_loop_run_breaks_when_stopped_during_iteration():
+    loop = None
+
+    class StoppingWorker:
+        def run_once(self):
+            loop.stop()
+            return []
+
+    loop = SupervisedLoop(
+        worker=StoppingWorker(),
+        gateway=FakeGateway(),
+    )
+
+    results = loop.run(3)
+
+    assert len(results) == 1
+    assert results[0].stopped is False
+    assert loop.stopped is True
+    assert loop.iterations == 1
