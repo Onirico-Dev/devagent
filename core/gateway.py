@@ -15,6 +15,7 @@ from core.engine.repair_cycle_state import RepairCycleState, RepairCycleStatus
 from core.engine.repair_flow import RepairFlow
 from core.engine.transaction_flow import TransactionFlow
 from core.memory.task_history import TaskHistory, TaskHistoryStatus
+from core.memory.recovery_reconciler import RecoveryReconciler
 from core.schemas.models import TransactionStatus
 from core.task.task_creator import TaskCreator
 
@@ -111,7 +112,8 @@ class DevAgentGateway:
             self.history,
             self.supervisor,
         )
-        self._reconcile_recovered_transactions(
+        self.recovery_reconciler = RecoveryReconciler(self.history)
+        self.recovery_reconciler.reconcile(
             self.transactions.recover_incomplete_transactions(
                 commit_detector=self.git.find_transaction_commit
             )
@@ -145,44 +147,8 @@ class DevAgentGateway:
             commit_error_type=CommitTransactionError,
         )
 
-    # ------------------------------------------------------------------
     def _reconcile_recovered_transactions(self, transactions):
-        for transaction in transactions:
-            status = getattr(transaction.status, "value", transaction.status)
-
-            if status not in {
-                TaskHistoryStatus.COMMITTED.value,
-                TaskHistoryStatus.ROLLED_BACK.value,
-                TaskHistoryStatus.FAILED.value,
-            }:
-                continue
-
-            approval_id = transaction.metadata.get("approval_id")
-
-            task = None
-
-            if approval_id:
-                task = self.history.get(approval_id)
-
-            if task is None:
-                task = next(
-                    (
-                        item
-                        for item in self.history.list_all()
-                        if item.get("transaction_id")
-                        == transaction.transaction_id
-                    ),
-                    None,
-                )
-
-            if task is None:
-                continue
-
-            self.history.update(
-                task["task_id"],
-                status=status,
-                transaction_id=transaction.transaction_id,
-            )
+        return self.recovery_reconciler.reconcile(transactions)
 
     # HISTORY
     # ------------------------------------------------------------------
