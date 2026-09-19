@@ -1,5 +1,4 @@
 import fcntl
-import hashlib
 from pathlib import Path
 from threading import RLock
 from core.security import SecurityPolicy
@@ -16,6 +15,7 @@ from core.engine.repair_flow import RepairFlow
 from core.engine.transaction_flow import TransactionFlow
 from core.memory.task_history import TaskHistory, TaskHistoryStatus
 from core.memory.recovery_reconciler import RecoveryReconciler
+from core.approval.approval_coordinator import ApprovalCoordinator
 from core.schemas.models import TransactionStatus
 from core.task.task_creator import TaskCreator
 
@@ -29,43 +29,14 @@ class CommitTransactionError(RuntimeError):
 
 
 class DevAgentGateway:
-    _approval_locks = {}
-    _approval_locks_guard = RLock()
     _task_creation_guard = RLock()
-
-    @classmethod
-    def _approval_lock_for(cls, approval_id):
-        key = str(approval_id)
-
-        with cls._approval_locks_guard:
-            lock = cls._approval_locks.get(key)
-
-            if lock is None:
-                lock = RLock()
-                cls._approval_locks[key] = lock
-
-            return lock
-
-    def _approval_process_lock(self, approval_id):
-        key = str(approval_id).encode("utf-8")
-        digest = hashlib.sha256(key).hexdigest()
-        lock_path = (
-            Path(self.root).resolve()
-            / "transactions"
-            / "approval_locks"
-            / f"{digest}.lock"
-        )
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-
-        handle = lock_path.open("a+", encoding="utf-8")
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        return handle
 
     MAX_REPAIR_ATTEMPTS = 2
 
     def __init__(self, agent, root="."):
         self.agent = agent
         self.root = root
+        self.approval_coordinator = ApprovalCoordinator(root)
         self._task_creation_lock_path = (
             Path(root).resolve()
             / "transactions"
@@ -307,17 +278,17 @@ class DevAgentGateway:
         # prepare_approval().
         self.supervisor.prepare_approval(approval_id)
 
-        with self._approval_lock_for(approval_id):
-            process_lock = self._approval_process_lock(approval_id)
-            try:
-                # Revalida a solicitação dentro da seção crítica.
-                # A primeira chamada poderá consumi-la; qualquer chamada
-                # concorrente que chegar depois receberá o erro correto:
-                # "Solicitação não está pendente."
-                return self._approve_locked(approval_id)
-            finally:
-                fcntl.flock(process_lock.fileno(), fcntl.LOCK_UN)
-                process_lock.close()
+        thread_lock, process_lock = self.approval_coordinator.acquire(
+            approval_id
+        )
+        try:
+            # Revalida a solicitação dentro da seção crítica.
+            # A primeira chamada poderá consumi-la; qualquer chamada
+            # concorrente que chegar depois receberá o erro correto:
+            # "Solicitação não está pendente."
+            return self._approve_locked(approval_id)
+        finally:
+            self.approval_coordinator.release(thread_lock, process_lock)
 
     def _sync_flow_dependencies(self):
         self.transaction_flow.tests = self.tests
@@ -334,22 +305,22 @@ class DevAgentGateway:
         )
 
     def reject(self, approval_id):
-        with self._approval_lock_for(approval_id):
-            process_lock = self._approval_process_lock(approval_id)
-            try:
-                result = self.supervisor.reject(
-                    approval_id
-                )
+        thread_lock, process_lock = self.approval_coordinator.acquire(
+            approval_id
+        )
+        try:
+            result = self.supervisor.reject(
+                approval_id
+            )
 
-                self._history_update(
-                    approval_id,
-                    status=TaskHistoryStatus.REJECTED.value,
-                )
+            self._history_update(
+                approval_id,
+                status=TaskHistoryStatus.REJECTED.value,
+            )
 
-                return result
-            finally:
-                fcntl.flock(process_lock.fileno(), fcntl.LOCK_UN)
-                process_lock.close()
+            return result
+        finally:
+            self.approval_coordinator.release(thread_lock, process_lock)
 
     # ------------------------------------------------------------------
     # HISTORY API
