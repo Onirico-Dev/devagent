@@ -507,3 +507,90 @@ def test_main_autonomy_rejects_non_integer_iterations(monkeypatch, capsys):
     output = capsys.readouterr().out
 
     assert "Uso: autonomy [iterações]" in output
+
+
+def test_main_autonomy_uses_supervised_loop(monkeypatch, capsys, tmp_path):
+    import cli
+
+    class FakeResult:
+        proposals = []
+        metadata = {
+            "iterations": 1,
+            "proposal_count": 0,
+            "pending_count": 0,
+        }
+        stopped = False
+
+    class FakeSupervisedLoop:
+        instances = []
+
+        def __init__(self, worker, gateway):
+            self.worker = worker
+            self.gateway = gateway
+            self.calls = []
+            FakeSupervisedLoop.instances.append(self)
+
+        def run_once(self):
+            self.calls.append("run_once")
+            return FakeResult()
+
+        def run(self, max_iterations):
+            self.calls.append(("run", max_iterations))
+            return [FakeResult()]
+
+    monkeypatch.setattr(cli, "SupervisedLoop", FakeSupervisedLoop)
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda _: "autonomy\nsair".split("\n").pop(0),
+    )
+
+    commands = iter(["autonomy", "sair"])
+    monkeypatch.setattr("builtins.input", lambda _: next(commands))
+
+    cli.main(tmp_path / "transactions")
+
+    output = capsys.readouterr().out
+
+    assert FakeSupervisedLoop.instances
+    assert FakeSupervisedLoop.instances[0].calls == ["run_once"]
+    assert "Rodada: 1" in output
+
+
+def test_main_autonomy_multiple_iterations_uses_supervised_loop(
+    monkeypatch,
+    tmp_path,
+):
+    import cli
+
+    class FakeResult:
+        proposals = []
+        metadata = {
+            "iterations": 1,
+            "proposal_count": 0,
+            "pending_count": 0,
+        }
+        stopped = False
+
+    class FakeSupervisedLoop:
+        instances = []
+
+        def __init__(self, worker, gateway):
+            self.calls = []
+            FakeSupervisedLoop.instances.append(self)
+
+        def run_once(self):
+            self.calls.append("run_once")
+            return FakeResult()
+
+        def run(self, max_iterations):
+            self.calls.append(("run", max_iterations))
+            return [FakeResult()]
+
+    monkeypatch.setattr(cli, "SupervisedLoop", FakeSupervisedLoop)
+
+    commands = iter(["autonomy 3", "sair"])
+    monkeypatch.setattr("builtins.input", lambda _: next(commands))
+
+    cli.main(tmp_path / "transactions")
+
+    assert FakeSupervisedLoop.instances[0].calls == [("run", 3)]

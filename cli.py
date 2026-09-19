@@ -2,6 +2,7 @@ from pathlib import Path
 
 from agent import DevAgent
 from core.autonomy_loop import AutonomyLoop
+from core.supervised_loop import SupervisedLoop
 from core.gateway import DevAgentGateway
 from core.observation_store import ObservationStore
 from core.observer import Observation, Observer
@@ -127,6 +128,7 @@ def main(state_root: str | Path = "transactions"):
         store=worker_state_store,
     )
     autonomy_loop = AutonomyLoop(worker)
+    supervised_loop = SupervisedLoop(worker, gateway)
 
     print("=" * 60)
     print("DevAgent CLI")
@@ -188,7 +190,7 @@ def main(state_root: str | Path = "transactions"):
 
             elif action == "autonomy":
                 if len(parts) == 1:
-                    results = [autonomy_loop.run_once()]
+                    results = [supervised_loop.run_once()]
                 else:
                     try:
                         max_iterations = int(parts[1])
@@ -196,7 +198,7 @@ def main(state_root: str | Path = "transactions"):
                         print("Uso: autonomy [iterações]")
                         continue
 
-                    results = autonomy_loop.run(max_iterations=max_iterations)
+                    results = supervised_loop.run(max_iterations=max_iterations)
 
                 for result in results:
                     print_proposals(result.proposals)
