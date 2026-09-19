@@ -16,6 +16,7 @@ from core.engine.repair_flow import RepairFlow
 from core.engine.transaction_flow import TransactionFlow
 from core.memory.task_history import TaskHistory, TaskHistoryStatus
 from core.schemas.models import TransactionStatus
+from core.task.task_creator import TaskCreator
 
 
 class CommitTransactionError(RuntimeError):
@@ -78,6 +79,7 @@ class DevAgentGateway:
             )
         )
         self.security = SecurityPolicy(root)
+        self.task_creator = TaskCreator(self.security)
         self.executor = SafeExecutor(root)
         self.transactions = TransactionManager(root)
         self.tests = TestRunner(root)
@@ -226,43 +228,7 @@ class DevAgentGateway:
             raise ValueError("Instrução inválida.")
 
         result = self.agent.process(instruction)
-
-        if not isinstance(result, dict):
-            raise ValueError(
-                "Plano inválido retornado pelo agente."
-            )
-
-        changes = result.get("changes")
-
-        if not isinstance(changes, list):
-            raise ValueError(
-                "Plano não possui lista de alterações."
-            )
-
-        for change in changes:
-            if not isinstance(change, dict):
-                raise ValueError(
-                    "Alteração inválida no plano."
-                )
-
-            path = change.get("path")
-
-            if not path:
-                raise ValueError(
-                    "Alteração sem caminho."
-                )
-
-            self.security.validate_path(path)
-
-            content = change.get("content")
-
-            if change.get("change_type") != "delete":
-                if not isinstance(content, str):
-                    raise ValueError(
-                        f"Conteúdo inválido para alteração: {path}"
-                    )
-
-                self.security.validate_content(content)
+        self.task_creator.validate_plan(result)
 
         normalized_instruction = " ".join(instruction.split())
 
