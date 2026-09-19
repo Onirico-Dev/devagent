@@ -196,3 +196,137 @@ def test_restore_state_restores_iterations_and_stop():
 
     assert loop.stopped is True
     assert loop.iterations == 4
+
+
+def test_supervised_loop_preserves_external_approval_barrier():
+    class WorkerWithProposal:
+        def __init__(self):
+            self.calls = 0
+
+        def run_once(self):
+            self.calls += 1
+            return [
+                {
+                    "instruction": "crie arquivo.txt",
+                    "approval_id": "42",
+                    "status": "pending",
+                    "plan": {},
+                }
+            ]
+
+    class GatewayWithApprovalGuard:
+        def __init__(self):
+            self.approve_called = False
+
+        def list_tasks(self):
+            return [
+                {
+                    "approval_id": "42",
+                    "instruction": "crie arquivo.txt",
+                    "status": "pending",
+                }
+            ]
+
+        def approve(self, approval_id):
+            self.approve_called = True
+            raise AssertionError(
+                "SupervisedLoop não deve aprovar automaticamente."
+            )
+
+    worker = WorkerWithProposal()
+    gateway = GatewayWithApprovalGuard()
+
+    loop = SupervisedLoop(worker=worker, gateway=gateway)
+
+    result = loop.run_once()
+
+    assert len(result.proposals) == 1
+    assert result.proposals[0]["approval_id"] == "42"
+    assert gateway.approve_called is False
+
+
+def test_supervised_loop_does_not_execute_pending_task():
+    class WorkerWithProposal:
+        def run_once(self):
+            return [
+                {
+                    "instruction": "crie arquivo.txt",
+                    "approval_id": "43",
+                    "status": "pending",
+                    "plan": {},
+                }
+            ]
+
+    class Gateway:
+        def list_tasks(self):
+            return [
+                {
+                    "approval_id": "43",
+                    "instruction": "crie arquivo.txt",
+                    "status": "pending",
+                }
+            ]
+
+        def approve(self, approval_id):
+            raise AssertionError("aprovação automática proibida")
+
+        def execute_approved(self, approval_id):
+            raise AssertionError("execução automática proibida")
+
+    loop = SupervisedLoop(
+        worker=WorkerWithProposal(),
+        gateway=Gateway(),
+    )
+
+    result = loop.run_once()
+
+    assert result.metadata["pending_count"] == 1
+
+
+def test_supervised_loop_can_observe_after_external_decision():
+    class Worker:
+        def __init__(self):
+            self.round = 0
+
+        def run_once(self):
+            self.round += 1
+            if self.round == 1:
+                return [
+                    {
+                        "instruction": "crie arquivo.txt",
+                        "approval_id": "44",
+                        "status": "pending",
+                        "plan": {},
+                    }
+                ]
+            return []
+
+    class Gateway:
+        def __init__(self):
+            self.status = "pending"
+
+        def list_tasks(self):
+            return [
+                {
+                    "approval_id": "44",
+                    "instruction": "crie arquivo.txt",
+                    "status": self.status,
+                }
+            ]
+
+    worker = Worker()
+    gateway = Gateway()
+    loop = SupervisedLoop(worker=worker, gateway=gateway)
+
+    first = loop.run_once()
+
+    assert len(first.proposals) == 1
+    assert first.metadata["pending_count"] == 1
+
+    gateway.status = "committed"
+
+    second = loop.run_once()
+
+    assert second.proposals == []
+    assert second.metadata["pending_count"] == 0
+    assert loop.iterations == 2
