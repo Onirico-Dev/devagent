@@ -176,3 +176,27 @@ def test_process_observation_rolls_back_created_proposal_on_persist_failure(monk
     assert worker.processed_ids == set()
     assert worker._processed == set()
     assert worker._processed_observations == {}
+
+
+def test_process_observation_reuses_pending_proposal():
+    from core.observation import Observation
+    from core.observer import Observer
+    from core.worker import Worker
+
+    class Gateway:
+        def list_pending(self):
+            return [{
+                "instruction": "teste",
+                "approval_id": "approval-1",
+                "plan": {},
+                "status": "pending",
+            }]
+
+    worker = Worker(Gateway(), Observer([]))
+    observation = Observation("teste", {})
+
+    proposal = worker.process_observation(observation)
+
+    assert proposal.approval_id == "approval-1"
+    assert proposal.status == "pending"
+    assert proposal.instruction == "teste"
