@@ -135,7 +135,7 @@ class DevAgentGateway:
             repair_controller=self.repair_controller,
             repair_flow=self.repair_flow,
             history=self.history,
-            history_update_fn=self._update_history_safe,
+            history_update_fn=self._history_update,
             restore_repair_state_fn=lambda transaction: (
                 self._restore_repair_state(transaction)
             ),
@@ -205,20 +205,6 @@ class DevAgentGateway:
             if str(exc) != "'Tarefa não encontrada.'":
                 raise
             return None
-
-    def _update_history_safe(
-        self,
-        approval_id,
-        status=None,
-        transaction_id=None,
-        extra=None,
-    ):
-        return self._history_update(
-            approval_id,
-            status=status,
-            transaction_id=transaction_id,
-            extra=extra,
-        )
 
     def list_pending(self):
         return self.history.list_pending()
@@ -389,7 +375,7 @@ class DevAgentGateway:
                     approval_id
                 )
 
-                self._update_history_safe(
+                self._history_update(
                     approval_id,
                     status=TaskHistoryStatus.REJECTED.value,
                 )
