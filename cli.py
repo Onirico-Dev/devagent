@@ -1,7 +1,6 @@
 from pathlib import Path
 
 from agent import DevAgent
-from core.autonomy_loop import AutonomyLoop
 from core.supervised_loop import SupervisedLoop
 from core.gateway import DevAgentGateway
 from core.observation_store import ObservationStore
@@ -130,7 +129,6 @@ def main(state_root: str | Path = "transactions"):
         observer,
         store=worker_state_store,
     )
-    autonomy_loop = AutonomyLoop(worker)
     supervised_loop = SupervisedLoop(
         worker,
         gateway,
