@@ -200,3 +200,97 @@ def test_process_observation_reuses_pending_proposal():
     assert proposal.approval_id == "approval-1"
     assert proposal.status == "pending"
     assert proposal.instruction == "teste"
+
+
+def test_worker_proposal_exposes_autonomy_decision(monkeypatch, tmp_path):
+    from core.autonomy_policy import AutonomyDecision, AutonomyPolicy
+    from core.observation import Observation
+    from core.observer import Observer
+    from core.worker import Worker
+
+    class Gateway:
+        def create_task(self, instruction):
+            return {
+                "approval_id": "approval-1",
+                "status": "pending",
+                "plan": {
+                    "objective": instruction,
+                    "changes": [
+                        {
+                            "change_type": "create",
+                            "path": "example.py",
+                            "content": "print('ok')",
+                            "reason": instruction,
+                        }
+                    ],
+                    "tests": [],
+                    "risks": [],
+                },
+            }
+
+    worker = Worker(
+        Gateway(),
+        Observer(
+            [
+                Observation(
+                    instruction="criar example.py",
+                    metadata={},
+                )
+            ]
+        ),
+        autonomy_policy=AutonomyPolicy(),
+    )
+
+    proposal = worker.run_once()[0]
+
+    assert (
+        proposal.autonomy_decision
+        == AutonomyDecision.AUTO_APPROVE.value
+    )
+
+
+def test_worker_marks_destructive_proposal_as_human_required():
+    from core.autonomy_policy import AutonomyDecision, AutonomyPolicy
+    from core.observation import Observation
+    from core.observer import Observer
+    from core.worker import Worker
+
+    class Gateway:
+        def create_task(self, instruction):
+            return {
+                "approval_id": "approval-2",
+                "status": "pending",
+                "plan": {
+                    "objective": instruction,
+                    "changes": [
+                        {
+                            "change_type": "delete",
+                            "path": "example.py",
+                            "content": None,
+                            "reason": instruction,
+                        }
+                    ],
+                    "tests": [],
+                    "risks": ["Operação destrutiva"],
+                },
+            }
+
+    worker = Worker(
+        Gateway(),
+        Observer(
+            [
+                Observation(
+                    instruction="apagar example.py",
+                    metadata={},
+                )
+            ]
+        ),
+        autonomy_policy=AutonomyPolicy(),
+    )
+
+    proposal = worker.run_once()[0]
+
+    assert (
+        proposal.autonomy_decision
+        == AutonomyDecision.REQUIRE_HUMAN.value
+    )

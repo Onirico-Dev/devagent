@@ -4,6 +4,8 @@ from typing import Any
 from core.observation import Observation
 from core.observer import Observer
 from core.worker_state_store import WorkerStateStore
+from core.autonomy_policy import AutonomyDecision, AutonomyPolicy
+from core.schemas.models import Plan
 
 
 @dataclass(frozen=True)
@@ -12,6 +14,7 @@ class Proposal:
     approval_id: str
     status: str
     plan: dict[str, Any]
+    autonomy_decision: str = AutonomyDecision.REQUIRE_HUMAN.value
 
 
 class Worker:
@@ -39,6 +42,7 @@ class Worker:
         gateway,
         observer: Observer,
         store: WorkerStateStore | None = None,
+        autonomy_policy: AutonomyPolicy | None = None,
     ):
         if gateway is None:
             raise ValueError("Gateway inválido.")
@@ -50,6 +54,7 @@ class Worker:
         self.gateway = gateway
         self.observer = observer
         self.store = store
+        self.autonomy_policy = autonomy_policy
         self._processed: set[tuple[str, tuple[tuple[str, str], ...]]] = set()
         self._processed_ids: set[str] = set()
         self._processed_observations: dict[
@@ -245,11 +250,34 @@ class Worker:
             self._processed_observations.pop(key, None)
             raise
 
+        autonomy_decision = AutonomyDecision.REQUIRE_HUMAN.value
+
+        if self.autonomy_policy is not None:
+            plan = dict(result["plan"])
+            plan.setdefault("objective", instruction)
+
+            normalized_changes = []
+            for change in plan.get("changes", []):
+                change = dict(change)
+
+                if "change_type" not in change and "type" in change:
+                    change["change_type"] = str(change.pop("type")).lower()
+
+                normalized_changes.append(change)
+
+            plan["changes"] = normalized_changes
+
+            plan_object = Plan.from_dict(plan)
+            autonomy_decision = self.autonomy_policy.evaluate(
+                plan_object
+            ).value
+
         return Proposal(
             instruction=instruction,
             approval_id=approval_id,
             status=result["status"],
             plan=result["plan"],
+            autonomy_decision=autonomy_decision,
         )
 
     def run_once(self) -> list[Proposal]:

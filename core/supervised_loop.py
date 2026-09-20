@@ -62,6 +62,40 @@ class SupervisedLoop(LoopController):
         proposals = self.worker.run_once()
         self._iterations += 1
 
+        auto_approved_count = 0
+
+        for proposal in proposals:
+            if isinstance(proposal, dict):
+                autonomy_decision = proposal.get(
+                    "autonomy_decision"
+                )
+                status = proposal.get("status")
+                approval_id = proposal.get("approval_id")
+            else:
+                autonomy_decision = getattr(
+                    proposal,
+                    "autonomy_decision",
+                    None,
+                )
+                status = getattr(
+                    proposal,
+                    "status",
+                    None,
+                )
+                approval_id = getattr(
+                    proposal,
+                    "approval_id",
+                    None,
+                )
+
+            if (
+                autonomy_decision == "auto_approve"
+                and status == "pending"
+                and approval_id is not None
+            ):
+                self.gateway.approve(approval_id)
+                auto_approved_count += 1
+
         tasks = self.gateway.list_tasks()
         pending_count = sum(
             1
@@ -77,6 +111,7 @@ class SupervisedLoop(LoopController):
             metadata={
                 "iterations": self._iterations,
                 "proposal_count": len(proposals),
+                "auto_approved_count": auto_approved_count,
                 "pending_count": pending_count,
             },
         )

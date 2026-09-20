@@ -43,6 +43,28 @@ class Plan:
     tests: list[str] = field(default_factory=list)
     risks: list[str] = field(default_factory=list)
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Plan":
+        if not isinstance(data, dict):
+            raise ValueError("Plano inválido.")
+
+        changes = [
+            Change(
+                change_type=ChangeType(change["change_type"]),
+                path=change["path"],
+                content=change.get("content"),
+                reason=change.get("reason", ""),
+            )
+            for change in data.get("changes", [])
+        ]
+
+        return cls(
+            objective=data["objective"],
+            changes=changes,
+            tests=list(data.get("tests", [])),
+            risks=list(data.get("risks", [])),
+        )
+
 
 @dataclass
 class Transaction:

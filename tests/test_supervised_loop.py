@@ -499,3 +499,113 @@ def test_supervised_loop_run_breaks_when_stopped_during_iteration():
     assert results[0].stopped is False
     assert loop.stopped is True
     assert loop.iterations == 1
+
+
+def test_supervised_loop_auto_approves_explicit_autonomous_proposal():
+    class Worker:
+        def run_once(self):
+            return [
+                {
+                    "instruction": "crie arquivo.txt",
+                    "approval_id": "44",
+                    "status": "pending",
+                    "plan": {},
+                    "autonomy_decision": "auto_approve",
+                }
+            ]
+
+    class Gateway:
+        def __init__(self):
+            self.approved = []
+
+        def list_tasks(self):
+            return []
+
+        def approve(self, approval_id):
+            self.approved.append(approval_id)
+            return {
+                "approval_id": approval_id,
+                "status": "committed",
+            }
+
+    gateway = Gateway()
+    loop = SupervisedLoop(worker=Worker(), gateway=gateway)
+
+    result = loop.run_once()
+
+    assert gateway.approved == ["44"]
+    assert result.proposals[0]["approval_id"] == "44"
+    assert result.metadata["auto_approved_count"] == 1
+
+
+def test_supervised_loop_keeps_human_proposal_pending():
+    class Worker:
+        def run_once(self):
+            return [
+                {
+                    "instruction": "apague arquivo.txt",
+                    "approval_id": "45",
+                    "status": "pending",
+                    "plan": {},
+                    "autonomy_decision": "require_human",
+                }
+            ]
+
+    class Gateway:
+        def __init__(self):
+            self.approved = []
+
+        def list_tasks(self):
+            return [
+                {
+                    "approval_id": "45",
+                    "status": "pending",
+                }
+            ]
+
+        def approve(self, approval_id):
+            self.approved.append(approval_id)
+
+    gateway = Gateway()
+    loop = SupervisedLoop(worker=Worker(), gateway=gateway)
+
+    result = loop.run_once()
+
+    assert gateway.approved == []
+    assert result.metadata["auto_approved_count"] == 0
+    assert result.metadata["pending_count"] == 1
+
+
+def test_supervised_loop_auto_approves_real_worker_proposal():
+    from core.worker import Proposal
+
+    class Worker:
+        def run_once(self):
+            return [
+                Proposal(
+                    instruction="crie arquivo.txt",
+                    approval_id="46",
+                    status="pending",
+                    plan={},
+                    autonomy_decision="auto_approve",
+                )
+            ]
+
+    class Gateway:
+        def __init__(self):
+            self.approved = []
+
+        def list_tasks(self):
+            return []
+
+        def approve(self, approval_id):
+            self.approved.append(approval_id)
+            return {"approval_id": approval_id, "status": "committed"}
+
+    gateway = Gateway()
+    loop = SupervisedLoop(worker=Worker(), gateway=gateway)
+
+    result = loop.run_once()
+
+    assert gateway.approved == ["46"]
+    assert result.metadata["auto_approved_count"] == 1

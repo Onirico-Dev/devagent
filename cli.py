@@ -5,6 +5,7 @@ from core.supervised_loop import SupervisedLoop
 from core.gateway import DevAgentGateway
 from core.observation_store import ObservationStore
 from core.observer import Observation, Observer
+from core.autonomy_policy import AutonomyPolicy
 from core.worker import Worker
 from core.worker_state_store import WorkerStateStore
 
@@ -124,10 +125,13 @@ def main(state_root: str | Path = "transactions"):
     )
 
     observer = Observer(store=observation_store)
+    autonomy_policy = AutonomyPolicy()
+
     worker = Worker(
         gateway,
         observer,
         store=worker_state_store,
+        autonomy_policy=autonomy_policy,
     )
     supervised_loop = SupervisedLoop(
         worker,
