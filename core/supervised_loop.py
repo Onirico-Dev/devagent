@@ -51,6 +51,10 @@ class SupervisedLoop(LoopController):
         self._stopped = True
         self._persist_state()
 
+    def start(self) -> None:
+        self._stopped = False
+        self._persist_state()
+
     def run_once(self) -> SupervisedLoopResult:
         if self._stopped:
             return SupervisedLoopResult(

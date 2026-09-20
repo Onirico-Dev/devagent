@@ -8,6 +8,9 @@ class LoopController:
     def stop(self) -> None:
         self._stopped = True
 
+    def start(self) -> None:
+        self._stopped = False
+
     def run(self, max_iterations: int):
         if not isinstance(max_iterations, int) or isinstance(max_iterations, bool):
             raise ValueError(

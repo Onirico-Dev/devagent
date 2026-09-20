@@ -609,3 +609,47 @@ def test_supervised_loop_auto_approves_real_worker_proposal():
 
     assert gateway.approved == ["46"]
     assert result.metadata["auto_approved_count"] == 1
+
+
+def test_supervised_loop_persists_start_state(tmp_path):
+    from core.worker_state_store import WorkerStateStore
+
+    store = WorkerStateStore(tmp_path / "supervised_loop.json")
+
+    first = SupervisedLoop(
+        worker=FakeWorker(),
+        gateway=FakeGateway(),
+        state_store=store,
+    )
+
+    first.stop()
+    assert store.load()["stopped"] is True
+
+    first.start()
+
+    assert first.stopped is False
+    assert store.load()["stopped"] is False
+
+
+def test_supervised_loop_start_allows_future_round(tmp_path):
+    from core.worker_state_store import WorkerStateStore
+
+    store = WorkerStateStore(tmp_path / "supervised_loop.json")
+
+    loop = SupervisedLoop(
+        worker=FakeWorker(),
+        gateway=FakeGateway(),
+        state_store=store,
+    )
+
+    loop.stop()
+    stopped = loop.run_once()
+
+    assert stopped.stopped is True
+    assert loop.iterations == 0
+
+    loop.start()
+    result = loop.run_once()
+
+    assert result.stopped is False
+    assert loop.iterations == 1

@@ -58,3 +58,15 @@ def test_run_rejects_non_integer_iterations():
 
     with pytest.raises(ValueError, match="max_iterations"):
         loop.run("3")
+
+
+def test_start_resumes_controller():
+    loop = _TestLoop()
+
+    loop.stop()
+    assert loop.stopped is True
+
+    loop.start()
+
+    assert loop.stopped is False
+    assert loop.run(1) == [1]
