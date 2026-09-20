@@ -101,3 +101,26 @@ def test_reconcile_skips_when_task_does_not_exist():
     RecoveryReconciler(history).reconcile([transaction])
 
     assert history.updates == []
+
+def test_reconcile_propagates_history_update_failure():
+    history = FakeHistory()
+    history.tasks = [{"task_id": "task-5", "transaction_id": "tx-5"}]
+
+    def fail_update(*args, **kwargs):
+        raise RuntimeError("simulated history persistence failure")
+
+    history.update = fail_update
+
+    transaction = FakeTransaction(
+        "tx-5",
+        TaskHistoryStatus.FAILED.value,
+    )
+
+    try:
+        RecoveryReconciler(history).reconcile([transaction])
+    except RuntimeError as error:
+        assert str(error) == "simulated history persistence failure"
+    else:
+        raise AssertionError(
+            "RecoveryReconciler deveria propagar a falha do histórico"
+        )
