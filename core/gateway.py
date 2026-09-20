@@ -1,4 +1,6 @@
 import fcntl
+import inspect
+from contextlib import contextmanager
 from pathlib import Path
 from threading import RLock
 from core.security import SecurityPolicy
@@ -84,10 +86,23 @@ class DevAgentGateway:
             self.supervisor,
         )
         self.recovery_reconciler = RecoveryReconciler(self.history)
-        self.recovery_reconciler.reconcile(
-            self.transactions.recover_incomplete_transactions(
-                commit_detector=self.git.find_transaction_commit
+
+        recovery = self.transactions.recover_incomplete_transactions
+
+        if "recovery_guard" in inspect.signature(
+            recovery
+        ).parameters:
+            recovered_transactions = recovery(
+                commit_detector=self.git.find_transaction_commit,
+                recovery_guard=self._recovery_guard,
             )
+        else:
+            recovered_transactions = recovery(
+                commit_detector=self.git.find_transaction_commit,
+            )
+
+        self.recovery_reconciler.reconcile(
+            recovered_transactions
         )
 
         self.repair_flow = RepairFlow(
@@ -113,6 +128,25 @@ class DevAgentGateway:
             repair_cycle_fn=lambda **kwargs: self._run_repair_cycle(**kwargs),
             commit_error_type=CommitTransactionError,
         )
+
+    @contextmanager
+    def _recovery_guard(self, transaction):
+        approval_id = transaction.metadata.get("approval_id")
+
+        if not approval_id:
+            yield
+            return
+
+        thread_lock, process_lock = self.approval_coordinator.acquire(
+            approval_id
+        )
+        try:
+            yield
+        finally:
+            self.approval_coordinator.release(
+                thread_lock,
+                process_lock,
+            )
 
     def _reconcile_recovered_transactions(self, transactions):
         return self.recovery_reconciler.reconcile(transactions)

@@ -5430,3 +5430,55 @@ def test_gateway_create_task_skips_pending_task_with_non_string_instruction(
 
     assert created["status"] == "pending"
     assert created["approval_id"] != "invalid-instruction"
+
+def test_gateway_reconciles_recovered_failed_transaction_in_history(
+    tmp_path,
+    monkeypatch,
+):
+    import json
+
+    import core.gateway as gateway_module
+    from core.schemas.models import Transaction, TransactionStatus
+
+    tasks_path = tmp_path / "transactions" / "tasks.json"
+    tasks_path.parent.mkdir(parents=True)
+
+    tasks_path.write_text(
+        json.dumps(
+            {
+                "task-recovered": {
+                    "task_id": "task-recovered",
+                    "approval_id": "task-recovered",
+                    "instruction": "recuperar tarefa",
+                    "plan": {},
+                    "status": "pending",
+                    "transaction_id": "tx-recovered",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "updated_at": "2026-01-01T00:00:00+00:00",
+                }
+            }
+        )
+    )
+
+    transaction = Transaction(
+        transaction_id="tx-recovered",
+        status=TransactionStatus.FAILED,
+        metadata={"approval_id": "task-recovered"},
+    )
+
+    monkeypatch.setattr(
+        gateway_module.TransactionManager,
+        "recover_incomplete_transactions",
+        lambda self, commit_detector=None: [transaction],
+    )
+
+    gateway_module.DevAgentGateway(
+        None,
+        root=str(tmp_path),
+    )
+
+    data = json.loads(tasks_path.read_text())
+    task = data["task-recovered"]
+
+    assert task["status"] == "failed"
+    assert task["transaction_id"] == "tx-recovered"

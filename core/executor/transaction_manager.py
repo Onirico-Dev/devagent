@@ -242,14 +242,36 @@ class TransactionManager:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         return handle
 
-    def recover_incomplete_transactions(self, commit_detector=None):
+    def _recover_transaction(self, current, commit_detector):
+        if commit_detector is not None:
+            commit_result = commit_detector(current.transaction_id)
+
+            if commit_result is not None:
+                current.status = TransactionStatus.COMMITTED
+                current.metadata["recovery_git"] = dict(commit_result)
+                self.persist_manifest(current)
+                return current
+
+        try:
+            self.rollback(current)
+        except Exception as error:
+            current.status = TransactionStatus.FAILED
+            current.metadata["recovery_error"] = str(error)
+            self.persist_manifest(current)
+
+        return current
+
+    def recover_incomplete_transactions(
+        self,
+        commit_detector=None,
+        recovery_guard=None,
+    ):
         recovered = []
 
         for transaction in self.list_recoverable_transactions():
             lock = self._recovery_lock(
                 transaction.transaction_id
             )
-
             try:
                 current = self.load_manifest(
                     transaction.transaction_id
@@ -261,27 +283,37 @@ class TransactionManager:
                 ):
                     continue
 
-                if commit_detector is not None:
-                    commit_result = commit_detector(current.transaction_id)
+                guard = (
+                    recovery_guard(current)
+                    if recovery_guard is not None
+                    else None
+                )
 
-                    if commit_result is not None:
-                        current.status = TransactionStatus.COMMITTED
-                        current.metadata["recovery_git"] = dict(
-                            commit_result
+                if guard is not None:
+                    with guard:
+                        current = self.load_manifest(
+                            transaction.transaction_id
                         )
-                        self.persist_manifest(current)
-                        recovered.append(current)
-                        continue
 
-                try:
-                    self.rollback(current)
-                except Exception as error:
-                    current.status = TransactionStatus.FAILED
-                    current.metadata["recovery_error"] = str(error)
-                    self.persist_manifest(current)
+                        if current.status not in (
+                            TransactionStatus.EXECUTING,
+                            TransactionStatus.TESTING,
+                        ):
+                            continue
 
-                recovered.append(current)
-
+                        recovered.append(
+                            self._recover_transaction(
+                                current,
+                                commit_detector,
+                            )
+                        )
+                else:
+                    recovered.append(
+                        self._recover_transaction(
+                            current,
+                            commit_detector,
+                        )
+                    )
             finally:
                 fcntl.flock(
                     lock.fileno(),

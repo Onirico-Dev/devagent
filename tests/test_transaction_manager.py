@@ -3096,3 +3096,87 @@ def test_recover_incomplete_transactions_rolls_back_when_commit_detector_returns
     assert len(recovered) == 1
     assert recovered[0].status == TransactionStatus.ROLLED_BACK
     assert calls == ["tx-recovery-no-commit"]
+
+def test_recover_incomplete_transactions_skips_after_recovery_guard(
+    tmp_path,
+    monkeypatch,
+):
+    from contextlib import nullcontext
+
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Transaction, TransactionStatus
+
+    manager = TransactionManager(tmp_path)
+
+    transaction = Transaction(
+        transaction_id="tx-guard-race",
+        status=TransactionStatus.EXECUTING,
+    )
+
+    states = iter(
+        [
+            Transaction(
+                transaction_id="tx-guard-race",
+                status=TransactionStatus.EXECUTING,
+            ),
+            Transaction(
+                transaction_id="tx-guard-race",
+                status=TransactionStatus.COMMITTED,
+            ),
+        ]
+    )
+
+    monkeypatch.setattr(
+        manager,
+        "list_recoverable_transactions",
+        lambda: [transaction],
+    )
+    monkeypatch.setattr(
+        manager,
+        "load_manifest",
+        lambda _transaction_id: next(states),
+    )
+
+    recovered = manager.recover_incomplete_transactions(
+        recovery_guard=lambda _transaction: nullcontext(),
+    )
+
+    assert recovered == []
+
+def test_recover_incomplete_transactions_recovers_after_recovery_guard(
+    tmp_path,
+    monkeypatch,
+):
+    from contextlib import nullcontext
+
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Transaction, TransactionStatus
+
+    manager = TransactionManager(tmp_path)
+
+    transaction = Transaction(
+        transaction_id="tx-guard-recover",
+        status=TransactionStatus.EXECUTING,
+    )
+
+    monkeypatch.setattr(
+        manager,
+        "list_recoverable_transactions",
+        lambda: [transaction],
+    )
+    monkeypatch.setattr(
+        manager,
+        "load_manifest",
+        lambda _transaction_id: transaction,
+    )
+    monkeypatch.setattr(
+        manager,
+        "_recover_transaction",
+        lambda current, commit_detector: current,
+    )
+
+    recovered = manager.recover_incomplete_transactions(
+        recovery_guard=lambda _transaction: nullcontext(),
+    )
+
+    assert recovered == [transaction]
