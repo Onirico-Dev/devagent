@@ -124,3 +124,33 @@ def test_reconcile_propagates_history_update_failure():
         raise AssertionError(
             "RecoveryReconciler deveria propagar a falha do histórico"
         )
+
+
+def test_reconcile_failed_recovery_updates_history_to_failed():
+    history = FakeHistory()
+    history.tasks = [
+        {
+            "task_id": "task-recovery-failure",
+            "transaction_id": "tx-recovery-failure",
+        }
+    ]
+
+    transaction = FakeTransaction(
+        "tx-recovery-failure",
+        TaskHistoryStatus.FAILED.value,
+        {
+            "recovery_error": "simulated rollback failure",
+        },
+    )
+
+    RecoveryReconciler(history).reconcile([transaction])
+
+    assert history.updates == [
+        (
+            "task-recovery-failure",
+            {
+                "status": TaskHistoryStatus.FAILED.value,
+                "transaction_id": "tx-recovery-failure",
+            },
+        )
+    ]
