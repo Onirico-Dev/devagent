@@ -21,8 +21,8 @@ class TransactionFlow:
         repair_flow,
         history,
         history_update_fn,
-        restore_repair_state_fn,
-        repair_cycle_fn,
+        restore_repair_state_fn=None,
+        repair_cycle_fn=None,
         commit_error_type=RuntimeError,
     ):
         self.agent = agent
@@ -98,9 +98,10 @@ class TransactionFlow:
             transaction
         )
 
-        repair_state = self._restore_repair_state(
-            transaction
-        )
+        if self._restore_repair_state is not None:
+            repair_state = self._restore_repair_state(transaction)
+        else:
+            repair_state = self.repair_flow.restore_state(transaction)
 
         repair_state.persist(transaction)
 
@@ -198,12 +199,20 @@ class TransactionFlow:
                 repair_state=repair_state,
             )
 
-        repair_cycle = self._repair_cycle(
-            instruction=instruction,
-            transaction=transaction,
-            test_result=test_result,
-            repair_state=repair_state,
-        )
+        if self._repair_cycle is not None:
+            repair_cycle = self._repair_cycle(
+                instruction=instruction,
+                transaction=transaction,
+                test_result=test_result,
+                repair_state=repair_state,
+            )
+        else:
+            repair_cycle = self.repair_flow.run(
+                instruction=instruction,
+                transaction=transaction,
+                test_result=test_result,
+                repair_state=repair_state,
+            )
 
         if repair_cycle.get("success"):
             return commit_fn(

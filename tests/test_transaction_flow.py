@@ -812,3 +812,72 @@ def test_approve_locked_unexpected_exception_returns_rollback_result():
     assert result["status"] == "failed"
     assert result["success"] is False
     assert result["transaction_id"] == ctx.transaction.transaction_id
+
+
+
+def test_approve_locked_uses_repair_flow_restore_state_fallback():
+    ctx = make_flow()
+
+    ctx.flow._restore_repair_state = None
+
+    expected_state = FakeRepairState()
+    calls = []
+
+    def restore_state(transaction):
+        calls.append(transaction)
+        return expected_state
+
+    ctx.flow.repair_flow.restore_state = restore_state
+
+    def commit_fn(**kwargs):
+        return {"status": "committed"}
+
+    def rollback_fn(**kwargs):
+        raise AssertionError("rollback não deveria ocorrer")
+
+    result = ctx.flow.approve_locked(
+        approval_id="approval-1",
+        commit_fn=commit_fn,
+        rollback_fn=rollback_fn,
+    )
+
+    assert result["status"] == "committed"
+    assert calls
+    assert calls[0].transaction_id == "tx-1"
+
+
+def test_approve_locked_uses_repair_flow_run_fallback():
+    ctx = make_flow(test_result={"success": False})
+
+    ctx.flow._repair_cycle = None
+
+    expected_repair = {
+        "success": True,
+        "tests": {"success": True},
+        "repair": {"action": "fixed"},
+    }
+
+    calls = []
+
+    def repair_run(**kwargs):
+        calls.append(kwargs)
+        return expected_repair
+
+    ctx.flow.repair_flow.run = repair_run
+
+    def commit_fn(**kwargs):
+        return {"status": "committed"}
+
+    def rollback_fn(**kwargs):
+        raise AssertionError("rollback não deveria ocorrer")
+
+    result = ctx.flow.approve_locked(
+        approval_id="approval-1",
+        commit_fn=commit_fn,
+        rollback_fn=rollback_fn,
+    )
+
+    assert result["status"] == "committed"
+    assert calls
+    assert calls[0]["instruction"] == "criar app.py"
+    assert calls[0]["transaction"].transaction_id == "tx-1"

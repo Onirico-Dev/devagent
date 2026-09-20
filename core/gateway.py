@@ -109,12 +109,8 @@ class DevAgentGateway:
             repair_flow=self.repair_flow,
             history=self.history,
             history_update_fn=self._history_update,
-            restore_repair_state_fn=lambda transaction: (
-                self._restore_repair_state(transaction)
-            ),
-            repair_cycle_fn=lambda **kwargs: (
-                self._run_repair_cycle(**kwargs)
-            ),
+            restore_repair_state_fn=lambda transaction: self._restore_repair_state(transaction),
+            repair_cycle_fn=lambda **kwargs: self._run_repair_cycle(**kwargs),
             commit_error_type=CommitTransactionError,
         )
 
