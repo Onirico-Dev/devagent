@@ -653,3 +653,60 @@ def test_supervised_loop_start_allows_future_round(tmp_path):
 
     assert result.stopped is False
     assert loop.iterations == 1
+
+
+def test_supervised_loop_detects_observation_added_after_creation(tmp_path):
+    from core.observation import Observation
+    from core.observation_store import ObservationStore
+    from core.observer import Observer
+    from core.supervised_loop import SupervisedLoop
+    from core.worker import Worker
+    from core.worker_state_store import WorkerStateStore
+
+    store = ObservationStore(tmp_path / "observations.json")
+    store.save([])
+
+    observer = Observer(store=store)
+
+    class RecordingGateway(FakeGateway):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        def create_task(self, instruction):
+            self.calls.append(instruction)
+            return {
+                "approval_id": str(len(self.calls)),
+                "status": "pending",
+                "plan": {
+                    "instruction": instruction,
+                    "changes": [],
+                },
+            }
+
+    gateway = RecordingGateway()
+    worker = Worker(
+        gateway,
+        observer,
+        store=WorkerStateStore(tmp_path / "worker.json"),
+    )
+
+    loop = SupervisedLoop(worker, gateway)
+
+    first = loop.run_once()
+
+    assert first.proposals == []
+    assert gateway.calls == []
+
+    store.append(
+        Observation(
+            "nova tarefa",
+            {"source": "external"},
+        )
+    )
+
+    second = loop.run_once()
+
+    assert len(second.proposals) == 1
+    assert second.proposals[0].instruction == "nova tarefa"
+    assert gateway.calls == ["nova tarefa"]

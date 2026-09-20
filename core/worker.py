@@ -17,6 +17,9 @@ class Proposal:
     autonomy_decision: str = AutonomyDecision.REQUIRE_HUMAN.value
 
 
+class _ObservationAlreadyProcessed(Exception):
+    """Sinal interno para concorrência entre Workers."""
+
 class Worker:
     """
     Processa cada observação uma única vez e cria propostas no Gateway.
@@ -214,6 +217,120 @@ class Worker:
         if key in self._processed:
             raise ValueError("Observação já processada.")
 
+        if self.store is None:
+            return self._process_observation_unlocked(
+                observation,
+                key,
+                instruction,
+            )
+
+        result_holder: dict[str, Any] = {}
+
+        def atomic_process(current: dict[str, Any]) -> dict[str, Any]:
+            processed = list(current.get("processed", []))
+            processed_ids = set(current.get("processed_ids", []))
+
+            existing_keys = {
+                (
+                    item.get("instruction"),
+                    self._metadata_key(item.get("metadata", {})),
+                )
+                for item in processed
+                if isinstance(item, dict)
+            }
+
+            if key in existing_keys:
+                raise _ObservationAlreadyProcessed()
+
+            existing = self._find_pending_proposal(instruction)
+
+            if existing is not None:
+                approval_id = existing.approval_id
+                result_holder["proposal"] = existing
+            else:
+                result = self.gateway.create_task(instruction)
+                approval_id = result["approval_id"]
+                result_holder["result"] = result
+
+            processed.append(
+                {
+                    "instruction": instruction,
+                    "metadata": dict(observation.metadata),
+                }
+            )
+            processed_ids.add(approval_id)
+
+            processed.sort(
+                key=lambda item: (
+                    item["instruction"],
+                    self._metadata_key(item["metadata"]),
+                )
+            )
+
+            return {
+                "processed": processed,
+                "processed_ids": sorted(processed_ids),
+            }
+
+        try:
+            self.store.update(atomic_process)
+        except _ObservationAlreadyProcessed:
+            raise ValueError("Observação já processada.")
+
+        self._mark_processed(
+            key=key,
+            observation=observation,
+            approval_id=(
+                result_holder["proposal"].approval_id
+                if "proposal" in result_holder
+                else result_holder["result"]["approval_id"]
+            ),
+        )
+
+        if "proposal" in result_holder:
+            return result_holder["proposal"]
+
+        result = result_holder["result"]
+        autonomy_decision = AutonomyDecision.REQUIRE_HUMAN.value
+
+        if self.autonomy_policy is not None:
+            plan = dict(result["plan"])
+            plan.setdefault("objective", instruction)
+            normalized_changes = []
+
+            for change in plan.get("changes", []):
+                change = dict(change)
+
+                if (
+                    "change_type" not in change
+                    and "type" in change
+                ):
+                    change["change_type"] = str(
+                        change.pop("type")
+                    ).lower()
+
+                normalized_changes.append(change)
+
+            plan["changes"] = normalized_changes
+            plan_object = Plan.from_dict(plan)
+            autonomy_decision = self.autonomy_policy.evaluate(
+                plan_object
+            ).value
+
+        return Proposal(
+            instruction=instruction,
+            approval_id=result["approval_id"],
+            status=result["status"],
+            plan=result["plan"],
+            autonomy_decision=autonomy_decision,
+        )
+
+    def _process_observation_unlocked(
+        self,
+        observation: Observation,
+        key: tuple[str, tuple[tuple[str, str], ...]],
+        instruction: str,
+    ) -> Proposal:
         existing = self._find_pending_proposal(instruction)
 
         if existing is not None:
@@ -255,18 +372,22 @@ class Worker:
         if self.autonomy_policy is not None:
             plan = dict(result["plan"])
             plan.setdefault("objective", instruction)
-
             normalized_changes = []
+
             for change in plan.get("changes", []):
                 change = dict(change)
 
-                if "change_type" not in change and "type" in change:
-                    change["change_type"] = str(change.pop("type")).lower()
+                if (
+                    "change_type" not in change
+                    and "type" in change
+                ):
+                    change["change_type"] = str(
+                        change.pop("type")
+                    ).lower()
 
                 normalized_changes.append(change)
 
             plan["changes"] = normalized_changes
-
             plan_object = Plan.from_dict(plan)
             autonomy_decision = self.autonomy_policy.evaluate(
                 plan_object

@@ -765,3 +765,22 @@ def test_worker_processes_new_observation_after_restart(tmp_path):
     assert second[0].status == "pending"
     assert second[0].approval_id != first[0].approval_id
     assert len(restarted_worker.processed_ids) == 2
+
+
+def test_observer_refreshes_from_store_on_each_observe(tmp_path):
+    from core.observation_store import ObservationStore
+
+    store = ObservationStore(tmp_path / "observations.json")
+
+    first = Observation("primeira", {"source": "test"})
+    second = Observation("segunda", {"source": "test"})
+
+    store.save([first])
+
+    observer = Observer(store=store)
+
+    assert observer.observe() == [first]
+
+    store.append(second)
+
+    assert observer.observe() == [first, second]

@@ -294,3 +294,482 @@ def test_worker_marks_destructive_proposal_as_human_required():
         proposal.autonomy_decision
         == AutonomyDecision.REQUIRE_HUMAN.value
     )
+
+
+def _run_workers_same_observation(path, calls_queue):
+    from core.observation import Observation
+    from core.observer import Observer
+    from core.worker import Worker
+    from core.worker_state_store import WorkerStateStore
+
+    class Gateway:
+        def create_task(self, instruction):
+            calls_queue.put(instruction)
+            return {
+                "approval_id": instruction,
+                "status": "pending",
+                "plan": {},
+            }
+
+    worker = Worker(
+        Gateway(),
+        Observer([Observation("mesma-observacao", {})]),
+        store=WorkerStateStore(path),
+    )
+    worker.run_once()
+
+
+def test_workers_concurrent_same_observation_are_not_processed_twice(
+    tmp_path,
+):
+    import multiprocessing
+
+    path = tmp_path / "worker.json"
+    ctx = multiprocessing.get_context("fork")
+    calls_queue = ctx.Queue()
+
+    processes = [
+        ctx.Process(
+            target=_run_workers_same_observation,
+            args=(path, calls_queue),
+        )
+        for _ in range(2)
+    ]
+
+    for process in processes:
+        process.start()
+
+    for process in processes:
+        process.join(timeout=10)
+
+    assert all(process.exitcode == 0 for process in processes)
+
+    calls = []
+    while not calls_queue.empty():
+        calls.append(calls_queue.get())
+
+    assert calls == ["mesma-observacao"]
+
+
+def test_worker_persist_state_merges_existing_state(tmp_path):
+    from core.observation import Observation
+    from core.observer import Observer
+    from core.worker import Worker
+    from core.worker_state_store import WorkerStateStore
+
+    path = tmp_path / "worker.json"
+    store = WorkerStateStore(path)
+
+    first = Worker(
+        Gateway := type(
+            "Gateway",
+            (),
+            {
+                "create_task": lambda self, instruction: {
+                    "approval_id": f"id-{instruction}",
+                    "status": "pending",
+                    "plan": {},
+                },
+            },
+        )(),
+        Observer([]),
+        store=store,
+    )
+
+    first._processed_observations[
+        first._observation_key(Observation("primeira", {"source": "a"}))
+    ] = Observation("primeira", {"source": "a"})
+    first._processed_ids.add("id-primeira")
+    first._persist_state()
+
+    second = Worker(
+        Gateway,
+        Observer([]),
+        store=store,
+    )
+    second._processed_observations[
+        second._observation_key(Observation("segunda", {"source": "b"}))
+    ] = Observation("segunda", {"source": "b"})
+    second._processed_ids.add("id-segunda")
+    second._persist_state()
+
+    state = store.load()
+
+    assert {
+        item["instruction"]
+        for item in state["processed"]
+    } == {"primeira", "segunda"}
+    assert state["processed_ids"] == [
+        "id-primeira",
+        "id-segunda",
+    ]
+
+
+def test_worker_persist_state_does_not_duplicate_existing_observation(
+    tmp_path,
+):
+    from core.observation import Observation
+    from core.observer import Observer
+    from core.worker import Worker
+    from core.worker_state_store import WorkerStateStore
+
+    path = tmp_path / "worker.json"
+    store = WorkerStateStore(path)
+
+    worker = Worker(
+        object(),
+        Observer([]),
+        store=store,
+    )
+
+    observation = Observation("mesma", {"source": "test"})
+    key = worker._observation_key(observation)
+    worker._processed_observations[key] = observation
+    worker._processed_ids.add("approval-1")
+    worker._persist_state()
+
+    worker._processed_ids.add("approval-2")
+    worker._persist_state()
+
+    state = store.load()
+
+    assert state["processed"] == [
+        {
+            "instruction": "mesma",
+            "metadata": {"source": "test"},
+        }
+    ]
+    assert state["processed_ids"] == [
+        "approval-1",
+        "approval-2",
+    ]
+
+
+def test_process_observation_with_store_reuses_pending_proposal(
+    tmp_path,
+):
+    from core.observation import Observation
+    from core.observer import Observer
+    from core.worker import Worker
+    from core.worker_state_store import WorkerStateStore
+
+    class Gateway:
+        def __init__(self):
+            self.create_calls = 0
+
+        def list_pending(self):
+            return [
+                {
+                    "instruction": "teste",
+                    "approval_id": "approval-pendente",
+                    "status": "pending",
+                    "plan": {},
+                }
+            ]
+
+        def create_task(self, instruction):
+            self.create_calls += 1
+            raise AssertionError("não deveria criar uma nova tarefa")
+
+    gateway = Gateway()
+    worker = Worker(
+        gateway,
+        Observer([]),
+        store=WorkerStateStore(tmp_path / "worker.json"),
+    )
+
+    proposal = worker.process_observation(
+        Observation("teste", {})
+    )
+
+    assert proposal.approval_id == "approval-pendente"
+    assert gateway.create_calls == 0
+    assert worker.processed_ids == {"approval-pendente"}
+
+
+def test_process_observation_rejects_shared_processed_observation(
+    tmp_path,
+):
+    from core.observation import Observation
+    from core.observer import Observer
+    from core.worker import Worker
+    from core.worker_state_store import WorkerStateStore
+
+    path = tmp_path / "worker.json"
+
+    class Gateway:
+        def create_task(self, instruction):
+            return {
+                "approval_id": "approval-1",
+                "status": "pending",
+                "plan": {},
+            }
+
+    first = Worker(
+        Gateway(),
+        Observer([]),
+        store=WorkerStateStore(path),
+    )
+    observation = Observation("teste", {})
+    first.process_observation(observation)
+
+    second = Worker(
+        Gateway(),
+        Observer([]),
+        store=WorkerStateStore(path),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Observação já processada.",
+    ):
+        second.process_observation(observation)
+
+
+def test_process_observation_with_store_normalizes_autonomy_changes(
+    tmp_path,
+):
+    from core.autonomy_policy import (
+        AutonomyDecision,
+        AutonomyPolicy,
+    )
+    from core.observation import Observation
+    from core.observer import Observer
+    from core.worker import Worker
+    from core.worker_state_store import WorkerStateStore
+
+    class Gateway:
+        def create_task(self, instruction):
+            return {
+                "approval_id": "approval-auto",
+                "status": "pending",
+                "plan": {
+                    "changes": [
+                        {
+                            "type": "create",
+                            "path": "example.py",
+                            "content": "print('ok')",
+                        }
+                    ],
+                    "tests": [],
+                    "risks": [],
+                },
+            }
+
+    worker = Worker(
+        Gateway(),
+        Observer([]),
+        store=WorkerStateStore(tmp_path / "worker.json"),
+        autonomy_policy=AutonomyPolicy(),
+    )
+
+    proposal = worker.process_observation(
+        Observation("criar example.py", {})
+    )
+
+    assert (
+        proposal.autonomy_decision
+        == AutonomyDecision.AUTO_APPROVE.value
+    )
+
+
+def test_restore_state_persists_when_requested(tmp_path):
+    from core.observer import Observer
+    from core.worker import Worker
+    from core.worker_state_store import WorkerStateStore
+
+    path = tmp_path / "worker.json"
+    store = WorkerStateStore(path)
+
+    worker = Worker(
+        object(),
+        Observer([]),
+        store=store,
+    )
+
+    worker.restore_state(
+        {
+            "processed": [
+                {
+                    "instruction": "restaurada",
+                    "metadata": {"source": "test"},
+                }
+            ],
+            "processed_ids": ["approval-restaurada"],
+        }
+    )
+
+    persisted = store.load()
+
+    assert persisted == {
+        "processed": [
+            {
+                "instruction": "restaurada",
+                "metadata": {"source": "test"},
+            }
+        ],
+        "processed_ids": ["approval-restaurada"],
+    }
+
+
+def test_process_observation_store_update_race_raises_duplicate(
+    tmp_path,
+):
+    from core.observation import Observation
+    from core.observer import Observer
+    from core.worker import Worker
+    from core.worker_state_store import WorkerStateStore
+
+    path = tmp_path / "worker.json"
+
+    class Gateway:
+        def create_task(self, instruction):
+            return {
+                "approval_id": "approval-race",
+                "status": "pending",
+                "plan": {},
+            }
+
+    observation = Observation("teste", {})
+    first = Worker(
+        Gateway(),
+        Observer([]),
+        store=WorkerStateStore(path),
+    )
+    first.process_observation(observation)
+
+    second = Worker(
+        Gateway(),
+        Observer([]),
+        store=WorkerStateStore(path),
+    )
+
+    with pytest.raises(ValueError, match="Observação já processada."):
+        second.process_observation(observation)
+
+
+def test_process_observation_unlocked_normalizes_autonomy_changes():
+    from core.autonomy_policy import (
+        AutonomyDecision,
+        AutonomyPolicy,
+    )
+    from core.observation import Observation
+    from core.observer import Observer
+    from core.worker import Worker
+
+    class Gateway:
+        def create_task(self, instruction):
+            return {
+                "approval_id": "approval-auto",
+                "status": "pending",
+                "plan": {
+                    "changes": [
+                        {
+                            "type": "create",
+                            "path": "example.py",
+                            "content": "print('ok')",
+                        }
+                    ],
+                    "tests": [],
+                    "risks": [],
+                },
+            }
+
+    worker = Worker(
+        Gateway(),
+        Observer([]),
+        autonomy_policy=AutonomyPolicy(),
+    )
+
+    proposal = worker.process_observation(
+        Observation("criar example.py", {})
+    )
+
+    assert (
+        proposal.autonomy_decision
+        == AutonomyDecision.AUTO_APPROVE.value
+    )
+
+
+def test_process_observation_store_atomic_process_detects_existing_key(
+    tmp_path,
+):
+    from core.observation import Observation
+    from core.observer import Observer
+    from core.worker import Worker
+    from core.worker_state_store import WorkerStateStore
+
+    path = tmp_path / "worker.json"
+    store = WorkerStateStore(path)
+
+    observation = Observation("existente", {"source": "test"})
+
+    store.save(
+        {
+            "processed": [
+                {
+                    "instruction": "existente",
+                    "metadata": {"source": "test"},
+                }
+            ],
+            "processed_ids": ["approval-existing"],
+        }
+    )
+
+    class Gateway:
+        def create_task(self, instruction):
+            raise AssertionError("não deveria criar tarefa")
+
+    worker = Worker(
+        Gateway(),
+        Observer([]),
+        store=store,
+    )
+
+    with pytest.raises(ValueError, match="Observação já processada."):
+        worker.process_observation(observation)
+
+
+def test_process_observation_detects_shared_state_added_after_worker_load(
+    tmp_path,
+):
+    from core.observation import Observation
+    from core.observer import Observer
+    from core.worker import Worker
+    from core.worker_state_store import WorkerStateStore
+
+    path = tmp_path / "worker.json"
+    store = WorkerStateStore(path)
+
+    class Gateway:
+        def create_task(self, instruction):
+            raise AssertionError("não deveria criar tarefa")
+
+    worker = Worker(
+        Gateway(),
+        Observer([]),
+        store=store,
+    )
+
+    observation = Observation(
+        "existente",
+        {"source": "test"},
+    )
+
+    store.save(
+        {
+            "processed": [
+                {
+                    "instruction": "existente",
+                    "metadata": {"source": "test"},
+                }
+            ],
+            "processed_ids": ["approval-existing"],
+        }
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Observação já processada.",
+    ):
+        worker.process_observation(observation)

@@ -22,6 +22,9 @@ class Observer:
             self._observations = []
 
     def observe(self) -> list[Observation]:
+        if self._store is not None:
+            self._observations = self._store.load()
+
         return list(self._observations)
 
     def add(self, observation: Observation) -> None:
