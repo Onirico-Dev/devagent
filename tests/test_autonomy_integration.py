@@ -529,3 +529,108 @@ def test_real_autonomy_continuous_detects_observation_arriving_between_rounds(tm
     ).stdout
 
     assert git_status == ""
+
+def test_real_autonomy_restart_continues_loop_state_and_processes_new_observation(
+    tmp_path,
+):
+    init_git(tmp_path)
+
+    observation_path = tmp_path / "observations.json"
+    worker_path = tmp_path / "worker.json"
+    loop_path = tmp_path / "supervised_loop.json"
+
+    observation_store = ObservationStore(observation_path)
+    observation_store.save(
+        [
+            Observation(
+                "criar arquivo autonomamente",
+                {"source": "before-restart"},
+            )
+        ]
+    )
+
+    gateway = DevAgentGateway(
+        CreateAgent(),
+        root=tmp_path,
+    )
+
+    worker = Worker(
+        gateway,
+        Observer(store=observation_store),
+        store=WorkerStateStore(worker_path),
+        autonomy_policy=AutonomyPolicy(),
+    )
+
+    loop = SupervisedLoop(
+        worker,
+        gateway,
+        state_store=WorkerStateStore(loop_path),
+    )
+
+    first = loop.run_once()
+
+    assert first.metadata["iterations"] == 1
+    assert first.metadata["proposal_count"] == 1
+    assert first.metadata["auto_approved_count"] == 1
+
+    class RestartCreateAgent(CreateAgent):
+        def process(self, instruction):
+            result = super().process(instruction)
+            result["changes"][0]["path"] = "autonomous_restart_smoke.py"
+            result["changes"][0]["content"] = "VALUE = 43\n"
+            return result
+
+    restarted_observation_store = ObservationStore(observation_path)
+    restarted_observation_store.save(
+        [
+            Observation(
+                "criar segundo arquivo depois do restart",
+                {"source": "after-restart"},
+            )
+        ]
+    )
+
+    restarted_gateway = DevAgentGateway(
+        RestartCreateAgent(),
+        root=tmp_path,
+    )
+
+    restarted_worker = Worker(
+        restarted_gateway,
+        Observer(store=restarted_observation_store),
+        store=WorkerStateStore(worker_path),
+        autonomy_policy=AutonomyPolicy(),
+    )
+
+    restarted_loop = SupervisedLoop(
+        restarted_worker,
+        restarted_gateway,
+        state_store=WorkerStateStore(loop_path),
+    )
+
+    assert restarted_loop.iterations == 1
+    assert restarted_loop.stopped is False
+
+    second = restarted_loop.run_once()
+
+    assert second.metadata["iterations"] == 2
+    assert second.metadata["proposal_count"] == 1
+    assert second.metadata["auto_approved_count"] == 1
+
+    tasks = restarted_gateway.list_tasks()
+
+    assert len(tasks) == 2
+    assert all(task["status"] == "committed" for task in tasks)
+
+    assert (tmp_path / "autonomous_smoke.py").read_text(
+        encoding="utf-8"
+    ) == "VALUE = 42\n"
+
+    assert (tmp_path / "autonomous_restart_smoke.py").read_text(
+        encoding="utf-8"
+    ) == "VALUE = 43\n"
+
+    assert WorkerStateStore(loop_path).load() == {
+        "stopped": False,
+        "iterations": 2,
+    }
