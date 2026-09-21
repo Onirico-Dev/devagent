@@ -3329,6 +3329,28 @@ def test_gateway_create_task_rejects_non_list_changes(isolated_project):
         gateway.create_task("teste")
 
 
+def test_gateway_create_task_rejects_empty_changes(isolated_project):
+    from core.gateway import DevAgentGateway
+
+    class FakeAgent:
+        def process(self, instruction):
+            return {
+                "instruction": instruction,
+                "changes": [],
+            }
+
+    gateway = DevAgentGateway(
+        agent=FakeAgent(),
+        root=str(isolated_project),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Plano não possui lista de alterações",
+    ):
+        gateway.create_task("teste")
+
+
 def test_gateway_create_task_rejects_non_dict_change(isolated_project):
     from core.gateway import DevAgentGateway
 

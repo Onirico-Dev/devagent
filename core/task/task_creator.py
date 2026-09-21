@@ -13,7 +13,7 @@ class TaskCreator:
 
         changes = result.get("changes")
 
-        if not isinstance(changes, list):
+        if not isinstance(changes, list) or not changes:
             raise ValueError("Plano não possui lista de alterações.")
 
         for change in changes:
