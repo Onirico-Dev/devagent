@@ -475,6 +475,51 @@ def test_core_main_entrypoint_calls_cli_main(monkeypatch):
     assert called == [True]
 
 
+def test_core_main_entrypoint_dispatches_command(monkeypatch):
+    import runpy
+    import sys
+    import cli
+
+    called = []
+
+    def fake_main():
+        called.append(sys.argv[1:])
+
+    monkeypatch.setattr(cli, "main", fake_main)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["devagent", "autonomy", "3"],
+    )
+
+    runpy.run_module("core.__main__", run_name="__main__")
+
+    assert called == [["autonomy", "3"]]
+
+
+def test_core_main_entrypoint_dispatches_command_without_arguments(
+    monkeypatch,
+):
+    import runpy
+    import sys
+    import cli
+
+    called = []
+
+    def fake_main():
+        called.append(sys.argv[1:])
+
+    monkeypatch.setattr(cli, "main", fake_main)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["devagent", "tasks"],
+    )
+
+    runpy.run_module("core.__main__", run_name="__main__")
+
+    assert called == [["tasks"]]
+
 def test_core_main_version_fallback(monkeypatch):
     import core.__main__ as core_main
 

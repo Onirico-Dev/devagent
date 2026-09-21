@@ -48,7 +48,8 @@ def main():
         return
 
     cli_args = sys.argv[1:]
-    if cli_args:
+
+    if cli_args and cli_args[0].startswith("-"):
         print(f"Argumento não reconhecido: {cli_args[0]}")
         print("Use 'devagent --help' para ver os comandos disponíveis.")
         return
