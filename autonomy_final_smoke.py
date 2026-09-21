@@ -1,1 +1,0 @@
-print('AUTONOMY FINAL OK')
