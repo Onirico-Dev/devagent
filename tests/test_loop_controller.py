@@ -112,6 +112,29 @@ def test_run_continuous_sleeps_between_iterations():
     assert sleeps == [2.5, 2.5]
 
 
+def test_run_continuous_propagates_run_once_failure():
+    class Loop(LoopController):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def run_once(self):
+            self.calls += 1
+            raise RuntimeError("LOOP_FAILURE")
+
+    loop = Loop()
+    sleeps = []
+
+    with pytest.raises(RuntimeError, match="LOOP_FAILURE"):
+        loop.run_continuous(
+            interval_seconds=1,
+            sleep_fn=sleeps.append,
+        )
+
+    assert loop.calls == 1
+    assert sleeps == []
+
+
 def test_run_continuous_stops_when_run_once_requests_stop():
     class Loop(LoopController):
         def run_once(self):
