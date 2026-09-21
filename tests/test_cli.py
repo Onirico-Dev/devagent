@@ -594,3 +594,79 @@ def test_main_autonomy_multiple_iterations_uses_supervised_loop(
     cli.main(tmp_path / "transactions")
 
     assert FakeSupervisedLoop.instances[0].calls == [("run", 3)]
+
+
+def test_main_non_interactive_dispatches_command_without_input(
+    monkeypatch,
+    capsys,
+):
+    gateway = FakeGateway(None, ".")
+
+    monkeypatch.setattr(cli, "DevAgent", lambda root: object())
+    monkeypatch.setattr(
+        cli,
+        "DevAgentGateway",
+        lambda agent, root: gateway,
+    )
+
+    def fail_input(_):
+        raise AssertionError("input() não deveria ser chamado.")
+
+    monkeypatch.setattr("builtins.input", fail_input)
+
+    cli.main(command_args=["tasks"])
+
+    output = capsys.readouterr().out
+    assert "[a1] pending — teste" in output
+
+
+def test_main_non_interactive_autonomy_uses_requested_iterations(
+    monkeypatch,
+    capsys,
+    tmp_path,
+):
+    import cli
+
+    class FakeResult:
+        proposals = []
+        metadata = {
+            "iterations": 3,
+            "proposal_count": 0,
+            "pending_count": 0,
+        }
+        stopped = False
+
+    class FakeSupervisedLoop:
+        instances = []
+
+        def __init__(self, worker, gateway, state_store=None):
+            self.calls = []
+            FakeSupervisedLoop.instances.append(self)
+
+        def run_once(self):
+            self.calls.append("run_once")
+            return FakeResult()
+
+        def run(self, max_iterations):
+            self.calls.append(("run", max_iterations))
+            return [FakeResult()]
+
+    monkeypatch.setattr(
+        cli,
+        "SupervisedLoop",
+        FakeSupervisedLoop,
+    )
+
+    def fail_input(_):
+        raise AssertionError("input() não deveria ser chamado.")
+
+    monkeypatch.setattr("builtins.input", fail_input)
+
+    cli.main(
+        tmp_path / "transactions",
+        command_args=["autonomy", "3"],
+    )
+
+    assert FakeSupervisedLoop.instances[0].calls == [("run", 3)]
+    output = capsys.readouterr().out
+    assert "Rodada: 3" in output

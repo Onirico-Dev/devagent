@@ -55,7 +55,11 @@ def main():
         return
 
     from cli import main as cli_main
-    cli_main()
+
+    if cli_args:
+        cli_main(command_args=cli_args)
+    else:
+        cli_main()
 
 
 if __name__ == "__main__":

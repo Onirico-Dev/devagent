@@ -482,8 +482,12 @@ def test_core_main_entrypoint_dispatches_command(monkeypatch):
 
     called = []
 
-    def fake_main():
-        called.append(sys.argv[1:])
+    def fake_main(args=None, command_args=None):
+        called.append(
+            sys.argv[1:]
+            if command_args is None
+            else command_args
+        )
 
     monkeypatch.setattr(cli, "main", fake_main)
     monkeypatch.setattr(
@@ -506,8 +510,12 @@ def test_core_main_entrypoint_dispatches_command_without_arguments(
 
     called = []
 
-    def fake_main():
-        called.append(sys.argv[1:])
+    def fake_main(args=None, command_args=None):
+        called.append(
+            sys.argv[1:]
+            if command_args is None
+            else command_args
+        )
 
     monkeypatch.setattr(cli, "main", fake_main)
     monkeypatch.setattr(

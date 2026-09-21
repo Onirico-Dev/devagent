@@ -108,7 +108,7 @@ def print_proposals(proposals):
         )
 
 
-def main(state_root: str | Path = "transactions"):
+def main(state_root: str | Path = "transactions", command_args=None):
     agent = DevAgent(".")
     gateway = DevAgentGateway(agent, ".")
 
@@ -154,14 +154,24 @@ def main(state_root: str | Path = "transactions"):
     print("  reject <id>")
     print("  sair")
 
+    non_interactive = command_args is not None
+    pending_command = " ".join(command_args) if non_interactive else None
+
     while True:
         try:
-            command = _read_command()
+            command = (
+                pending_command
+                if non_interactive
+                else _read_command()
+            )
+            pending_command = None
         except (KeyboardInterrupt, EOFError):
             print()
             break
 
         if not command:
+            if non_interactive:
+                return
             continue
 
         parts = command.split(maxsplit=1)
@@ -281,6 +291,9 @@ def main(state_root: str | Path = "transactions"):
                 f"\nErro: "
                 f"{type(error).__name__}: {error}"
             )
+
+        if non_interactive:
+            return
 
 
 if __name__ == "__main__":
