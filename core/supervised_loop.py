@@ -65,7 +65,12 @@ class SupervisedLoop(LoopController):
                 metadata={"iterations": self._iterations},
             )
 
-        proposals = self.worker.run_once()
+        try:
+            proposals = self.worker.run_once()
+        except Exception:
+            self._persist_state()
+            raise
+
         self._iterations += 1
 
         auto_approved_count = 0

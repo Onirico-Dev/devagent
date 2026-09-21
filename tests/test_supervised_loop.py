@@ -604,6 +604,38 @@ def test_supervised_loop_persists_iteration_when_auto_approve_fails(tmp_path):
     assert loop.iterations == 1
     assert store.load()["iterations"] == 1
 
+def test_supervised_loop_persists_state_when_worker_fails(tmp_path):
+    from core.worker_state_store import WorkerStateStore
+
+    store = WorkerStateStore(tmp_path / "supervised_loop.json")
+
+    class Worker:
+        def run_once(self):
+            raise RuntimeError("WORKER_FAILURE")
+
+    class Gateway:
+        def list_tasks(self):
+            return []
+
+    loop = SupervisedLoop(
+        worker=Worker(),
+        gateway=Gateway(),
+        state_store=store,
+    )
+
+    try:
+        loop.run_once()
+    except RuntimeError as error:
+        assert str(error) == "WORKER_FAILURE"
+    else:
+        raise AssertionError(
+            "A falha do Worker deveria ser propagada."
+        )
+
+    assert loop.iterations == 0
+    assert store.load()["iterations"] == 0
+    assert store.load()["stopped"] is False
+
 def test_supervised_loop_keeps_human_proposal_pending():
     class Worker:
         def run_once(self):
