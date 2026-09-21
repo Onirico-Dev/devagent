@@ -55,7 +55,7 @@ def test_gateway_list_pending_exposes_task_history_pending_tasks(tmp_path):
         def process(self, instruction):
             return {
                 "instruction": instruction,
-                "changes": [],
+                "changes": [{"change_type": "create", "path": "status_smoke.py", "content": "print('OK')"}],
             }
 
     gateway = DevAgentGateway(Agent(), str(tmp_path))
@@ -74,7 +74,7 @@ def test_gateway_create_task_reuses_equivalent_pending_proposal(tmp_path):
         def process(self, instruction):
             return {
                 "instruction": instruction,
-                "changes": [],
+                "changes": [{"change_type": "create", "path": "status_smoke.py", "content": "print('OK')"}],
             }
 
     gateway = DevAgentGateway(Agent(), str(tmp_path))
@@ -95,7 +95,7 @@ def test_gateway_create_task_deduplicates_concurrent_equivalent_proposals(
         def process(self, instruction):
             return {
                 "instruction": instruction,
-                "changes": [],
+                "changes": [{"change_type": "create", "path": "status_smoke.py", "content": "print('OK')"}],
             }
 
     def create():
@@ -120,7 +120,7 @@ def _create_gateway_task_in_process(root):
         def process(self, instruction):
             return {
                 "instruction": instruction,
-                "changes": [],
+                "changes": [{"change_type": "create", "path": "status_smoke.py", "content": "print('OK')"}],
             }
 
     gateway = DevAgentGateway(Agent(), root)
@@ -151,7 +151,7 @@ def test_gateway_create_task_deduplicates_across_processes(tmp_path):
         def process(self, instruction):
             return {
                 "instruction": instruction,
-                "changes": [],
+                "changes": [{"change_type": "create", "path": "status_smoke.py", "content": "print('OK')"}],
             }
 
     gateway = DevAgentGateway(Agent(), root)
@@ -164,7 +164,7 @@ def test_gateway_create_task_does_not_reuse_non_pending_equivalent_proposal(
         def process(self, instruction):
             return {
                 "instruction": instruction,
-                "changes": [],
+                "changes": [{"change_type": "create", "path": "status_smoke.py", "content": "print('OK')"}],
             }
 
     gateway = DevAgentGateway(Agent(), tmp_path)
