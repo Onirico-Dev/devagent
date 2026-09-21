@@ -550,6 +550,60 @@ def test_supervised_loop_auto_approves_explicit_autonomous_proposal():
     assert result.metadata["auto_approved_count"] == 1
 
 
+def test_supervised_loop_persists_iteration_when_auto_approve_fails(tmp_path):
+    from core.worker_state_store import WorkerStateStore
+
+    store = WorkerStateStore(tmp_path / "supervised_loop.json")
+
+    class Worker:
+        def run_once(self):
+            return [
+                {
+                    "instruction": "crie arquivo.txt",
+                    "approval_id": "approve-failure",
+                    "status": "pending",
+                    "plan": {
+                        "objective": "crie arquivo.txt",
+                        "changes": [
+                            {
+                                "change_type": "create",
+                                "path": "arquivo.txt",
+                                "content": "conteudo seguro\n",
+                                "reason": "Criar arquivo solicitado.",
+                            }
+                        ],
+                        "tests": [],
+                        "risks": [],
+                    },
+                    "autonomy_decision": "auto_approve",
+                }
+            ]
+
+    class Gateway:
+        def list_tasks(self):
+            return []
+
+        def approve(self, approval_id):
+            raise RuntimeError("APPROVAL_FAILURE")
+
+    loop = SupervisedLoop(
+        worker=Worker(),
+        gateway=Gateway(),
+        state_store=store,
+    )
+
+    try:
+        loop.run_once()
+    except RuntimeError as error:
+        assert str(error) == "APPROVAL_FAILURE"
+    else:
+        raise AssertionError(
+            "A falha da aprovação deveria ser propagada."
+        )
+
+    assert loop.iterations == 1
+    assert store.load()["iterations"] == 1
+
 def test_supervised_loop_keeps_human_proposal_pending():
     class Worker:
         def run_once(self):

@@ -70,70 +70,87 @@ class SupervisedLoop(LoopController):
 
         auto_approved_count = 0
 
-        for proposal in proposals:
-            if isinstance(proposal, dict):
-                autonomy_decision = proposal.get(
-                    "autonomy_decision"
-                )
-                status = proposal.get("status")
-                approval_id = proposal.get("approval_id")
-            else:
-                autonomy_decision = getattr(
-                    proposal,
-                    "autonomy_decision",
-                    None,
-                )
-                status = getattr(
-                    proposal,
-                    "status",
-                    None,
-                )
-                approval_id = getattr(
-                    proposal,
-                    "approval_id",
-                    None,
-                )
+        try:
+            for proposal in proposals:
+                if isinstance(proposal, dict):
+                    autonomy_decision = proposal.get(
+                        "autonomy_decision"
+                    )
+                    status = proposal.get("status")
+                    approval_id = proposal.get("approval_id")
+                else:
+                    autonomy_decision = getattr(
+                        proposal,
+                        "autonomy_decision",
+                        None,
+                    )
+                    status = getattr(
+                        proposal,
+                        "status",
+                        None,
+                    )
+                    approval_id = getattr(
+                        proposal,
+                        "approval_id",
+                        None,
+                    )
 
-            if (
-                autonomy_decision == AutonomyDecision.AUTO_APPROVE.value
-                and status == "pending"
-                and approval_id is not None
-            ):
-                plan_data = (
-                    proposal.get("plan")
-                    if isinstance(proposal, dict)
-                    else getattr(proposal, "plan", None)
-                )
+                if (
+                    autonomy_decision
+                    == AutonomyDecision.AUTO_APPROVE.value
+                    and status == "pending"
+                    and approval_id is not None
+                ):
+                    plan_data = (
+                        proposal.get("plan")
+                        if isinstance(proposal, dict)
+                        else getattr(
+                            proposal,
+                            "plan",
+                            None,
+                        )
+                    )
 
-                try:
-                    plan = Plan.from_dict(dict(plan_data or {}))
-                    decision = AutonomyPolicy().evaluate(plan)
-                except (TypeError, ValueError, KeyError):
-                    decision = AutonomyDecision.REQUIRE_HUMAN
+                    try:
+                        plan = Plan.from_dict(
+                            dict(plan_data or {})
+                        )
+                        decision = AutonomyPolicy().evaluate(plan)
+                    except (
+                        TypeError,
+                        ValueError,
+                        KeyError,
+                    ):
+                        decision = (
+                            AutonomyDecision.REQUIRE_HUMAN
+                        )
 
-                if decision == AutonomyDecision.AUTO_APPROVE:
-                    self.gateway.approve(approval_id)
-                    auto_approved_count += 1
+                    if (
+                        decision
+                        == AutonomyDecision.AUTO_APPROVE
+                    ):
+                        self.gateway.approve(approval_id)
+                        auto_approved_count += 1
 
-        tasks = self.gateway.list_tasks()
-        pending_count = sum(
-            1
-            for task in tasks
-            if task.get("status") == "pending"
-        )
+            tasks = self.gateway.list_tasks()
+            pending_count = sum(
+                1
+                for task in tasks
+                if task.get("status") == "pending"
+            )
 
-        self._persist_state()
-
-        return SupervisedLoopResult(
-            proposals=proposals,
-            stopped=False,
-            metadata={
-                "iterations": self._iterations,
-                "proposal_count": len(proposals),
-                "auto_approved_count": auto_approved_count,
-                "pending_count": pending_count,
-            },
-        )
+            return SupervisedLoopResult(
+                proposals=proposals,
+                stopped=False,
+                metadata={
+                    "iterations": self._iterations,
+                    "proposal_count": len(proposals),
+                    "auto_approved_count": auto_approved_count,
+                    "pending_count": pending_count,
+                },
+            )
+        finally:
+            self._persist_state()
 
     def export_state(self) -> dict[str, Any]:
         return {

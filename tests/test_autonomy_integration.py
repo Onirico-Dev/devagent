@@ -176,6 +176,84 @@ def test_real_autonomy_cycle_observe_autoapprove_execute_commit(tmp_path):
     assert git_status == ""
 
 
+def test_real_autonomy_restart_does_not_reprocess_observation(tmp_path):
+    init_git(tmp_path)
+
+    observation_path = tmp_path / "observations.json"
+    worker_path = tmp_path / "worker.json"
+    loop_path = tmp_path / "supervised_loop.json"
+
+    observation_store = ObservationStore(observation_path)
+    observation_store.save(
+        [
+            Observation(
+                "criar arquivo autonomamente",
+                {"source": "restart"},
+            )
+        ]
+    )
+
+    gateway = DevAgentGateway(
+        CreateAgent(),
+        root=tmp_path,
+    )
+    observer = Observer(store=observation_store)
+    worker = Worker(
+        gateway,
+        observer,
+        store=WorkerStateStore(worker_path),
+        autonomy_policy=AutonomyPolicy(),
+    )
+    loop = SupervisedLoop(
+        worker,
+        gateway,
+        state_store=WorkerStateStore(loop_path),
+    )
+
+    first = loop.run_once()
+
+    assert len(first.proposals) == 1
+    assert first.metadata["auto_approved_count"] == 1
+    assert len(gateway.list_tasks()) == 1
+
+    restarted_gateway = DevAgentGateway(
+        CreateAgent(),
+        root=tmp_path,
+    )
+    restarted_observer = Observer(
+        store=ObservationStore(observation_path)
+    )
+    restarted_worker = Worker(
+        restarted_gateway,
+        restarted_observer,
+        store=WorkerStateStore(worker_path),
+        autonomy_policy=AutonomyPolicy(),
+    )
+    restarted_loop = SupervisedLoop(
+        restarted_worker,
+        restarted_gateway,
+        state_store=WorkerStateStore(loop_path),
+    )
+
+    second = restarted_loop.run_once()
+
+    assert second.proposals == []
+    assert second.metadata["auto_approved_count"] == 0
+    assert len(restarted_gateway.list_tasks()) == 1
+
+    task = restarted_gateway.get_task(
+        first.proposals[0].approval_id
+    )
+
+    assert task["status"] == "committed"
+    assert (
+        (tmp_path / "autonomous_smoke.py").read_text(
+            encoding="utf-8"
+        )
+        == "VALUE = 42\n"
+    )
+
+
 class FailingCreateAgent(CreateAgent):
     def build_transaction_from_approved_plan(self, plan):
         transaction = super().build_transaction_from_approved_plan(
