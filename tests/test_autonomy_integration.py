@@ -445,3 +445,87 @@ def test_real_autonomy_cycle_recovers_after_crash(
     target = tmp_path / "autonomous_smoke.py"
 
     assert not target.exists()
+
+def test_real_autonomy_continuous_detects_observation_arriving_between_rounds(tmp_path):
+    init_git(tmp_path)
+
+    observation_store = ObservationStore(
+        tmp_path / "observations.json"
+    )
+    worker_store = WorkerStateStore(
+        tmp_path / "worker.json"
+    )
+    loop_store = WorkerStateStore(
+        tmp_path / "supervised_loop.json"
+    )
+
+    gateway = DevAgentGateway(
+        CreateAgent(),
+        root=tmp_path,
+    )
+
+    observer = Observer(store=observation_store)
+
+    worker = Worker(
+        gateway,
+        observer,
+        store=worker_store,
+        autonomy_policy=AutonomyPolicy(),
+    )
+
+    loop = SupervisedLoop(
+        worker,
+        gateway,
+        state_store=loop_store,
+    )
+
+    results = []
+
+    def sleep_and_inject(_interval):
+        observation_store.save(
+            [
+                Observation(
+                    "criar arquivo autonomamente",
+                    {"source": "continuous"},
+                )
+            ]
+        )
+
+    results = loop.run_continuous(
+        interval_seconds=1,
+        max_iterations=2,
+        sleep_fn=sleep_and_inject,
+    )
+
+    target = tmp_path / "autonomous_smoke.py"
+
+    assert len(results) == 2
+
+    assert results[0].metadata["proposal_count"] == 0
+
+    assert results[1].metadata["proposal_count"] == 1
+    assert results[1].metadata["auto_approved_count"] == 1
+
+    assert target.read_text(encoding="utf-8") == "VALUE = 42\n"
+
+    proposal = results[1].proposals[0]
+
+    task = gateway.get_task(proposal.approval_id)
+
+    assert task["status"] == "committed"
+
+    git_status = subprocess.run(
+        [
+            "git",
+            "status",
+            "--porcelain",
+            "--",
+            "autonomous_smoke.py",
+        ],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    assert git_status == ""
