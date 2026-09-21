@@ -277,14 +277,14 @@ class MockAdapter(AIAdapter):
     def _extract_create_path(instruction: str) -> str:
         patterns = (
             r"\b(?:crie|criar|create)\s+"
-            r"(?:um\s+)?"
+            r"(?:um\s+|o\s+)?"
             r"(?:novo\s+)?"
             r"(?:arquivo\s+)?"
             r"chamado\s+"
             r"([A-Za-z0-9_.-]+\.[A-Za-z0-9_-]+)",
 
             r"\b(?:crie|criar|create)\s+"
-            r"(?:um\s+)?"
+            r"(?:um\s+|o\s+)?"
             r"(?:novo\s+)?"
             r"(?:arquivo\s+)?"
             r"([A-Za-z0-9_.-]+\.[A-Za-z0-9_-]+)",

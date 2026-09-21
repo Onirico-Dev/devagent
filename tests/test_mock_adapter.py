@@ -93,6 +93,7 @@ def test_mock_generate_create_uses_legacy_content_fallback():
     [
         "crie um arquivo chamado app.py com conteúdo print('ok')",
         "crie arquivo app.py com conteúdo print('ok')",
+        "crie o arquivo app.py com conteúdo print('ok')",
         "criar arquivo app.py com conteúdo print('ok')",
         "create app.py com conteúdo print('ok')",
     ],

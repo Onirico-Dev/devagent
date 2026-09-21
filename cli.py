@@ -297,4 +297,6 @@ def main(state_root: str | Path = "transactions", command_args=None):
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+
+    main(command_args=sys.argv[1:])
