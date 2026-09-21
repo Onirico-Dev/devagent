@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from core.loop_controller import LoopController
+from core.autonomy_policy import AutonomyDecision, AutonomyPolicy
+from core.schemas.models import Plan
 
 
 @dataclass(frozen=True)
@@ -93,12 +95,25 @@ class SupervisedLoop(LoopController):
                 )
 
             if (
-                autonomy_decision == "auto_approve"
+                autonomy_decision == AutonomyDecision.AUTO_APPROVE.value
                 and status == "pending"
                 and approval_id is not None
             ):
-                self.gateway.approve(approval_id)
-                auto_approved_count += 1
+                plan_data = (
+                    proposal.get("plan")
+                    if isinstance(proposal, dict)
+                    else getattr(proposal, "plan", None)
+                )
+
+                try:
+                    plan = Plan.from_dict(dict(plan_data or {}))
+                    decision = AutonomyPolicy().evaluate(plan)
+                except (TypeError, ValueError, KeyError):
+                    decision = AutonomyDecision.REQUIRE_HUMAN
+
+                if decision == AutonomyDecision.AUTO_APPROVE:
+                    self.gateway.approve(approval_id)
+                    auto_approved_count += 1
 
         tasks = self.gateway.list_tasks()
         pending_count = sum(
