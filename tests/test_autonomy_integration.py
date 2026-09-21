@@ -27,7 +27,6 @@ class CreateAgent:
             "risks": [],
         }
 
-
     def build_transaction_from_approved_plan(self, plan):
         from core.schemas.models import Change, ChangeType, Transaction
 
@@ -161,7 +160,13 @@ def test_real_autonomy_cycle_observe_autoapprove_execute_commit(tmp_path):
     assert task["status"] == "committed"
 
     git_status = subprocess.run(
-        ["git", "status", "--porcelain", "--", "autonomous_smoke.py"],
+        [
+            "git",
+            "status",
+            "--porcelain",
+            "--",
+            "autonomous_smoke.py",
+        ],
         cwd=tmp_path,
         check=True,
         capture_output=True,
@@ -170,9 +175,12 @@ def test_real_autonomy_cycle_observe_autoapprove_execute_commit(tmp_path):
 
     assert git_status == ""
 
+
 class FailingCreateAgent(CreateAgent):
     def build_transaction_from_approved_plan(self, plan):
-        transaction = super().build_transaction_from_approved_plan(plan)
+        transaction = super().build_transaction_from_approved_plan(
+            plan
+        )
         transaction.changes[0].content = "def broken(:\n"
         return transaction
 
@@ -190,12 +198,14 @@ def test_real_autonomy_cycle_failure_rolls_back(tmp_path):
         tmp_path / "supervised_loop.json"
     )
 
-    observation_store.save([
-        Observation(
-            "criar arquivo autonomamente",
-            {"source": "integration"},
-        )
-    ])
+    observation_store.save(
+        [
+            Observation(
+                "criar arquivo autonomamente",
+                {"source": "integration"},
+            )
+        ]
+    )
 
     gateway = DevAgentGateway(
         FailingCreateAgent(),
@@ -250,3 +260,110 @@ def test_real_autonomy_cycle_failure_rolls_back(tmp_path):
     ).stdout
 
     assert git_status == ""
+
+
+def test_real_autonomy_cycle_recovers_after_crash(
+    tmp_path,
+    monkeypatch,
+):
+    init_git(tmp_path)
+
+    observation_store = ObservationStore(
+        tmp_path / "observations.json"
+    )
+    worker_store = WorkerStateStore(
+        tmp_path / "worker.json"
+    )
+    loop_store = WorkerStateStore(
+        tmp_path / "supervised_loop.json"
+    )
+
+    observation_store.save(
+        [
+            Observation(
+                "criar arquivo autonomamente",
+                {"source": "integration"},
+            )
+        ]
+    )
+
+    gateway = DevAgentGateway(
+        CreateAgent(),
+        root=tmp_path,
+    )
+
+    observer = Observer(store=observation_store)
+
+    worker = Worker(
+        gateway,
+        observer,
+        store=worker_store,
+        autonomy_policy=AutonomyPolicy(),
+    )
+
+    loop = SupervisedLoop(
+        worker,
+        gateway,
+        state_store=loop_store,
+    )
+
+    def crash_during_execution(transaction):
+        raise SystemExit(
+            "CRASH_DURING_AUTONOMOUS_EXECUTION"
+        )
+
+    monkeypatch.setattr(
+        gateway.executor,
+        "execute",
+        crash_during_execution,
+    )
+
+    try:
+        loop.run_once()
+    except SystemExit as error:
+        assert str(error) == (
+            "CRASH_DURING_AUTONOMOUS_EXECUTION"
+        )
+    else:
+        raise AssertionError(
+            "O ciclo autônomo deveria ter sido interrompido."
+        )
+
+    tasks = gateway.list_tasks()
+
+    assert len(tasks) == 1
+
+    approval_id = tasks[0]["approval_id"]
+
+    task = gateway.get_task(approval_id)
+
+    assert task["status"] == "executing"
+    assert task["transaction_id"] is not None
+
+    approval = gateway.supervisor.get(approval_id)
+
+    assert approval["status"] == "approved"
+
+    recoverable = (
+        gateway.transactions.list_recoverable_transactions()
+    )
+
+    assert len(recoverable) == 1
+
+    restarted = DevAgentGateway(
+        CreateAgent(),
+        root=tmp_path,
+    )
+
+    assert (
+        restarted.transactions.list_recoverable_transactions()
+        == []
+    )
+
+    recovered_task = restarted.get_task(approval_id)
+
+    assert recovered_task["status"] == "rolled_back"
+
+    target = tmp_path / "autonomous_smoke.py"
+
+    assert not target.exists()
