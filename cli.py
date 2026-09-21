@@ -208,24 +208,114 @@ def main(state_root: str | Path = "transactions", command_args=None):
                 print("\nObservação adicionada.")
 
             elif action == "autonomy":
-                if len(parts) == 1:
-                    results = [supervised_loop.run_once()]
-                else:
-                    try:
-                        max_iterations = int(parts[1])
-                    except ValueError:
-                        print("Uso: autonomy [iterações]")
-                        continue
 
-                    results = supervised_loop.run(max_iterations=max_iterations)
+                if len(parts) == 1:
+
+                    results = [supervised_loop.run_once()]
+
+                else:
+
+                    autonomy_args = parts[1].split()
+
+
+
+                    if autonomy_args[0].lower() == "continuous":
+
+                        interval_seconds = 1.0
+
+                        max_iterations = None
+
+
+
+                        if len(autonomy_args) >= 2:
+
+                            try:
+
+                                interval_seconds = float(autonomy_args[1])
+
+                            except ValueError:
+
+                                print(
+
+                                    "Uso: autonomy continuous [intervalo] [iterações]"
+
+                                )
+
+                                continue
+
+
+
+                        if len(autonomy_args) >= 3:
+
+                            try:
+
+                                max_iterations = int(autonomy_args[2])
+
+                            except ValueError:
+
+                                print(
+
+                                    "Uso: autonomy continuous [intervalo] [iterações]"
+
+                                )
+
+                                continue
+
+
+
+                        try:
+
+                            results = supervised_loop.run_continuous(
+
+                                interval_seconds=interval_seconds,
+
+                                max_iterations=max_iterations,
+
+                            )
+
+                        except KeyboardInterrupt:
+
+                            supervised_loop.stop()
+
+                            print("\nLoop contínuo interrompido.")
+
+                            results = []
+
+                    else:
+
+                        try:
+
+                            max_iterations = int(parts[1])
+
+                        except ValueError:
+
+                            print("Uso: autonomy [iterações]")
+
+                            continue
+
+
+
+                        results = supervised_loop.run(
+
+                            max_iterations=max_iterations
+
+                        )
+
 
                 for result in results:
+
                     print_proposals(result.proposals)
+
                     print(
+
                         f"Rodada: {result.metadata['iterations']} | "
+
                         f"Propostas: "
+
                         f"{result.metadata.get('proposal_count', 0)}"
+
                     )
+
 
             elif action == "tasks":
                 print_tasks(gateway.list_tasks())

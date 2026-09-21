@@ -670,3 +670,240 @@ def test_main_non_interactive_autonomy_uses_requested_iterations(
     assert FakeSupervisedLoop.instances[0].calls == [("run", 3)]
     output = capsys.readouterr().out
     assert "Rodada: 3" in output
+
+
+def test_main_autonomy_continuous_uses_supervised_loop(
+    monkeypatch,
+    tmp_path,
+):
+    import cli
+
+    class FakeResult:
+        proposals = []
+        metadata = {
+            "iterations": 1,
+            "proposal_count": 0,
+            "pending_count": 0,
+        }
+
+    class FakeSupervisedLoop:
+        instances = []
+
+        def __init__(self, worker, gateway, state_store=None):
+            self.calls = []
+            FakeSupervisedLoop.instances.append(self)
+
+        def run_once(self):
+            self.calls.append("run_once")
+            return FakeResult()
+
+        def run(self, max_iterations):
+            self.calls.append(("run", max_iterations))
+            return [FakeResult()]
+
+        def run_continuous(
+            self,
+            interval_seconds=1.0,
+            max_iterations=None,
+        ):
+            self.calls.append(
+                (
+                    "run_continuous",
+                    interval_seconds,
+                    max_iterations,
+                )
+            )
+            return [FakeResult()]
+
+    monkeypatch.setattr(
+        cli,
+        "SupervisedLoop",
+        FakeSupervisedLoop,
+    )
+
+    commands = iter(["autonomy continuous 0.5 3", "sair"])
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda _: next(commands),
+    )
+
+    cli.main(tmp_path / "transactions")
+
+    assert FakeSupervisedLoop.instances[0].calls == [
+        ("run_continuous", 0.5, 3)
+    ]
+
+
+def test_main_autonomy_continuous_uses_default_values(
+    monkeypatch,
+    tmp_path,
+):
+    import cli
+
+    class FakeResult:
+        proposals = []
+        metadata = {
+            "iterations": 1,
+            "proposal_count": 0,
+        }
+
+    class FakeSupervisedLoop:
+        instances = []
+
+        def __init__(self, worker, gateway, state_store=None):
+            self.calls = []
+            FakeSupervisedLoop.instances.append(self)
+
+        def run_once(self):
+            return FakeResult()
+
+        def run(self, max_iterations):
+            return [FakeResult()]
+
+        def run_continuous(
+            self,
+            interval_seconds=1.0,
+            max_iterations=None,
+        ):
+            self.calls.append(
+                (
+                    interval_seconds,
+                    max_iterations,
+                )
+            )
+            return [FakeResult()]
+
+    monkeypatch.setattr(
+        cli,
+        "SupervisedLoop",
+        FakeSupervisedLoop,
+    )
+
+    commands = iter(["autonomy continuous", "sair"])
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda _: next(commands),
+    )
+
+    cli.main(tmp_path / "transactions")
+
+    assert FakeSupervisedLoop.instances[0].calls == [
+        (1.0, None)
+    ]
+
+
+def test_main_autonomy_continuous_rejects_invalid_interval(
+    monkeypatch,
+    capsys,
+    tmp_path,
+):
+    gateway = FakeGateway(None, ".")
+    monkeypatch.setattr(
+        cli,
+        "DevAgent",
+        lambda root: object(),
+    )
+    monkeypatch.setattr(
+        cli,
+        "DevAgentGateway",
+        lambda agent, root: gateway,
+    )
+
+    commands = iter(["autonomy continuous abc", "sair"])
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda _: next(commands),
+    )
+
+    cli.main(tmp_path / "transactions")
+
+    output = capsys.readouterr().out
+
+    assert "Uso: autonomy continuous [intervalo] [iterações]" in output
+
+
+def test_main_autonomy_continuous_rejects_invalid_iterations(
+    monkeypatch,
+    capsys,
+    tmp_path,
+):
+    gateway = FakeGateway(None, ".")
+    monkeypatch.setattr(
+        cli,
+        "DevAgent",
+        lambda root: object(),
+    )
+    monkeypatch.setattr(
+        cli,
+        "DevAgentGateway",
+        lambda agent, root: gateway,
+    )
+
+    commands = iter(["autonomy continuous 1 abc", "sair"])
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda _: next(commands),
+    )
+
+    cli.main(tmp_path / "transactions")
+
+    output = capsys.readouterr().out
+
+    assert "Uso: autonomy continuous [intervalo] [iterações]" in output
+
+
+def test_main_autonomy_continuous_handles_keyboard_interrupt(
+    monkeypatch,
+    capsys,
+    tmp_path,
+):
+    import cli
+
+    class FakeResult:
+        proposals = []
+        metadata = {
+            "iterations": 1,
+            "proposal_count": 0,
+        }
+
+    class FakeSupervisedLoop:
+        instances = []
+
+        def __init__(self, worker, gateway, state_store=None):
+            self.stopped = False
+            FakeSupervisedLoop.instances.append(self)
+
+        def run_once(self):
+            return FakeResult()
+
+        def run(self, max_iterations):
+            return [FakeResult()]
+
+        def run_continuous(
+            self,
+            interval_seconds=1.0,
+            max_iterations=None,
+        ):
+            raise KeyboardInterrupt
+
+        def stop(self):
+            self.stopped = True
+
+    monkeypatch.setattr(
+        cli,
+        "SupervisedLoop",
+        FakeSupervisedLoop,
+    )
+
+    commands = iter(["autonomy continuous", "sair"])
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda _: next(commands),
+    )
+
+    cli.main(tmp_path / "transactions")
+
+    assert FakeSupervisedLoop.instances[0].stopped is True
+
+    output = capsys.readouterr().out
+    assert "Loop contínuo interrompido." in output
