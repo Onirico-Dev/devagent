@@ -169,3 +169,84 @@ def test_real_autonomy_cycle_observe_autoapprove_execute_commit(tmp_path):
     ).stdout
 
     assert git_status == ""
+
+class FailingCreateAgent(CreateAgent):
+    def build_transaction_from_approved_plan(self, plan):
+        transaction = super().build_transaction_from_approved_plan(plan)
+        transaction.changes[0].content = "def broken(:\n"
+        return transaction
+
+
+def test_real_autonomy_cycle_failure_rolls_back(tmp_path):
+    init_git(tmp_path)
+
+    observation_store = ObservationStore(
+        tmp_path / "observations.json"
+    )
+    worker_store = WorkerStateStore(
+        tmp_path / "worker.json"
+    )
+    loop_store = WorkerStateStore(
+        tmp_path / "supervised_loop.json"
+    )
+
+    observation_store.save([
+        Observation(
+            "criar arquivo autonomamente",
+            {"source": "integration"},
+        )
+    ])
+
+    gateway = DevAgentGateway(
+        FailingCreateAgent(),
+        root=tmp_path,
+    )
+
+    observer = Observer(store=observation_store)
+
+    worker = Worker(
+        gateway,
+        observer,
+        store=worker_store,
+        autonomy_policy=AutonomyPolicy(),
+    )
+
+    loop = SupervisedLoop(
+        worker,
+        gateway,
+        state_store=loop_store,
+    )
+
+    result = loop.run_once()
+
+    target = tmp_path / "autonomous_smoke.py"
+
+    assert len(result.proposals) == 1
+    assert (
+        result.proposals[0].autonomy_decision
+        == "auto_approve"
+    )
+    assert result.metadata["auto_approved_count"] == 1
+    assert not target.exists()
+
+    task = gateway.get_task(
+        result.proposals[0].approval_id
+    )
+
+    assert task["status"] == "failed"
+
+    git_status = subprocess.run(
+        [
+            "git",
+            "status",
+            "--porcelain",
+            "--",
+            "autonomous_smoke.py",
+        ],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    assert git_status == ""
