@@ -517,3 +517,62 @@ def test_ai_planner_rejects_invalid_test_filename():
         match="test_\\*\\.py ou \\*_test\\.py",
     ):
         AIPlanner(FixedAdapter()).create_plan("teste")
+
+def test_ai_planner_rejects_change_with_missing_type():
+    class FixedAdapter:
+        def generate(self, prompt):
+            return (
+                '{"objective": "teste", "changes": ['
+                '{"path": "arquivo.py", '
+                '"content": "print(1)", "reason": "teste"}'
+                '], "tests": [], "risks": []}'
+            )
+
+    with pytest.raises(ValueError, match="Tipo de alteração inválido"):
+        AIPlanner(FixedAdapter()).create_plan("criar arquivo.py")
+
+
+def test_ai_planner_rejects_change_with_missing_path():
+    class FixedAdapter:
+        def generate(self, prompt):
+            return (
+                '{"objective": "teste", "changes": ['
+                '{"type": "create", '
+                '"content": "print(1)", "reason": "teste"}'
+                '], "tests": [], "risks": []}'
+            )
+
+    with pytest.raises(ValueError, match="Caminho da alteração inválido"):
+        AIPlanner(FixedAdapter()).create_plan("criar arquivo.py")
+
+
+def test_ai_planner_rejects_change_with_missing_reason_type():
+    class FixedAdapter:
+        def generate(self, prompt):
+            return (
+                '{"objective": "teste", "changes": ['
+                '{"type": "create", "path": "arquivo.py", '
+                '"content": "print(1)", "reason": null}'
+                '], "tests": [], "risks": []}'
+            )
+
+    with pytest.raises(
+        ValueError,
+        match="Motivo da alteração deve ser uma string",
+    ):
+        AIPlanner(FixedAdapter()).create_plan("criar arquivo.py")
+
+
+def test_ai_planner_accepts_optional_reason_when_omitted():
+    class FixedAdapter:
+        def generate(self, prompt):
+            return (
+                '{"objective": "teste", "changes": ['
+                '{"type": "create", "path": "arquivo.py", '
+                '"content": "print(1)"}'
+                '], "tests": [], "risks": []}'
+            )
+
+    plan = AIPlanner(FixedAdapter()).create_plan("criar arquivo.py")
+
+    assert plan.changes[0].reason == ""
