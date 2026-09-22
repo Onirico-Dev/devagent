@@ -1005,3 +1005,72 @@ def test_supervised_loop_rejects_forged_auto_approve_for_mixed_plan():
     assert result.metadata["auto_approved_count"] == 0
     assert result.metadata["pending_count"] == 1
     assert gateway.approve_called is False
+
+
+def test_supervised_loop_records_execution_feedback():
+    from core.observation import Observation
+
+    class Worker:
+        def run_once(self):
+            return [{
+                "instruction": "crie arquivo.txt",
+                "approval_id": "44",
+                "status": "pending",
+                "plan": {
+                    "objective": "crie arquivo.txt",
+                    "changes": [{
+                        "change_type": "create",
+                        "path": "arquivo.txt",
+                        "content": "conteudo seguro\n",
+                        "reason": "Criar arquivo solicitado.",
+                    }],
+                    "tests": [],
+                    "risks": [],
+                },
+                "autonomy_decision": "auto_approve",
+            }]
+
+    class Gateway:
+        def __init__(self):
+            self.approved = []
+
+        def list_tasks(self):
+            return []
+
+        def approve(self, approval_id):
+            self.approved.append(approval_id)
+            return {
+                "approval_id": approval_id,
+                "status": "committed",
+                "transaction_id": "tx-44",
+                "tests": {"success": True},
+                "repair_attempts": 0,
+            }
+
+    class Observer:
+        def __init__(self):
+            self.observations = []
+
+        def add(self, observation):
+            self.observations.append(observation)
+
+    gateway = Gateway()
+    observer = Observer()
+
+    loop = SupervisedLoop(
+        worker=Worker(),
+        gateway=gateway,
+        observer=observer,
+    )
+
+    result = loop.run_once()
+
+    assert gateway.approved == ["44"]
+    assert result.metadata["auto_approved_count"] == 1
+    assert len(observer.observations) == 1
+
+    observation = observer.observations[0]
+    assert isinstance(observation, Observation)
+    assert observation.metadata["source"] == "transaction_result"
+    assert observation.metadata["transaction_id"] == "tx-44"
+    assert observation.metadata["status"] == "committed"

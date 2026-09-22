@@ -524,7 +524,7 @@ def test_main_autonomy_uses_supervised_loop(monkeypatch, capsys, tmp_path):
     class FakeSupervisedLoop:
         instances = []
 
-        def __init__(self, worker, gateway, state_store=None):
+        def __init__(self, worker, gateway, state_store=None, observer=None):
             self.worker = worker
             self.gateway = gateway
             self.calls = []
@@ -574,7 +574,7 @@ def test_main_autonomy_multiple_iterations_uses_supervised_loop(
     class FakeSupervisedLoop:
         instances = []
 
-        def __init__(self, worker, gateway, state_store=None):
+        def __init__(self, worker, gateway, state_store=None, observer=None):
             self.calls = []
             FakeSupervisedLoop.instances.append(self)
 
@@ -639,7 +639,7 @@ def test_main_non_interactive_autonomy_uses_requested_iterations(
     class FakeSupervisedLoop:
         instances = []
 
-        def __init__(self, worker, gateway, state_store=None):
+        def __init__(self, worker, gateway, state_store=None, observer=None):
             self.calls = []
             FakeSupervisedLoop.instances.append(self)
 
@@ -689,7 +689,7 @@ def test_main_autonomy_continuous_uses_supervised_loop(
     class FakeSupervisedLoop:
         instances = []
 
-        def __init__(self, worker, gateway, state_store=None):
+        def __init__(self, worker, gateway, state_store=None, observer=None):
             self.calls = []
             FakeSupervisedLoop.instances.append(self)
 
@@ -750,7 +750,7 @@ def test_main_autonomy_continuous_uses_default_values(
     class FakeSupervisedLoop:
         instances = []
 
-        def __init__(self, worker, gateway, state_store=None):
+        def __init__(self, worker, gateway, state_store=None, observer=None):
             self.calls = []
             FakeSupervisedLoop.instances.append(self)
 
@@ -869,7 +869,7 @@ def test_main_autonomy_continuous_handles_keyboard_interrupt(
     class FakeSupervisedLoop:
         instances = []
 
-        def __init__(self, worker, gateway, state_store=None):
+        def __init__(self, worker, gateway, state_store=None, observer=None):
             self.stopped = False
             FakeSupervisedLoop.instances.append(self)
 

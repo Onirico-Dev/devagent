@@ -137,6 +137,7 @@ def main(state_root: str | Path = "transactions", command_args=None):
         worker,
         gateway,
         state_store=supervised_loop_state_store,
+        observer=observer,
     )
 
     print("=" * 60)

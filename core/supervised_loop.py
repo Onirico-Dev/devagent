@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from core.loop_controller import LoopController
+from core.execution_feedback import ExecutionFeedback
+from core.observation import Observation
 from core.autonomy_policy import AutonomyDecision, AutonomyPolicy
 from core.schemas.models import Plan
 
@@ -23,7 +25,14 @@ class SupervisedLoop(LoopController):
         "failed",
     }
 
-    def __init__(self, worker, gateway, state_store=None):
+    def __init__(
+        self,
+        worker,
+        gateway,
+        state_store=None,
+        observer=None,
+        execution_feedback=None,
+    ):
         if not hasattr(worker, "run_once"):
             raise ValueError("Worker inválido.")
 
@@ -41,6 +50,8 @@ class SupervisedLoop(LoopController):
         self.worker = worker
         self.gateway = gateway
         self.state_store = state_store
+        self.observer = observer
+        self.execution_feedback = execution_feedback or ExecutionFeedback()
 
         if self.state_store is not None:
             self.restore_state(self.state_store.load())
@@ -134,7 +145,8 @@ class SupervisedLoop(LoopController):
                         decision
                         == AutonomyDecision.AUTO_APPROVE
                     ):
-                        self.gateway.approve(approval_id)
+                        result = self.gateway.approve(approval_id)
+                        self._record_execution_feedback(result)
                         auto_approved_count += 1
 
             tasks = self.gateway.list_tasks()
@@ -156,6 +168,16 @@ class SupervisedLoop(LoopController):
             )
         finally:
             self._persist_state()
+
+    def _record_execution_feedback(self, result: dict[str, Any]) -> None:
+        if self.observer is None:
+            return
+
+        observation = self.execution_feedback.build(result)
+        if observation is not None:
+            if not isinstance(observation, Observation):
+                raise ValueError("Feedback de execução inválido.")
+            self.observer.add(observation)
 
     def export_state(self) -> dict[str, Any]:
         return {
