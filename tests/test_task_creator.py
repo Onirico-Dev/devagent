@@ -55,3 +55,306 @@ def test_plans_equal_rejects_stale_plan():
     }
 
     assert TaskCreator._plans_equal(old_plan, new_plan) is False
+
+from unittest.mock import Mock
+
+import pytest
+
+from core.task.task_creator import TaskCreator
+
+
+def make_plan(
+    *,
+    change_type="create",
+    path="app.py",
+    content="print('ok')",
+):
+    change = {
+        "change_type": change_type,
+        "path": path,
+    }
+
+    if change_type != "delete":
+        change["content"] = content
+
+    return {
+        "objective": "teste",
+        "changes": [change],
+        "tests": [],
+        "risks": [],
+    }
+
+
+@pytest.fixture
+def creator():
+    security = Mock()
+    history = Mock()
+    supervisor = Mock()
+
+    return TaskCreator(
+        security=security,
+        history=history,
+        supervisor=supervisor,
+    )
+
+
+def test_validate_plan_rejects_non_dict(creator):
+    with pytest.raises(ValueError, match="Plano inválido"):
+        creator.validate_plan(None)
+
+
+def test_validate_plan_rejects_missing_changes(creator):
+    with pytest.raises(ValueError, match="lista de alterações"):
+        creator.validate_plan({})
+
+
+def test_validate_plan_rejects_empty_changes(creator):
+    with pytest.raises(ValueError, match="lista de alterações"):
+        creator.validate_plan({"changes": []})
+
+
+def test_validate_plan_rejects_invalid_change(creator):
+    with pytest.raises(ValueError, match="Alteração inválida"):
+        creator.validate_plan({"changes": [None]})
+
+
+def test_validate_plan_rejects_missing_path(creator):
+    with pytest.raises(ValueError, match="sem caminho"):
+        creator.validate_plan(
+            {
+                "changes": [
+                    {
+                        "change_type": "create",
+                        "content": "print('ok')",
+                    }
+                ]
+            }
+        )
+
+
+def test_validate_plan_calls_security_for_path(creator):
+    plan = make_plan()
+
+    creator.validate_plan(plan)
+
+    creator.security.validate_path.assert_called_once_with(
+        "app.py"
+    )
+
+
+def test_validate_plan_calls_security_for_content(creator):
+    plan = make_plan(
+        content="print('ok')",
+    )
+
+    creator.validate_plan(plan)
+
+    creator.security.validate_content.assert_called_once_with(
+        "print('ok')"
+    )
+
+
+def test_validate_plan_rejects_non_string_content(creator):
+    plan = make_plan(content=None)
+
+    with pytest.raises(ValueError, match="Conteúdo inválido"):
+        creator.validate_plan(plan)
+
+
+def test_validate_plan_rejects_high_risk_content(creator):
+    creator.security.validate_content.side_effect = PermissionError(
+        "conteúdo de alto risco"
+    )
+
+    plan = make_plan(
+        content="import subprocess"
+    )
+
+    with pytest.raises(PermissionError, match="alto risco"):
+        creator.validate_plan(plan)
+
+
+def test_validate_plan_accepts_delete_without_content(creator):
+    plan = make_plan(
+        change_type="delete",
+        path="app.py",
+    )
+
+    creator.validate_plan(plan)
+
+    creator.security.validate_path.assert_called_once_with(
+        "app.py"
+    )
+    creator.security.validate_content.assert_not_called()
+
+
+def test_validate_plan_propagates_blocked_path(creator):
+    creator.security.validate_path.side_effect = PermissionError(
+        "Caminho bloqueado"
+    )
+
+    with pytest.raises(PermissionError, match="Caminho bloqueado"):
+        creator.validate_plan(make_plan())
+
+
+def test_create_or_reuse_creates_new_task(creator):
+    creator.history.list_pending.return_value = []
+    creator.supervisor.request_approval.return_value = "123"
+
+    plan = make_plan()
+
+    result = creator.create_or_reuse(
+        "crie app.py",
+        plan,
+    )
+
+    assert result == {
+        "approval_id": "123",
+        "status": "pending",
+        "plan": plan,
+    }
+
+    creator.supervisor.request_approval.assert_called_once_with(plan)
+    creator.history.create.assert_called_once_with(
+        approval_id="123",
+        instruction="crie app.py",
+        plan=plan,
+    )
+
+
+def test_create_or_reuse_reuses_identical_pending_task(creator):
+    plan = make_plan()
+
+    creator.history.list_pending.return_value = [
+        {
+            "approval_id": "42",
+            "status": "pending",
+            "instruction": "crie   app.py",
+            "plan": plan,
+        }
+    ]
+
+    result = creator.create_or_reuse(
+        "crie app.py",
+        plan.copy(),
+    )
+
+    assert result == {
+        "approval_id": "42",
+        "status": "pending",
+        "plan": plan,
+    }
+
+    creator.supervisor.request_approval.assert_not_called()
+    creator.history.create.assert_not_called()
+
+
+def test_create_or_reuse_does_not_reuse_different_plan(creator):
+    old_plan = make_plan(
+        path="old.py",
+        content="old",
+    )
+    new_plan = make_plan(
+        path="new.py",
+        content="new",
+    )
+
+    creator.history.list_pending.return_value = [
+        {
+            "approval_id": "42",
+            "status": "pending",
+            "instruction": "crie app.py",
+            "plan": old_plan,
+        }
+    ]
+    creator.supervisor.request_approval.return_value = "43"
+
+    result = creator.create_or_reuse(
+        "crie app.py",
+        new_plan,
+    )
+
+    assert result["approval_id"] == "43"
+    creator.supervisor.request_approval.assert_called_once_with(
+        new_plan
+    )
+
+
+def test_create_or_reuse_does_not_reuse_different_instruction(creator):
+    plan = make_plan()
+
+    creator.history.list_pending.return_value = [
+        {
+            "approval_id": "42",
+            "status": "pending",
+            "instruction": "crie outro arquivo",
+            "plan": plan,
+        }
+    ]
+    creator.supervisor.request_approval.return_value = "43"
+
+    result = creator.create_or_reuse(
+        "crie app.py",
+        plan,
+    )
+
+    assert result["approval_id"] == "43"
+    creator.supervisor.request_approval.assert_called_once_with(
+        plan
+    )
+
+
+def test_create_or_reuse_ignores_pending_task_with_invalid_instruction(
+    creator,
+):
+    plan = make_plan()
+
+    creator.history.list_pending.return_value = [
+        {
+            "approval_id": "42",
+            "status": "pending",
+            "instruction": None,
+            "plan": plan,
+        }
+    ]
+    creator.supervisor.request_approval.return_value = "43"
+
+    result = creator.create_or_reuse(
+        "crie app.py",
+        plan,
+    )
+
+    assert result["approval_id"] == "43"
+
+
+def test_create_or_reuse_normalizes_instruction_whitespace(creator):
+    plan = make_plan()
+
+    creator.history.list_pending.return_value = [
+        {
+            "approval_id": "42",
+            "status": "pending",
+            "instruction": "crie    app.py",
+            "plan": plan,
+        }
+    ]
+
+    result = creator.create_or_reuse(
+        "  crie app.py  ",
+        plan,
+    )
+
+    assert result["approval_id"] == "42"
+    creator.supervisor.request_approval.assert_not_called()
+
+
+def test_create_or_reuse_loads_history_before_listing_pending(creator):
+    creator.history.list_pending.return_value = []
+    creator.supervisor.request_approval.return_value = "123"
+
+    creator.create_or_reuse(
+        "crie app.py",
+        make_plan(),
+    )
+
+    creator.history._load.assert_called_once_with()
