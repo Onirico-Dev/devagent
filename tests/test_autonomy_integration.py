@@ -1381,3 +1381,84 @@ print(
     ).stdout
 
     assert git_status == ""
+
+
+def test_real_transaction_feedback_creates_persistent_correction_proposal(
+    tmp_path,
+):
+    from core.execution_feedback import ExecutionFeedback
+    from core.feedback_handler import FeedbackHandler
+
+    init_git(tmp_path)
+
+    observation_path = tmp_path / "observations.json"
+    worker_path = tmp_path / "worker.json"
+
+    observation_store = ObservationStore(observation_path)
+
+    failed_result = {
+        "approval_id": "approval-original",
+        "status": "failed",
+        "transaction_id": "tx-feedback-e2e",
+        "tests": {
+            "success": False,
+            "error": "TEST_FAILURE",
+        },
+        "repair_attempts": 2,
+        "error": "TEST_FAILURE",
+    }
+
+    observation = ExecutionFeedback().build(failed_result)
+    assert observation is not None
+
+    observation_store.append(observation)
+
+    class FeedbackGateway:
+        def __init__(self):
+            self.created = []
+
+        def create_task(self, instruction):
+            self.created.append(instruction)
+            return {
+                "approval_id": "approval-correction-e2e",
+                "status": "pending",
+                "plan": {
+                    "instruction": instruction,
+                    "objective": instruction,
+                    "changes": [],
+                    "tests": [],
+                    "risks": [],
+                },
+            }
+
+    gateway = FeedbackGateway()
+
+    worker = Worker(
+        gateway,
+        Observer(store=observation_store),
+        store=WorkerStateStore(worker_path),
+        feedback_handler=FeedbackHandler(),
+    )
+
+    first = worker.run_once()
+
+    assert len(first) == 1
+    assert first[0].approval_id == "approval-correction-e2e"
+    assert first[0].status == "pending"
+    assert len(gateway.created) == 1
+    assert "tx-feedback-e2e" in gateway.created[0]
+
+    restarted_gateway = FeedbackGateway()
+
+    restarted_worker = Worker(
+        restarted_gateway,
+        Observer(store=ObservationStore(observation_path)),
+        store=WorkerStateStore(worker_path),
+        feedback_handler=FeedbackHandler(),
+    )
+
+    second = restarted_worker.run_once()
+
+    assert second == []
+    assert restarted_gateway.created == []
+    assert len(restarted_worker.processed_ids) == 1
