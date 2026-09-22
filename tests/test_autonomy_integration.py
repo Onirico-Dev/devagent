@@ -989,3 +989,123 @@ def test_real_autonomy_cycle_exhausts_repair_attempts_and_rolls_back(
     ).stdout
 
     assert git_status == ""
+
+
+def test_real_autonomy_cycle_recovers_after_crash_during_repair(
+    tmp_path,
+    monkeypatch,
+):
+    init_git(tmp_path)
+
+    observation_store = ObservationStore(
+        tmp_path / "observations.json"
+    )
+    worker_store = WorkerStateStore(
+        tmp_path / "worker.json"
+    )
+    loop_store = WorkerStateStore(
+        tmp_path / "supervised_loop.json"
+    )
+
+    observation_store.save(
+        [
+            Observation(
+                "criar arquivo autonomamente",
+                {"source": "repair-crash-integration"},
+            )
+        ]
+    )
+
+    gateway = DevAgentGateway(
+        RepairAgent(),
+        root=tmp_path,
+    )
+
+    gateway.repair_engine.ai = RepairAdapter()
+
+    worker = Worker(
+        gateway,
+        Observer(store=observation_store),
+        store=worker_store,
+        autonomy_policy=AutonomyPolicy(),
+    )
+
+    loop = SupervisedLoop(
+        worker,
+        gateway,
+        state_store=loop_store,
+    )
+
+    def crash_during_repair(diagnosis, instruction, transaction):
+        raise SystemExit("CRASH_DURING_AUTONOMOUS_REPAIR")
+
+    monkeypatch.setattr(
+        gateway.repair_executor,
+        "execute_repair",
+        crash_during_repair,
+    )
+
+    try:
+        loop.run_once()
+    except SystemExit as error:
+        assert str(error) == "CRASH_DURING_AUTONOMOUS_REPAIR"
+    else:
+        raise AssertionError(
+            "O ciclo autônomo deveria ter sido interrompido durante o reparo."
+        )
+
+    tasks = gateway.list_tasks()
+
+    assert len(tasks) == 1
+
+    approval_id = tasks[0]["approval_id"]
+    task = gateway.get_task(approval_id)
+
+    assert task["status"] == "testing"
+    assert task["transaction_id"] is not None
+
+    recoverable = (
+        gateway.transactions.list_recoverable_transactions()
+    )
+
+    assert len(recoverable) == 1
+
+    restarted = DevAgentGateway(
+        RepairAgent(),
+        root=tmp_path,
+    )
+
+    assert (
+        restarted.transactions.list_recoverable_transactions()
+        == []
+    )
+
+    recovered_task = restarted.get_task(approval_id)
+
+    assert recovered_task["status"] == "rolled_back"
+
+    target = tmp_path / "autonomous_smoke.py"
+
+    assert not target.exists()
+
+    transaction = restarted.transactions.load_manifest(
+        recovered_task["transaction_id"]
+    )
+
+    assert transaction.status.value == "rolled_back"
+
+    git_status = subprocess.run(
+        [
+            "git",
+            "status",
+            "--porcelain",
+                       "--",
+            "autonomous_smoke.py",
+        ],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    assert git_status == ""
