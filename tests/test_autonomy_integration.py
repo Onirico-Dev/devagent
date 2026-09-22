@@ -1462,3 +1462,85 @@ def test_real_transaction_feedback_creates_persistent_correction_proposal(
     assert second == []
     assert restarted_gateway.created == []
     assert len(restarted_worker.processed_ids) == 1
+
+
+def test_real_transaction_feedback_proposal_requires_human_approval(tmp_path):
+    from core.execution_feedback import ExecutionFeedback
+    from core.feedback_handler import FeedbackHandler
+
+    init_git(tmp_path)
+
+    observation_path = tmp_path / "observations.json"
+    worker_path = tmp_path / "worker.json"
+    loop_path = tmp_path / "supervised_loop.json"
+
+    observation_store = ObservationStore(observation_path)
+
+    observation = ExecutionFeedback().build(
+        {
+            "approval_id": "approval-original",
+            "status": "failed",
+            "transaction_id": "tx-human-feedback",
+            "tests": {"success": False, "error": "TEST_FAILURE"},
+            "repair_attempts": 2,
+            "error": "TEST_FAILURE",
+        }
+    )
+
+    assert observation is not None
+    observation_store.append(observation)
+
+    class FeedbackGateway:
+        def __init__(self):
+            self.created = []
+            self.approved = []
+
+        def create_task(self, instruction):
+            self.created.append(instruction)
+            return {
+                "approval_id": "approval-correction-human",
+                "status": "pending",
+                "plan": {
+                    "instruction": instruction,
+                    "objective": instruction,
+                    "changes": [],
+                    "tests": [],
+                    "risks": ["Correção requer supervisão"],
+                },
+            }
+
+        def approve(self, approval_id):
+            self.approved.append(approval_id)
+            raise AssertionError(
+                "Proposta corretiva não deve ser aprovada automaticamente."
+            )
+
+        def list_tasks(self):
+            return []
+
+    gateway = FeedbackGateway()
+
+    worker = Worker(
+        gateway,
+        Observer(store=observation_store),
+        store=WorkerStateStore(worker_path),
+        autonomy_policy=AutonomyPolicy(),
+        feedback_handler=FeedbackHandler(),
+    )
+
+    loop = SupervisedLoop(
+        worker,
+        gateway,
+        state_store=WorkerStateStore(loop_path),
+    )
+
+    result = loop.run_once()
+
+    assert len(result.proposals) == 1
+    proposal = result.proposals[0]
+
+    assert proposal.approval_id == "approval-correction-human"
+    assert proposal.autonomy_decision == "require_human"
+    assert result.metadata["auto_approved_count"] == 0
+    assert gateway.approved == []
+    assert len(gateway.created) == 1
