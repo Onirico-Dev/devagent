@@ -885,3 +885,59 @@ def test_worker_keeps_feedback_unprocessed_when_handler_fails():
     assert worker._observation_key(observation) not in worker._processed
     assert len(worker.errors) == 1
     assert worker.errors[0]["error"] == "falha no feedback"
+
+def test_transaction_feedback_persists_across_worker_restart(tmp_path):
+    from core.feedback_handler import FeedbackHandler
+    from core.observation import Observation
+    from core.observation_store import ObservationStore
+    from core.observer import Observer
+    from core.worker import Worker
+    from core.worker_state_store import WorkerStateStore
+
+    observation_path = tmp_path / "observations.json"
+    worker_state_path = tmp_path / "worker.json"
+
+    observation = Observation(
+        instruction="Avaliar resultado da transação.",
+        metadata={
+            "source": "transaction_result",
+            "transaction_id": "tx-persist-1",
+            "status": "committed",
+        },
+    )
+
+    ObservationStore(observation_path).append(observation)
+
+    class Gateway:
+        def create_task(self, instruction):
+            raise AssertionError("Feedback não deve criar tarefa normal.")
+
+    class RecordingHandler(FeedbackHandler):
+        received = 0
+
+        def handle(self, observation):
+            type(self).received += 1
+            return {"handled": True}
+
+    handler = RecordingHandler()
+
+    worker = Worker(
+        Gateway(),
+        Observer(store=ObservationStore(observation_path)),
+        store=WorkerStateStore(worker_state_path),
+        feedback_handler=handler,
+    )
+
+    assert worker.run_once() == []
+    assert RecordingHandler.received == 1
+
+    restarted = Worker(
+        Gateway(),
+        Observer(store=ObservationStore(observation_path)),
+        store=WorkerStateStore(worker_state_path),
+        feedback_handler=handler,
+    )
+
+    assert restarted.run_once() == []
+    assert RecordingHandler.received == 1
+    assert restarted._observation_key(observation) in restarted._processed
