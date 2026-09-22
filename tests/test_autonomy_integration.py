@@ -1210,3 +1210,174 @@ def test_real_autonomy_restart_after_recovery_does_not_reprocess_observation(
     assert tasks_after_restart[0]["status"] == "rolled_back"
 
     assert not (tmp_path / "autonomous_smoke.py").exists()
+
+
+def test_real_autonomy_concurrent_processes_do_not_duplicate_observation(
+    tmp_path,
+):
+    init_git(tmp_path)
+
+    observation_path = tmp_path / "observations.json"
+    worker_path = tmp_path / "worker.json"
+    loop_path = tmp_path / "supervised_loop.json"
+
+    ObservationStore(observation_path).save(
+        [
+            Observation(
+                "criar arquivo autonomamente",
+                {"source": "concurrent-autonomy"},
+            )
+        ]
+    )
+
+    script = tmp_path / "run_concurrent_agent.py"
+    script.write_text(
+        """
+from pathlib import Path
+import sys
+
+from core.autonomy_policy import AutonomyPolicy
+from core.gateway import DevAgentGateway
+from core.observation_store import ObservationStore
+from core.observer import Observer
+from core.supervised_loop import SupervisedLoop
+from core.worker import Worker
+from core.worker_state_store import WorkerStateStore
+
+
+class CreateAgent:
+    def process(self, instruction):
+        return {
+            "instruction": instruction,
+            "objective": instruction,
+            "changes": [
+                {
+                    "change_type": "create",
+                    "path": "concurrent_autonomy_smoke.py",
+                    "content": "VALUE = 42\\n",
+                }
+            ],
+            "tests": [],
+            "risks": [],
+        }
+
+    def build_transaction_from_approved_plan(self, plan):
+        from uuid import uuid4
+        from core.schemas.models import Change, ChangeType, Transaction
+
+        changes = [
+            Change(
+                change_type=ChangeType(item["change_type"]),
+                path=item["path"],
+                content=item.get("content"),
+                reason=item.get("reason", ""),
+            )
+            for item in plan["changes"]
+        ]
+
+        return Transaction(
+            transaction_id=str(uuid4()),
+            changes=changes,
+            metadata={"tests": plan.get("tests", [])},
+        )
+
+
+root = Path(sys.argv[1])
+
+gateway = DevAgentGateway(
+    CreateAgent(),
+    root=root,
+)
+
+worker = Worker(
+    gateway,
+    Observer(
+        store=ObservationStore(root / "observations.json")
+    ),
+    store=WorkerStateStore(root / "worker.json"),
+    autonomy_policy=AutonomyPolicy(),
+)
+
+loop = SupervisedLoop(
+    worker,
+    gateway,
+    state_store=WorkerStateStore(
+        root / "supervised_loop.json"
+    ),
+)
+
+result = loop.run_once()
+
+print(
+    result.metadata["proposal_count"],
+    result.metadata["auto_approved_count"],
+)
+""",
+        encoding="utf-8",
+    )
+
+    import os
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path.cwd())
+
+    first = subprocess.Popen(
+        [sys.executable, str(script), str(tmp_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+
+    second = subprocess.Popen(
+        [sys.executable, str(script), str(tmp_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+
+    first_stdout, first_stderr = first.communicate()
+    second_stdout, second_stderr = second.communicate()
+
+    assert first.returncode == 0, first_stderr
+    assert second.returncode == 0, second_stderr
+
+    outputs = {
+        first_stdout.strip(),
+        second_stdout.strip(),
+    }
+
+    assert outputs <= {"0 0", "1 1"}
+    assert sum(
+        output == "1 1"
+        for output in [first_stdout.strip(), second_stdout.strip()]
+    ) == 1
+
+    tasks = DevAgentGateway(
+        CreateAgent(),
+        root=tmp_path,
+    ).list_tasks()
+
+    assert len(tasks) == 1
+    assert tasks[0]["status"] == "committed"
+
+    target = tmp_path / "concurrent_autonomy_smoke.py"
+
+    assert target.read_text(encoding="utf-8") == "VALUE = 42\n"
+
+    git_status = subprocess.run(
+        [
+            "git",
+            "status",
+            "--porcelain",
+            "--",
+            "concurrent_autonomy_smoke.py",
+        ],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    assert git_status == ""
