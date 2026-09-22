@@ -5,6 +5,7 @@ from core.supervised_loop import SupervisedLoop
 from core.gateway import DevAgentGateway
 from core.observation_store import ObservationStore
 from core.observer import Observation, Observer
+from core.execution_feedback import ExecutionFeedback
 from core.autonomy_policy import AutonomyPolicy
 from core.worker import Worker
 from core.worker_state_store import WorkerStateStore
@@ -125,6 +126,7 @@ def main(state_root: str | Path = "transactions", command_args=None):
     )
 
     observer = Observer(store=observation_store)
+    execution_feedback = ExecutionFeedback()
     autonomy_policy = AutonomyPolicy()
 
     worker = Worker(
@@ -337,6 +339,10 @@ def main(state_root: str | Path = "transactions", command_args=None):
                     continue
 
                 result = gateway.approve(parts[1])
+
+                observation = execution_feedback.build(result)
+                if observation is not None:
+                    observer.add(observation)
 
                 print("\nResultado da aprovação:")
                 print_task(gateway.get_task(parts[1]))
