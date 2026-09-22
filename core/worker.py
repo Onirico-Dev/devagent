@@ -6,6 +6,7 @@ from core.observer import Observer
 from core.worker_state_store import WorkerStateStore
 from core.autonomy_policy import AutonomyDecision, AutonomyPolicy
 from core.schemas.models import Plan
+from core.feedback_handler import FeedbackHandler
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,7 @@ class Worker:
         observer: Observer,
         store: WorkerStateStore | None = None,
         autonomy_policy: AutonomyPolicy | None = None,
+        feedback_handler: FeedbackHandler | None = None,
     ):
         if gateway is None:
             raise ValueError("Gateway inválido.")
@@ -58,6 +60,7 @@ class Worker:
         self.observer = observer
         self.store = store
         self.autonomy_policy = autonomy_policy
+        self.feedback_handler = feedback_handler or FeedbackHandler()
         self._processed: set[tuple[str, tuple[tuple[str, str], ...]]] = set()
         self._processed_ids: set[str] = set()
         self._processed_observations: dict[
@@ -412,7 +415,18 @@ class Worker:
                 continue
 
             try:
+                if observation.metadata.get("source") == "transaction_result":
+                    self.feedback_handler.handle(observation)
+                    self._processed.add(key)
+                    self._processed_observations[key] = Observation(
+                        instruction=observation.instruction.strip(),
+                        metadata=dict(observation.metadata),
+                    )
+                    self._persist_state()
+                    continue
+
                 proposals.append(self.process_observation(observation))
+
             except Exception as exc:
                 self._errors.append(
                     {

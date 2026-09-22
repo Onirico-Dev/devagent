@@ -1,4 +1,9 @@
 import pytest
+from core.observation import Observation
+from core.observer import Observer
+from core.worker import Worker
+from core.observation import Observation
+from core.observer import Observer
 
 def _run_worker_with_shared_state(path, instruction):
     from core.observation import Observation
@@ -773,3 +778,110 @@ def test_process_observation_detects_shared_state_added_after_worker_load(
         match="Observação já processada.",
     ):
         worker.process_observation(observation)
+
+
+def test_worker_routes_transaction_result_to_feedback_handler():
+    class Gateway:
+        def create_task(self, instruction):
+            raise AssertionError("Feedback não deve criar tarefa normal.")
+
+    class FeedbackHandler:
+        def __init__(self):
+            self.received = []
+
+        def handle(self, observation):
+            self.received.append(observation)
+            return {"handled": True}
+
+    observer = Observer(
+        observations=[
+            Observation(
+                instruction="Avaliar resultado da transação.",
+                metadata={
+                    "source": "transaction_result",
+                    "transaction_id": "tx-1",
+                    "status": "committed",
+                },
+            )
+        ]
+    )
+    handler = FeedbackHandler()
+
+    worker = Worker(
+        Gateway(),
+        observer,
+        feedback_handler=handler,
+    )
+
+    proposals = worker.run_once()
+
+    assert proposals == []
+    assert len(handler.received) == 1
+    assert handler.received[0].metadata["transaction_id"] == "tx-1"
+    assert worker.errors == []
+
+
+def test_worker_marks_handled_transaction_result_as_processed():
+    class Gateway:
+        def create_task(self, instruction):
+            raise AssertionError("Feedback não deve criar tarefa normal.")
+
+    class FeedbackHandler:
+        def handle(self, observation):
+            return {"handled": True}
+
+    observation = Observation(
+        instruction="Avaliar resultado da transação.",
+        metadata={
+            "source": "transaction_result",
+            "transaction_id": "tx-2",
+            "status": "rolled_back",
+        },
+    )
+
+    observer = Observer(observations=[observation])
+
+    worker = Worker(
+        Gateway(),
+        observer,
+        feedback_handler=FeedbackHandler(),
+    )
+
+    worker.run_once()
+
+    assert len(worker.processed_ids) == 0
+    assert worker._observation_key(observation) in worker._processed
+    assert worker.errors == []
+
+
+def test_worker_keeps_feedback_unprocessed_when_handler_fails():
+    class Gateway:
+        def create_task(self, instruction):
+            raise AssertionError("Feedback não deve criar tarefa normal.")
+
+    class FeedbackHandler:
+        def handle(self, observation):
+            raise RuntimeError("falha no feedback")
+
+    observation = Observation(
+        instruction="Avaliar resultado da transação.",
+        metadata={
+            "source": "transaction_result",
+            "transaction_id": "tx-3",
+            "status": "failed",
+        },
+    )
+
+    observer = Observer(observations=[observation])
+
+    worker = Worker(
+        Gateway(),
+        observer,
+        feedback_handler=FeedbackHandler(),
+    )
+
+    worker.run_once()
+
+    assert worker._observation_key(observation) not in worker._processed
+    assert len(worker.errors) == 1
+    assert worker.errors[0]["error"] == "falha no feedback"
