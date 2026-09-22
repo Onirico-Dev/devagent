@@ -416,16 +416,63 @@ class Worker:
 
             try:
                 if observation.metadata.get("source") == "transaction_result":
-                    self.feedback_handler.handle(observation)
-                    self._processed.add(key)
-                    self._processed_observations[key] = Observation(
-                        instruction=observation.instruction.strip(),
-                        metadata=dict(observation.metadata),
+                    feedback_result = self.feedback_handler.handle(observation)
+                    proposal_data = feedback_result.get("proposal")
+
+                    if proposal_data is not None:
+                        if not isinstance(proposal_data, dict):
+                            raise ValueError(
+                                "Proposta de feedback inválida."
+                            )
+
+                        instruction = proposal_data.get("instruction")
+
+                        if (
+                            not isinstance(instruction, str)
+                            or not instruction.strip()
+                        ):
+                            raise ValueError(
+                                "Proposta de feedback sem instrução."
+                            )
+
+                        existing = self._find_pending_proposal(instruction)
+
+                        if existing is not None:
+                            proposal = existing
+                        else:
+                            result = self.gateway.create_task(instruction)
+
+                            proposal = Proposal(
+                                instruction=instruction.strip(),
+                                approval_id=result["approval_id"],
+                                status=str(
+                                    result.get("status", "pending")
+                                ),
+                                plan=dict(result.get("plan", {})),
+                            )
+
+                        proposals.append(proposal)
+                        approval_id = proposal.approval_id
+                    else:
+                        self._processed.add(key)
+                        self._processed_observations[key] = Observation(
+                            instruction=observation.instruction.strip(),
+                            metadata=dict(observation.metadata),
+                        )
+                        self._persist_state()
+                        continue
+
+                    self._mark_processed(
+                        key=key,
+                        observation=observation,
+                        approval_id=approval_id,
                     )
                     self._persist_state()
                     continue
 
-                proposals.append(self.process_observation(observation))
+                proposals.append(
+                    self.process_observation(observation)
+                )
 
             except Exception as exc:
                 self._errors.append(

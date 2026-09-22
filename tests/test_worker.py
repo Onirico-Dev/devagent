@@ -941,3 +941,175 @@ def test_transaction_feedback_persists_across_worker_restart(tmp_path):
     assert restarted.run_once() == []
     assert RecordingHandler.received == 1
     assert restarted._observation_key(observation) in restarted._processed
+
+
+def test_worker_creates_proposal_from_failed_transaction_feedback():
+    class Gateway:
+        def __init__(self):
+            self.created = []
+
+        def create_task(self, instruction):
+            self.created.append(instruction)
+            return {
+                "approval_id": "approval-correction-1",
+                "status": "pending",
+                "plan": {
+                    "objective": instruction,
+                    "changes": [],
+                    "tests": [],
+                    "risks": [],
+                },
+            }
+
+    class FeedbackHandler:
+        def handle(self, observation):
+            return {
+                "handled": True,
+                "analysis": {
+                    "transaction_id": "tx-failed-1",
+                    "status": "failed",
+                    "action_required": True,
+                    "repair_attempts": 2,
+                    "evidence": {"error": "TEST_FAILURE"},
+                },
+                "proposal": {
+                    "instruction": "corrigir falha da transação tx-failed-1",
+                    "transaction_id": "tx-failed-1",
+                },
+            }
+
+    observer = Observer(
+        observations=[
+            Observation(
+                instruction="Avaliar resultado da transação.",
+                metadata={
+                    "source": "transaction_result",
+                    "transaction_id": "tx-failed-1",
+                    "status": "failed",
+                },
+            )
+        ]
+    )
+
+    gateway = Gateway()
+    worker = Worker(
+        gateway,
+        observer,
+        feedback_handler=FeedbackHandler(),
+    )
+
+    proposals = worker.run_once()
+
+    assert len(proposals) == 1
+    assert proposals[0].approval_id == "approval-correction-1"
+    assert gateway.created == [
+        "corrigir falha da transação tx-failed-1"
+    ]
+    assert worker.errors == []
+
+
+def test_worker_does_not_create_proposal_for_committed_feedback():
+    class Gateway:
+        def create_task(self, instruction):
+            raise AssertionError(
+                "Feedback committed não deve criar correção."
+            )
+
+    class FeedbackHandler:
+        def handle(self, observation):
+            return {
+                "handled": True,
+                "analysis": {
+                    "transaction_id": "tx-ok-1",
+                    "status": "committed",
+                    "action_required": False,
+                    "repair_attempts": 0,
+                    "evidence": {},
+                },
+                "proposal": None,
+            }
+
+    worker = Worker(
+        Gateway(),
+        Observer(
+            observations=[
+                Observation(
+                    instruction="Avaliar resultado da transação.",
+                    metadata={
+                        "source": "transaction_result",
+                        "transaction_id": "tx-ok-1",
+                        "status": "committed",
+                    },
+                )
+            ]
+        ),
+        feedback_handler=FeedbackHandler(),
+    )
+
+    assert worker.run_once() == []
+    assert worker.errors == []
+
+
+def test_worker_reuses_existing_pending_feedback_proposal():
+    class Gateway:
+        def __init__(self):
+            self.created = 0
+
+        def list_pending(self):
+            return [
+                {
+                    "approval_id": "approval-existing",
+                    "status": "pending",
+                    "instruction": "corrigir falha existente",
+                    "plan": {
+                        "objective": "corrigir falha existente",
+                        "changes": [],
+                        "tests": [],
+                        "risks": [],
+                    },
+                }
+            ]
+
+        def create_task(self, instruction):
+            self.created += 1
+            raise AssertionError("Não deve criar proposta duplicada.")
+
+    class FeedbackHandler:
+        def handle(self, observation):
+            return {
+                "handled": True,
+                "analysis": {
+                    "transaction_id": "tx-duplicate",
+                    "status": "failed",
+                    "action_required": True,
+                    "repair_attempts": 1,
+                    "evidence": {},
+                },
+                "proposal": {
+                    "instruction": "corrigir falha existente",
+                    "transaction_id": "tx-duplicate",
+                },
+            }
+
+    worker = Worker(
+        Gateway(),
+        Observer(
+            observations=[
+                Observation(
+                    instruction="Avaliar resultado da transação.",
+                    metadata={
+                        "source": "transaction_result",
+                        "transaction_id": "tx-duplicate",
+                        "status": "failed",
+                    },
+                )
+            ]
+        ),
+        feedback_handler=FeedbackHandler(),
+    )
+
+    proposals = worker.run_once()
+
+    assert len(proposals) == 1
+    assert proposals[0].approval_id == "approval-existing"
+    assert worker.errors == []
