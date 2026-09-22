@@ -81,3 +81,25 @@ def test_non_plan_is_rejected(policy):
         match="instância de Plan",
     ):
         policy.evaluate(None)
+
+
+def test_mixed_changes_require_human_for_entire_plan(policy):
+    plan = Plan(
+        objective="teste misto",
+        changes=[
+            Change(
+                change_type=ChangeType.CREATE,
+                path="safe.py",
+                content="print('ok')",
+            ),
+            Change(
+                change_type=ChangeType.DELETE,
+                path="danger.py",
+                content=None,
+            ),
+        ],
+        tests=[],
+        risks=[],
+    )
+
+    assert policy.evaluate(plan) == AutonomyDecision.REQUIRE_HUMAN
