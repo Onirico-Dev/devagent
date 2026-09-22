@@ -1,4 +1,7 @@
+import os
 import subprocess
+import sys
+from pathlib import Path
 
 from core.autonomy_policy import AutonomyPolicy
 from core.gateway import DevAgentGateway
@@ -629,6 +632,156 @@ def test_real_autonomy_restart_continues_loop_state_and_processes_new_observatio
     assert (tmp_path / "autonomous_restart_smoke.py").read_text(
         encoding="utf-8"
     ) == "VALUE = 43\n"
+
+    assert WorkerStateStore(loop_path).load() == {
+        "stopped": False,
+        "iterations": 2,
+    }
+
+def test_real_autonomy_cross_process_restart_continues_from_persisted_state(
+    tmp_path,
+):
+    init_git(tmp_path)
+
+    observation_path = tmp_path / "observations.json"
+    worker_path = tmp_path / "worker.json"
+    loop_path = tmp_path / "supervised_loop.json"
+
+    ObservationStore(observation_path).save(
+        [
+            Observation(
+                "criar arquivo autonomamente",
+                {"source": "process-a"},
+            )
+        ]
+    )
+
+    script = tmp_path / "run_agent.py"
+    script.write_text(
+        """
+from pathlib import Path
+import sys
+
+from core.autonomy_policy import AutonomyPolicy
+from core.gateway import DevAgentGateway
+from core.observation_store import ObservationStore
+from core.observer import Observation, Observer
+from core.supervised_loop import SupervisedLoop
+from core.worker import Worker
+from core.worker_state_store import WorkerStateStore
+
+
+class CreateAgent:
+    def process(self, instruction):
+        return {
+                        "instruction": instruction,
+"objective": instruction,
+            "changes": [
+                {
+                    "change_type": "create",
+                    "path": (
+                        "cross_process_smoke_2.py"
+                        if instruction == "criar segundo arquivo autonomamente"
+                        else "cross_process_smoke.py"
+                    ),
+                    "content": "VALUE = 42\\n",
+                }
+            ],
+            "tests": [],
+            "risks": [],
+        }
+
+    def build_transaction_from_approved_plan(self, plan):
+        from uuid import uuid4
+        from core.schemas.models import Change, ChangeType
+        from core.schemas.models import Transaction
+
+        changes = [
+            Change(
+                change_type=ChangeType(item["change_type"]),
+                path=item["path"],
+                content=item.get("content"),
+                reason=item.get("reason", ""),
+            )
+            for item in plan["changes"]
+        ]
+        return Transaction(
+            transaction_id=str(uuid4()),
+            changes=changes,
+            metadata={"tests": plan.get("tests", [])},
+        )
+
+
+root = Path(sys.argv[1])
+observation_path = root / "observations.json"
+worker_path = root / "worker.json"
+loop_path = root / "supervised_loop.json"
+
+gateway = DevAgentGateway(CreateAgent(), root=root)
+worker = Worker(
+    gateway,
+    Observer(store=ObservationStore(observation_path)),
+    store=WorkerStateStore(worker_path),
+    autonomy_policy=AutonomyPolicy(),
+)
+loop = SupervisedLoop(
+    worker,
+    gateway,
+    state_store=WorkerStateStore(loop_path),
+)
+
+result = loop.run_once()
+
+print(
+    result.metadata["iterations"],
+    result.metadata["proposal_count"],
+    result.metadata["auto_approved_count"],
+)
+""",
+        encoding="utf-8",
+    )
+
+    import os
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path.cwd())
+
+    first = subprocess.run(
+        [sys.executable, str(script), str(tmp_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert first.returncode == 0
+    assert first.stdout.strip() == "1 1 1"
+    assert (tmp_path / "cross_process_smoke.py").read_text(
+        encoding="utf-8"
+    ) == "VALUE = 42\n"
+
+    ObservationStore(observation_path).save(
+        [
+            Observation(
+                "criar segundo arquivo autonomamente",
+                {"source": "process-b"},
+            )
+        ]
+    )
+
+    second = subprocess.run(
+        [sys.executable, str(script), str(tmp_path)],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=env,
+    )
+
+    assert second.stdout.strip() == "2 1 1"
+
+    tasks = DevAgentGateway(CreateAgent(), root=tmp_path).list_tasks()
+
+    assert len(tasks) == 2
+    assert all(task["status"] == "committed" for task in tasks)
 
     assert WorkerStateStore(loop_path).load() == {
         "stopped": False,
