@@ -69,7 +69,6 @@ class MockAdapter(AIAdapter):
     def _generate_planner_response(self, prompt: str) -> str:
         marker = "INSTRUÇÃO DO USUÁRIO:"
         context_marker = "CONTEXTO DO PROJETO:"
-
         instruction = ""
         context = ""
 
@@ -85,12 +84,14 @@ class MockAdapter(AIAdapter):
 
         objective = instruction
 
-        change = self._build_planner_change(
-            instruction,
-            context,
-        )
+        changes = self._build_compound_create_changes(instruction)
 
-        changes = [change] if change is not None else []
+        if not changes:
+            change = self._build_planner_change(
+                instruction,
+                context,
+            )
+            changes = [change] if change is not None else []
 
         return json.dumps(
             {
@@ -101,6 +102,83 @@ class MockAdapter(AIAdapter):
             },
             ensure_ascii=False,
         )
+
+    def _build_compound_create_changes(self, instruction: str):
+        pattern = re.compile(
+            r"^\s*"
+            r"crie\s+(?:um\s+)?módulo\s+"
+            r"([A-Za-z0-9_.-]+\.[A-Za-z0-9_-]+)"
+            r"\s+contendo\s+"
+            r"(.+?)"
+            r"\s+e\s+"
+            r"crie\s+(?:um\s+)?"
+            r"(?:arquivo\s+|módulo\s+)?"
+            r"([A-Za-z0-9_.-]+\.[A-Za-z0-9_-]+)"
+            r"\s+contendo\s+"
+            r"(.+?)"
+            r"\s*$",
+            flags=re.IGNORECASE,
+        )
+
+        match = pattern.match(instruction)
+
+        if not match:
+            return []
+
+        module_path = match.group(1)
+        module_description = match.group(2).strip()
+        test_path = match.group(3)
+        test_description = match.group(4).strip()
+
+        function_match = re.search(
+            r"função\s+([A-Za-z_][A-Za-z0-9_]*)"
+            r"\s*\(([^)]*)\)"
+            r".*?retorna\s+a\s+soma\s+dos\s+dois\s+valores",
+            module_description,
+            flags=re.IGNORECASE,
+        )
+
+        test_match = re.search(
+            r"verifica\s+que\s+"
+            r"([A-Za-z_][A-Za-z0-9_]*)"
+            r"\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)"
+            r"\s*retorna\s+(\d+)",
+            test_description,
+            flags=re.IGNORECASE,
+        )
+
+        if not function_match or not test_match:
+            return []
+
+        function_name = function_match.group(1)
+        parameters = function_match.group(2).strip()
+        left = test_match.group(2)
+        right = test_match.group(3)
+        expected = test_match.group(4)
+
+        module_name = module_path.rsplit(".", 1)[0].replace("/", ".")
+
+        return [
+            {
+                "type": "create",
+                "path": module_path,
+                "content": (
+                    f"def {function_name}({parameters}):\n"
+                    "    return a + b\n"
+                ),
+                "reason": instruction,
+            },
+            {
+                "type": "create",
+                "path": test_path,
+                "content": (
+                    f"from {module_name} import {function_name}\n\n"
+                    f"def test_{function_name}():\n"
+                    f"    assert {function_name}({left}, {right}) == {expected}\n"
+                ),
+                "reason": instruction,
+            },
+        ]
 
     def _build_delete_change(self, instruction: str):
         delete_match = re.match(

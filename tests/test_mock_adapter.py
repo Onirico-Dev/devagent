@@ -434,3 +434,34 @@ def test_mock_modify_content_marker_is_extracted():
         assert change["type"] == "modify"
         assert change["path"] == "app.py"
         assert change["content"] == 'print("ok")'
+
+def test_mock_adapter_creates_multiple_files_from_compound_instruction():
+    from core.adapters.mock import MockAdapter
+
+    instruction = (
+        "crie um módulo calculator.py contendo uma função add(a, b) "
+        "que retorna a soma dos dois valores e crie test_calculator.py "
+        "contendo um teste pytest que verifica que add(2, 3) retorna 5"
+    )
+
+    result = MockAdapter().generate(
+        "INSTRUÇÃO DO USUÁRIO:\n"
+        f"{instruction}\n"
+        "CONTEXTO DO PROJETO:\n"
+    )
+
+    import json
+
+    payload = json.loads(result)
+
+    assert len(payload["changes"]) == 2
+
+    changes = {change["path"]: change for change in payload["changes"]}
+
+    assert changes["calculator.py"]["type"] == "create"
+    assert "def add(a, b)" in changes["calculator.py"]["content"]
+    assert "return a + b" in changes["calculator.py"]["content"]
+
+    assert changes["test_calculator.py"]["type"] == "create"
+    assert "def test" in changes["test_calculator.py"]["content"]
+    assert "add(2, 3)" in changes["test_calculator.py"]["content"]

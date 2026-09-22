@@ -37,6 +37,18 @@ class TaskCreator:
 
                 self.security.validate_content(content)
 
+    @staticmethod
+    def _plans_equal(left, right):
+        if not isinstance(left, dict) or not isinstance(right, dict):
+            return False
+
+        return (
+            left.get("objective") == right.get("objective")
+            and left.get("tests", []) == right.get("tests", [])
+            and left.get("risks", []) == right.get("risks", [])
+            and left.get("changes", []) == right.get("changes", [])
+        )
+
     def create_or_reuse(self, instruction, result):
         normalized_instruction = " ".join(instruction.split())
 
@@ -49,6 +61,9 @@ class TaskCreator:
                 continue
 
             if " ".join(task_instruction.split()) != normalized_instruction:
+                continue
+
+            if not self._plans_equal(task.get("plan"), result):
                 continue
 
             return {
