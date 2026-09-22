@@ -104,82 +104,102 @@ class MockAdapter(AIAdapter):
         )
 
     def _build_compound_create_changes(self, instruction: str):
-        pattern = re.compile(
-            r"^\s*"
-            r"crie\s+(?:um\s+)?módulo\s+"
-            r"([A-Za-z0-9_.-]+\.[A-Za-z0-9_-]+)"
-            r"\s+contendo\s+"
-            r"(.+?)"
+        # Caso semântico conhecido: módulo + teste pytest.
+        module_match = re.search(
+            r"crie\s+(?:um\s+)?(?:módulo|arquivo)\s+"
+            r"([A-Za-z0-9_.-]+\.py)\s+contendo\s+"
+            r"(.+?)\s+e\s+"
+            r"crie\s+(?:um\s+)?(?:módulo|arquivo)?\s*"
+            r"([A-Za-z0-9_.-]+\.py)\s+contendo\s+"
+            r"(.+)$",
+            instruction.strip(),
+            flags=re.IGNORECASE,
+        )
+
+        if module_match:
+            module_path = module_match.group(1)
+            module_description = module_match.group(2).strip()
+            test_path = module_match.group(3)
+            test_description = module_match.group(4).strip()
+
+            function_match = re.search(
+                r"função\s+([A-Za-z_][A-Za-z0-9_]*)"
+                r"\s*\(([^)]*)\)"
+                r".*?retorna\s+a\s+soma\s+dos\s+dois\s+valores",
+                module_description,
+                flags=re.IGNORECASE,
+            )
+
+            test_match = re.search(
+                r"verifica\s+que\s+"
+                r"([A-Za-z_][A-Za-z0-9_]*)"
+                r"\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)"
+                r"\s*retorna\s+(\d+)",
+                test_description,
+                flags=re.IGNORECASE,
+            )
+
+            if function_match and test_match:
+                function_name = function_match.group(1)
+                parameters = function_match.group(2).strip()
+                left = test_match.group(2)
+                right = test_match.group(3)
+                expected = test_match.group(4)
+
+                module_name = module_path.rsplit(".", 1)[0].replace("/", ".")
+
+                return [
+                    {
+                        "type": "create",
+                        "path": module_path,
+                        "content": (
+                            f"def {function_name}({parameters}):\n"
+                            "    return a + b\n"
+                        ),
+                        "reason": instruction,
+                    },
+                    {
+                        "type": "create",
+                        "path": test_path,
+                        "content": (
+                            f"from {module_name} import {function_name}\n\n"
+                            f"def test_{function_name}():\n"
+                            f"    assert {function_name}({left}, {right}) == {expected}\n"
+                        ),
+                        "reason": instruction,
+                    },
+                ]
+
+        # Caso geral: separa operações independentes e reutiliza
+        # os construtores existentes de CREATE/MODIFY/DELETE.
+        action_pattern = re.compile(
             r"\s+e\s+"
-            r"crie\s+(?:um\s+)?"
-            r"(?:arquivo\s+|módulo\s+)?"
-            r"([A-Za-z0-9_.-]+\.[A-Za-z0-9_-]+)"
-            r"\s+contendo\s+"
-            r"(.+?)"
-            r"\s*$",
+            r"(?=(?:crie|criar|create|modifique|modificar|"
+            r"altere|alterar|modify|delete|apague|remova|remover)\b)",
             flags=re.IGNORECASE,
         )
 
-        match = pattern.match(instruction)
+        parts = action_pattern.split(instruction.strip())
 
-        if not match:
+        if len(parts) < 2:
             return []
 
-        module_path = match.group(1)
-        module_description = match.group(2).strip()
-        test_path = match.group(3)
-        test_description = match.group(4).strip()
+        changes = []
 
-        function_match = re.search(
-            r"função\s+([A-Za-z_][A-Za-z0-9_]*)"
-            r"\s*\(([^)]*)\)"
-            r".*?retorna\s+a\s+soma\s+dos\s+dois\s+valores",
-            module_description,
-            flags=re.IGNORECASE,
-        )
+        for part in parts:
+            part = part.strip()
 
-        test_match = re.search(
-            r"verifica\s+que\s+"
-            r"([A-Za-z_][A-Za-z0-9_]*)"
-            r"\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)"
-            r"\s*retorna\s+(\d+)",
-            test_description,
-            flags=re.IGNORECASE,
-        )
+            if not part:
+                continue
 
-        if not function_match or not test_match:
-            return []
+            change = self._build_planner_change(part, "")
 
-        function_name = function_match.group(1)
-        parameters = function_match.group(2).strip()
-        left = test_match.group(2)
-        right = test_match.group(3)
-        expected = test_match.group(4)
+            if change is None:
+                return []
 
-        module_name = module_path.rsplit(".", 1)[0].replace("/", ".")
+            changes.append(change)
 
-        return [
-            {
-                "type": "create",
-                "path": module_path,
-                "content": (
-                    f"def {function_name}({parameters}):\n"
-                    "    return a + b\n"
-                ),
-                "reason": instruction,
-            },
-            {
-                "type": "create",
-                "path": test_path,
-                "content": (
-                    f"from {module_name} import {function_name}\n\n"
-                    f"def test_{function_name}():\n"
-                    f"    assert {function_name}({left}, {right}) == {expected}\n"
-                ),
-                "reason": instruction,
-            },
-        ]
-
+        return changes if len(changes) >= 2 else []
     def _build_delete_change(self, instruction: str):
         delete_match = re.match(
             r"^\s*"
@@ -357,14 +377,17 @@ class MockAdapter(AIAdapter):
             r"\b(?:crie|criar|create)\s+"
             r"(?:um\s+|o\s+)?"
             r"(?:novo\s+)?"
-            r"(?:arquivo\s+)?"
+            r"(?:arquivo|módulo)\s+"
             r"chamado\s+"
             r"([A-Za-z0-9_.-]+\.[A-Za-z0-9_-]+)",
 
             r"\b(?:crie|criar|create)\s+"
             r"(?:um\s+|o\s+)?"
             r"(?:novo\s+)?"
-            r"(?:arquivo\s+)?"
+            r"(?:arquivo|módulo)\s+"
+            r"([A-Za-z0-9_.-]+\.[A-Za-z0-9_-]+)",
+
+            r"\b(?:crie|criar|create)\s+"
             r"([A-Za-z0-9_.-]+\.[A-Za-z0-9_-]+)",
         )
 
@@ -381,7 +404,6 @@ class MockAdapter(AIAdapter):
                 )
 
         return ""
-
     @staticmethod
     def _extract_create_content(
         instruction: str,

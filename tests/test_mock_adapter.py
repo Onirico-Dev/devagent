@@ -465,3 +465,42 @@ def test_mock_adapter_creates_multiple_files_from_compound_instruction():
     assert changes["test_calculator.py"]["type"] == "create"
     assert "def test" in changes["test_calculator.py"]["content"]
     assert "add(2, 3)" in changes["test_calculator.py"]["content"]
+
+
+def test_mock_build_compound_changes_supports_multiple_operations():
+    adapter = MockAdapter()
+
+    instruction = (
+        "crie app.py contendo print('APP') "
+        "e crie test_app.py contendo def test_app():\n"
+        "    assert True "
+        "e remova old.py"
+    )
+
+    result = adapter._build_compound_create_changes(instruction)
+
+    assert len(result) == 3
+    assert result[0]["type"] == "create"
+    assert result[0]["path"] == "app.py"
+    assert result[1]["type"] == "create"
+    assert result[1]["path"] == "test_app.py"
+    assert result[2]["type"] == "delete"
+    assert result[2]["path"] == "old.py"
+
+
+def test_mock_build_compound_changes_supports_create_and_modify():
+    adapter = MockAdapter()
+
+    instruction = (
+        "crie app.py contendo print('APP') "
+        "e modifique config.py com conteúdo VALUE = 42"
+    )
+
+    result = adapter._build_compound_create_changes(instruction)
+
+    assert len(result) == 2
+    assert result[0]["type"] == "create"
+    assert result[0]["path"] == "app.py"
+    assert result[1]["type"] == "modify"
+    assert result[1]["path"] == "config.py"
+    assert result[1]["content"] == "VALUE = 42"
