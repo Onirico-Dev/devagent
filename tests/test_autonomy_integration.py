@@ -787,3 +787,106 @@ print(
         "stopped": False,
         "iterations": 2,
     }
+
+
+class RepairAgent(CreateAgent):
+    def process(self, instruction):
+        result = super().process(instruction)
+        result["changes"][0]["content"] = "def broken(:\n"
+        return result
+
+
+class RepairAdapter:
+    def generate(self, prompt):
+        import json
+
+        return json.dumps(
+            {
+                "diagnosis": "Erro de sintaxe no arquivo.",
+                "correction": "Corrigir a definição da função.",
+                "risk": "baixo",
+                "action": "modify",
+                "path": "autonomous_smoke.py",
+                "content": "VALUE = 42\n",
+            }
+        )
+
+
+def test_real_autonomy_cycle_repairs_failed_test_and_commits(tmp_path):
+    init_git(tmp_path)
+
+    observation_store = ObservationStore(
+        tmp_path / "observations.json"
+    )
+    worker_store = WorkerStateStore(
+        tmp_path / "worker.json"
+    )
+    loop_store = WorkerStateStore(
+        tmp_path / "supervised_loop.json"
+    )
+
+    observation_store.save(
+        [
+            Observation(
+                "criar arquivo autonomamente",
+                {"source": "repair-integration"},
+            )
+        ]
+    )
+
+    gateway = DevAgentGateway(
+        RepairAgent(),
+        root=tmp_path,
+    )
+
+    gateway.repair_engine.ai = RepairAdapter()
+
+    worker = Worker(
+        gateway,
+        Observer(store=observation_store),
+        store=worker_store,
+        autonomy_policy=AutonomyPolicy(),
+    )
+
+    loop = SupervisedLoop(
+        worker,
+        gateway,
+        state_store=loop_store,
+    )
+
+    result = loop.run_once()
+
+    assert len(result.proposals) == 1
+    assert result.proposals[0].autonomy_decision == "auto_approve"
+    assert result.metadata["auto_approved_count"] == 1
+
+    target = tmp_path / "autonomous_smoke.py"
+    assert target.read_text(encoding="utf-8") == "VALUE = 42\n"
+
+    proposal = result.proposals[0]
+    task = gateway.get_task(proposal.approval_id)
+
+    assert task["status"] == "committed"
+
+    transaction = gateway.transactions.load_manifest(
+        task["transaction_id"]
+    )
+
+    assert transaction.status.value == "committed"
+    assert transaction.metadata["repair_cycle"]["attempts"] == 1
+
+    git_status = subprocess.run(
+        [
+            "git",
+            "status",
+            "--porcelain",
+            "--",
+            "autonomous_smoke.py",
+        ],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    assert git_status == ""
