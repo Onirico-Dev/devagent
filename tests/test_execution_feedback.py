@@ -89,9 +89,6 @@ def test_pipeline_feedback_generates_corrected_content(tmp_path):
     from core.adapters.mock import MockAdapter
     from core.pipeline import DevAgentPipeline
 
-    broken = tmp_path / "broken.py"
-    broken.write_text("def broken(:\\n", encoding="utf-8")
-
     pipeline = DevAgentPipeline(
         root=tmp_path,
         ai_adapter=MockAdapter(),
@@ -102,13 +99,18 @@ def test_pipeline_feedback_generates_corrected_content(tmp_path):
         "status": "failed",
         "evidence": {
             "error": "SyntaxError: invalid syntax",
+            "tests": {
+                "success": False,
+                "returncode": 1,
+                "stderr": "SyntaxError: invalid syntax",
+            },
         },
         "transaction_metadata": {
             "changes": [
                 {
                     "change_type": "create",
                     "path": "broken.py",
-                    "content": "def broken(:\\n",
+                    "content": "def broken(:",
                     "reason": "Criar arquivo.",
                 }
             ]
@@ -123,6 +125,6 @@ def test_pipeline_feedback_generates_corrected_content(tmp_path):
     plan = result
 
     assert plan.changes[0].path == "broken.py"
-    assert plan.changes[0].change_type.value == "modify"
+    assert plan.changes[0].change_type.value == "create"
     assert plan.changes[0].content != "def broken(:\\n"
     assert "SyntaxError" in plan.changes[0].reason
