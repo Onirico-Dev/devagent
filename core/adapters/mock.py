@@ -180,7 +180,12 @@ class MockAdapter(AIAdapter):
             }
 
             if isinstance(content, str):
-                change["content"] = content
+                error = str(evidence.get("error", ""))
+
+                if "SyntaxError" in error and content.strip() == "def broken(:\\n":
+                    change["content"] = "def broken():\\n    pass\\n"
+                else:
+                    change["content"] = content
 
             changes.append(change)
 
