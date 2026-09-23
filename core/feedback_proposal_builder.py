@@ -23,6 +23,10 @@ class FeedbackProposalBuilder:
         if not action_required:
             return None
 
+        failure_type = analysis.get("failure_type", "unknown")
+        if not isinstance(failure_type, str) or not failure_type.strip():
+            raise ValueError("failure_type inválido.")
+
         evidence = analysis.get("evidence", {})
         if not isinstance(evidence, dict):
             raise ValueError("Evidências de feedback inválidas.")
@@ -42,6 +46,7 @@ class FeedbackProposalBuilder:
             "source": "transaction_feedback",
             "transaction_id": transaction_id,
             "status": status,
+            "failure_type": failure_type,
             "repair_attempts": analysis.get("repair_attempts", 0),
             "evidence": dict(evidence),
             "transaction_metadata": dict(transaction_metadata),

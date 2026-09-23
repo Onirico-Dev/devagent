@@ -104,3 +104,34 @@ def test_invalid_evidence_is_rejected():
                 "evidence": [],
             }
         )
+
+
+def test_failed_analysis_preserves_failure_type():
+    result = FeedbackProposalBuilder().build(
+        {
+            "transaction_id": "tx-7",
+            "status": "failed",
+            "action_required": True,
+            "failure_type": "syntax_error",
+            "repair_attempts": 2,
+            "evidence": {
+                "error": "SyntaxError: invalid syntax",
+            },
+        }
+    )
+
+    assert result["failure_type"] == "syntax_error"
+
+
+def test_missing_failure_type_defaults_to_unknown():
+    result = FeedbackProposalBuilder().build(
+        {
+            "transaction_id": "tx-8",
+            "status": "failed",
+            "action_required": True,
+            "repair_attempts": 0,
+            "evidence": {},
+        }
+    )
+
+    assert result["failure_type"] == "unknown"

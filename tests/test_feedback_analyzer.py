@@ -101,3 +101,109 @@ def test_invalid_repair_attempts_are_rejected(value):
                 "repair_attempts": value,
             }
         )
+
+
+def test_committed_feedback_has_no_failure_type():
+    result = FeedbackAnalyzer().analyze(
+        {
+            "transaction_id": "tx-class-1",
+            "status": "committed",
+        }
+    )
+
+    assert result["failure_type"] == "none"
+
+
+def test_syntax_error_is_classified_from_test_stderr():
+    result = FeedbackAnalyzer().analyze(
+        {
+            "transaction_id": "tx-class-2",
+            "status": "rolled_back",
+            "repair_attempts": 2,
+            "tests": {
+                "success": False,
+                "stderr": "SyntaxError: invalid syntax",
+            },
+        }
+    )
+
+    assert result["failure_type"] == "syntax_error"
+
+
+def test_syntax_error_is_classified_from_error():
+    result = FeedbackAnalyzer().analyze(
+        {
+            "transaction_id": "tx-class-3",
+            "status": "failed",
+            "repair_attempts": 1,
+            "error": "SyntaxError: invalid syntax",
+        }
+    )
+
+    assert result["failure_type"] == "syntax_error"
+
+
+def test_test_failure_is_classified():
+    result = FeedbackAnalyzer().analyze(
+        {
+            "transaction_id": "tx-class-4",
+            "status": "failed",
+            "repair_attempts": 1,
+            "tests": {
+                "success": False,
+                "stderr": "AssertionError",
+            },
+        }
+    )
+
+    assert result["failure_type"] == "test_failure"
+
+
+def test_rollback_error_is_classified():
+    result = FeedbackAnalyzer().analyze(
+        {
+            "transaction_id": "tx-class-5",
+            "status": "failed",
+            "repair_attempts": 1,
+            "rollback_error": "ROLLBACK_FAILURE",
+        }
+    )
+
+    assert result["failure_type"] == "rollback_error"
+
+
+def test_repair_limit_is_classified_without_specific_cause():
+    result = FeedbackAnalyzer().analyze(
+        {
+            "transaction_id": "tx-class-6",
+            "status": "rolled_back",
+            "repair_attempts": 2,
+        }
+    )
+
+    assert result["failure_type"] == "repair_limit_reached"
+
+
+def test_execution_error_is_classified():
+    result = FeedbackAnalyzer().analyze(
+        {
+            "transaction_id": "tx-class-7",
+            "status": "failed",
+            "repair_attempts": 1,
+            "error": "PROCESS_FAILED",
+        }
+    )
+
+    assert result["failure_type"] == "execution_error"
+
+
+def test_unknown_failure_is_classified():
+    result = FeedbackAnalyzer().analyze(
+        {
+            "transaction_id": "tx-class-8",
+            "status": "failed",
+            "repair_attempts": 0,
+        }
+    )
+
+    assert result["failure_type"] == "unknown"

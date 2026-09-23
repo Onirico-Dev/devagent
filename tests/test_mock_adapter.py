@@ -264,6 +264,7 @@ def test_mock_feedback_corrects_syntax_error_from_transaction_metadata():
     feedback_context = {
         "transaction_id": "tx-feedback-syntax",
         "status": "rolled_back",
+        "failure_type": "syntax_error",
         "repair_attempts": 2,
         "evidence": {
             "tests": {
@@ -553,3 +554,54 @@ def test_mock_build_compound_changes_supports_create_and_modify():
     assert result[1]["type"] == "modify"
     assert result[1]["path"] == "config.py"
     assert result[1]["content"] == "VALUE = 42"
+
+
+@pytest.mark.parametrize(
+    "failure_type",
+    [
+        "test_failure",
+        "execution_error",
+        "rollback_error",
+        "repair_limit_reached",
+        "unknown",
+    ],
+)
+def test_mock_feedback_does_not_apply_syntax_fix_for_other_failure_types(
+    failure_type,
+):
+    import json
+
+    feedback_context = {
+        "transaction_id": f"tx-{failure_type}",
+        "status": "failed",
+        "failure_type": failure_type,
+        "repair_attempts": 2,
+        "evidence": {
+            "error": "SyntaxError: invalid syntax",
+            "tests": {
+                "success": False,
+                "stderr": "SyntaxError: invalid syntax",
+            },
+        },
+        "transaction_metadata": {
+            "changes": [
+                {
+                    "change_type": "create",
+                    "path": "broken.py",
+                    "content": "def broken(:",
+                    "reason": "criação do arquivo",
+                }
+            ]
+        },
+    }
+
+    response = MockAdapter()._generate_feedback_response(
+        f"Analise a transação tx-{failure_type}",
+        "",
+        feedback_context,
+    )
+
+    data = json.loads(response)
+    change = data["changes"][0]
+
+    assert change["content"] == "def broken(:"

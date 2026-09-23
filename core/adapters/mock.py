@@ -139,6 +139,7 @@ class MockAdapter(AIAdapter):
     ) -> str:
         transaction_id = feedback_context.get("transaction_id", "")
         status = feedback_context.get("status", "")
+        failure_type = feedback_context.get("failure_type", "unknown")
         evidence = feedback_context.get("evidence", {})
 
         if not isinstance(evidence, dict):
@@ -193,20 +194,8 @@ class MockAdapter(AIAdapter):
                 if normalized_content.startswith(marker):
                     normalized_content = normalized_content[len(marker):]
 
-                error = str(evidence.get("error", ""))
-                tests_evidence = evidence.get("tests", {})
-
-                if isinstance(tests_evidence, dict):
-                    error = (
-                        error
-                        + "\n"
-                        + str(tests_evidence.get("stderr", ""))
-                        + "\n"
-                        + str(tests_evidence.get("error", ""))
-                    )
-
                 if (
-                    "SyntaxError" in error
+                    failure_type == "syntax_error"
                     and normalized_content.strip() == "def broken(:"
                 ):
                     normalized_content = "def broken():\n    pass\n"
