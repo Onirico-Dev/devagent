@@ -315,6 +315,7 @@ class TransactionFlow:
             "tests": test_result,
             "git": git_result,
             "repair_attempts": attempts,
+            "metadata": dict(transaction.metadata),
             **(
                 {"repair": repair}
                 if repair is not None
@@ -409,6 +410,7 @@ class TransactionFlow:
             "tests": test_result,
             "repair": repair,
             "repair_attempts": attempts,
+            "metadata": dict(transaction.metadata),
             **(
                 {"error": str(error)}
                 if error is not None

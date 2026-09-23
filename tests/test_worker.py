@@ -948,8 +948,8 @@ def test_worker_creates_proposal_from_failed_transaction_feedback():
         def __init__(self):
             self.created = []
 
-        def create_task(self, instruction):
-            self.created.append(instruction)
+        def create_task(self, instruction, context=None):
+            self.created.append((instruction, context))
             return {
                 "approval_id": "approval-correction-1",
                 "status": "pending",
@@ -970,11 +970,57 @@ def test_worker_creates_proposal_from_failed_transaction_feedback():
                     "status": "failed",
                     "action_required": True,
                     "repair_attempts": 2,
-                    "evidence": {"error": "TEST_FAILURE"},
+                    "evidence": {
+                        "error": "TEST_FAILURE",
+                        "transaction_metadata": {
+                            "instruction": "criar app.py",
+                            "objective": "Criar app.py",
+                            "changes": [
+                                {
+                                    "type": "create",
+                                    "path": "app.py",
+                                    "content": "print('quebrado')",
+                                }
+                            ],
+                            "tests": ["tests/test_app.py"],
+                            "risks": [],
+                        },
+                    },
                 },
                 "proposal": {
                     "instruction": "corrigir falha da transação tx-failed-1",
                     "transaction_id": "tx-failed-1",
+                    "status": "failed",
+                    "repair_attempts": 2,
+                    "evidence": {
+                        "error": "TEST_FAILURE",
+                        "transaction_metadata": {
+                            "instruction": "criar app.py",
+                            "objective": "Criar app.py",
+                            "changes": [
+                                {
+                                    "type": "create",
+                                    "path": "app.py",
+                                    "content": "print('quebrado')",
+                                }
+                            ],
+                            "tests": ["tests/test_app.py"],
+                            "risks": [],
+                        },
+                    },
+                    "transaction_metadata": {
+                        "instruction": "criar app.py",
+                        "objective": "Criar app.py",
+                        "changes": [
+                            {
+                                "type": "create",
+                                "path": "app.py",
+                                "content": "print('quebrado')",
+                            }
+                        ],
+                        "tests": ["tests/test_app.py"],
+                        "risks": [],
+                    },
                 },
             }
 
@@ -1002,9 +1048,17 @@ def test_worker_creates_proposal_from_failed_transaction_feedback():
 
     assert len(proposals) == 1
     assert proposals[0].approval_id == "approval-correction-1"
-    assert gateway.created == [
-        "corrigir falha da transação tx-failed-1"
-    ]
+    assert len(gateway.created) == 1
+
+    instruction, context = gateway.created[0]
+
+    assert instruction == "corrigir falha da transação tx-failed-1"
+    assert context["transaction_id"] == "tx-failed-1"
+    assert context["status"] == "failed"
+    assert context["repair_attempts"] == 2
+    assert context["transaction_metadata"]["changes"][0]["path"] == "app.py"
+    assert context["transaction_metadata"]["changes"][0]["content"] == "print('quebrado')"
+    assert context["transaction_metadata"]["tests"] == ["tests/test_app.py"]
     assert worker.errors == []
 
 

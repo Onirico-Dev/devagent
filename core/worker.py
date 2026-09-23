@@ -1,3 +1,4 @@
+import inspect
 from dataclasses import dataclass
 from typing import Any
 
@@ -142,6 +143,26 @@ class Worker:
             }
 
         self.store.update(merge)
+
+    def _create_feedback_task(
+        self,
+        instruction: str,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        create_task = self.gateway.create_task
+
+        try:
+            parameters = inspect.signature(create_task).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+
+        if "context" in parameters:
+            return create_task(
+                instruction,
+                context=context,
+            )
+
+        return create_task(instruction)
 
     def _find_pending_proposal(
         self,
@@ -440,7 +461,10 @@ class Worker:
                         if existing is not None:
                             proposal = existing
                         else:
-                            result = self.gateway.create_task(instruction)
+                            result = self._create_feedback_task(
+                            instruction,
+                            proposal_data,
+                        )
 
                             proposal = Proposal(
                                 instruction=instruction.strip(),

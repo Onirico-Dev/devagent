@@ -27,6 +27,10 @@ class FeedbackProposalBuilder:
         if not isinstance(evidence, dict):
             raise ValueError("Evidências de feedback inválidas.")
 
+        transaction_metadata = evidence.get("transaction_metadata", {})
+        if not isinstance(transaction_metadata, dict):
+            raise ValueError("Metadata da transação inválida.")
+
         instruction = (
             "Analise a transação "
             f"{transaction_id}, que terminou com status '{status}', "
@@ -40,4 +44,5 @@ class FeedbackProposalBuilder:
             "status": status,
             "repair_attempts": analysis.get("repair_attempts", 0),
             "evidence": dict(evidence),
+            "transaction_metadata": dict(transaction_metadata),
         }

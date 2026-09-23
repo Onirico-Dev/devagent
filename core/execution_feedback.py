@@ -34,6 +34,12 @@ class ExecutionFeedback:
             "repair_attempts": result.get("repair_attempts", 0),
         }
 
+        transaction_metadata = result.get("metadata")
+        if transaction_metadata is not None:
+            if not isinstance(transaction_metadata, dict):
+                raise ValueError("Metadata da transação inválida.")
+            metadata["transaction_metadata"] = dict(transaction_metadata)
+
         if "git" in result:
             metadata["git"] = result["git"]
 

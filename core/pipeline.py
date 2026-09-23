@@ -29,13 +29,41 @@ class DevAgentPipeline:
         self.context = ProjectContext(root)
         self.memory = Memory()
 
-    def process(self, text: str):
+    def process(self, text: str, feedback_context: dict | None = None):
         command = self.parser.parse(text)
+
+        if feedback_context is None:
+            feedback_context = {}
+
+        if not isinstance(feedback_context, dict):
+            raise ValueError("Contexto de feedback inválido.")
 
         relevant_paths = []
 
         if command.action == "modify" and command.target:
             relevant_paths.append(command.target)
+
+        transaction_metadata = feedback_context.get(
+            "transaction_metadata",
+            {},
+        )
+
+        if isinstance(transaction_metadata, dict):
+            original_changes = transaction_metadata.get("changes", [])
+
+            if isinstance(original_changes, list):
+                for change in original_changes:
+                    if not isinstance(change, dict):
+                        continue
+
+                    path = change.get("path")
+
+                    if (
+                        isinstance(path, str)
+                        and path.strip()
+                        and path not in relevant_paths
+                    ):
+                        relevant_paths.append(path)
 
         context = self.context.build(
             relevant_paths=relevant_paths,
@@ -45,6 +73,7 @@ class DevAgentPipeline:
             plan = self.ai_planner.create_plan(
                 instruction=text,
                 context=context,
+                feedback_context=feedback_context,
             )
         else:
             plan = self.planner.create_plan(

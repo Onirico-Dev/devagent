@@ -17,6 +17,7 @@ class AIPlanner:
         self,
         instruction: str,
         context: str = "",
+        feedback_context: dict | None = None,
     ) -> Plan:
         if not isinstance(context, str):
             context = ""
@@ -26,6 +27,18 @@ class AIPlanner:
                 context[:self.MAX_CONTEXT_CHARS]
                 + "\n\n=== CONTEXTO TRUNCADO ==="
             )
+
+        if feedback_context is None:
+            feedback_context = {}
+
+        if not isinstance(feedback_context, dict):
+            raise ValueError("Contexto de feedback inválido.")
+
+        feedback_text = json.dumps(
+            feedback_context,
+            ensure_ascii=False,
+            indent=2,
+        )
 
         prompt = f"""
 Você é o planejador de um agente autônomo de programação.
@@ -37,6 +50,9 @@ INSTRUÇÃO DO USUÁRIO:
 
 CONTEXTO DO PROJETO:
 {context}
+
+CONTEXTO DE FEEDBACK DA TRANSAÇÃO:
+{feedback_text}
 
 Retorne SOMENTE JSON válido.
 
