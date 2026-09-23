@@ -258,6 +258,12 @@ def test_mock_extract_create_content_supports_all_markers(marker):
     assert MockAdapter._extract_create_content(instruction) == "print('ok')"
 
 
+def test_mock_extract_create_content_supports_com_o_conteudo():
+    instruction = 'crie um arquivo cli_smoke.py com o conteúdo print("CLI OK")'
+
+    assert MockAdapter._extract_create_content(instruction) == 'print("CLI OK")'
+
+
 def test_mock_extract_create_content_returns_empty_when_missing():
     assert MockAdapter._extract_create_content("crie app.py") == ""
 

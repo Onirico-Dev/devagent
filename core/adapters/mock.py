@@ -400,7 +400,9 @@ class MockAdapter(AIAdapter):
         markers = (
             " contendo ",
             " com conteúdo ",
+            " com o conteúdo ",
             " com conteudo ",
+            " com o conteudo ",
         )
 
         for marker in markers:
@@ -527,7 +529,9 @@ class MockAdapter(AIAdapter):
         markers = (
             " contendo ",
             " com conteúdo ",
+            " com o conteúdo ",
             " com conteudo ",
+            " com o conteudo ",
         )
 
         for marker in markers:
@@ -566,7 +570,9 @@ class MockAdapter(AIAdapter):
         markers = (
             " contendo ",
             " com conteúdo ",
+            " com o conteúdo ",
             " com conteudo ",
+            " com o conteudo ",
         )
 
         for marker in markers:
