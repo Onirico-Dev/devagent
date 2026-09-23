@@ -16,6 +16,7 @@ class RepairEngine:
         error,
         test_output,
         diagnostic=None,
+        failure_type=None,
     ):
         diagnostic_context = ""
 
@@ -23,6 +24,13 @@ class RepairEngine:
             diagnostic_context = f"""
 Diagnóstico estruturado da falha:
 {json.dumps(diagnostic, ensure_ascii=False, indent=2)}
+"""
+
+        failure_context = ""
+        if failure_type is not None:
+            failure_context = f"""
+Tipo de falha classificado:
+{failure_type}
 """
 
         return f"""Você é o módulo de reparo automático do DevAgent.
@@ -36,6 +44,7 @@ Erro:
 Saída dos testes:
 {test_output}
 {diagnostic_context}
+{failure_context}
 Analise a falha e proponha uma correção.
 
 Retorne SOMENTE JSON válido com exatamente estes campos:
@@ -140,6 +149,7 @@ Regras:
         instruction,
         error,
         test_output,
+        failure_type=None,
     ):
         diagnostic = self.diagnostic_engine.diagnose(
             {

@@ -60,16 +60,37 @@ class RepairFlow:
         transaction,
         test_result,
         repair_state,
+        failure_type=None,
     ):
         repair_state.mark_analyzing()
         repair_state.persist(transaction)
 
+        error = (
+            test_result.get("stderr")
+            or test_result.get("output", "")
+        )
+        test_output = (
+            test_result.get("stdout")
+            or test_result.get("output", "")
+        )
+
+        import inspect
+
+        parameters = inspect.signature(
+            self.repair_engine.analyze_failure
+        ).parameters
+
+        kwargs = {
+            "instruction": instruction,
+            "error": error,
+            "test_output": test_output,
+        }
+
+        if "failure_type" in parameters:
+            kwargs["failure_type"] = failure_type
+
         diagnosis = self.repair_engine.analyze_failure(
-            instruction=instruction,
-            error=test_result.get("stderr")
-            or test_result.get("output", ""),
-            test_output=test_result.get("stdout")
-            or test_result.get("output", ""),
+            **kwargs
         )
 
         if not isinstance(diagnosis, dict):
