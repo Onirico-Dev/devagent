@@ -1662,7 +1662,6 @@ def test_real_transaction_feedback_correction_approval_execution_commit(tmp_path
 
     assert git_status == ""
 
-
 def test_real_transaction_feedback_second_failure_creates_second_correction(tmp_path):
     from uuid import uuid4
 
@@ -1700,7 +1699,7 @@ def test_real_transaction_feedback_second_failure_creates_second_correction(tmp_
                 for item in plan["changes"]
             ]
 
-            return Transaction(
+            transaction = Transaction(
                 transaction_id=str(uuid4()),
                 changes=changes,
                 metadata={
@@ -1719,6 +1718,9 @@ def test_real_transaction_feedback_second_failure_creates_second_correction(tmp_
                     ],
                 },
             )
+
+            transaction.changes[0].content = "def broken(:\n"
+            return transaction
 
     init_git(tmp_path)
 
@@ -1764,6 +1766,14 @@ def test_real_transaction_feedback_second_failure_creates_second_correction(tmp_
         observer,
         store=worker_store,
     )
+    loop = SupervisedLoop(
+        worker,
+        gateway,
+        state_store=WorkerStateStore(
+            tmp_path / "supervised_loop.json"
+        ),
+        observer=observer,
+    )
 
     first_result = worker.run_once()
 
@@ -1776,40 +1786,33 @@ def test_real_transaction_feedback_second_failure_creates_second_correction(tmp_
     assert first_task["status"] == "pending"
     assert first_task["plan"]["changes"][0]["path"] == "second_cycle_smoke.py"
 
-    first_execution = gateway.approve(first_approval_id)
+    first_execution = loop.approve(first_approval_id)
 
-    assert first_execution["status"] == "committed"
+    assert first_execution["status"] == "failed"
 
-    second_feedback = ExecutionFeedback().build(
-        {
-            "approval_id": first_approval_id,
-            "status": "failed",
-            "transaction_id": first_execution["transaction_id"],
-            "tests": {
-                "success": False,
-                "error": "SECOND_TEST_FAILURE",
-            },
-            "repair_attempts": 1,
-            "error": "SECOND_TEST_FAILURE",
-            "metadata": {
-                "changes": [
-                    {
-                        "change_type": "create",
-                        "path": "second_cycle_smoke.py",
-                        "content": "def broken(:\n",
-                        "reason": "Correção da primeira falha.",
-                    }
-                ]
-            },
-        }
+    observations = observation_store.load()
+    transaction_feedback = [
+        item
+        for item in observations
+        if item.metadata.get("source") == "transaction_result"
+    ]
+
+    assert len(transaction_feedback) == 2
+
+    execution_feedback = transaction_feedback[-1]
+
+    assert execution_feedback.metadata["transaction_id"] == (
+        first_execution["transaction_id"]
     )
-    observation_store.append(second_feedback)
+    assert execution_feedback.metadata["approval_id"] == first_approval_id
+    assert execution_feedback.metadata["status"] == "failed"
 
     second_result = worker.run_once()
 
     assert len(second_result) == 1, worker.errors
 
     second_proposal = second_result[0]
+
     assert second_proposal.approval_id != first_approval_id
 
     second_task = gateway.get_task(second_proposal.approval_id)
