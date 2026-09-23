@@ -258,6 +258,49 @@ def test_mock_extract_create_content_supports_all_markers(marker):
     assert MockAdapter._extract_create_content(instruction) == "print('ok')"
 
 
+def test_mock_feedback_corrects_syntax_error_from_transaction_metadata():
+    import json
+
+    feedback_context = {
+        "transaction_id": "tx-feedback-syntax",
+        "status": "rolled_back",
+        "repair_attempts": 2,
+        "evidence": {
+            "tests": {
+                "success": False,
+                "returncode": 1,
+                "stderr": "SyntaxError: invalid syntax",
+            },
+            "repair": {
+                "attempts": 2,
+            },
+        },
+        "transaction_metadata": {
+            "changes": [
+                {
+                    "change_type": "create",
+                    "path": "feedback_smoke.py",
+                    "content": "def broken(:",
+                    "reason": "criação do arquivo",
+                }
+            ]
+        },
+    }
+
+    response = MockAdapter()._generate_feedback_response(
+        "Analise a transação tx-feedback-syntax",
+        "",
+        feedback_context,
+    )
+
+    data = json.loads(response)
+    change = data["changes"][0]
+
+    assert change["type"] == "create"
+    assert change["path"] == "feedback_smoke.py"
+    assert change["content"] == "def broken():\n    pass\n"
+
+
 def test_mock_extract_create_content_supports_com_o_conteudo():
     instruction = 'crie um arquivo cli_smoke.py com o conteúdo print("CLI OK")'
 

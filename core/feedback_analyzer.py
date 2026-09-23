@@ -38,6 +38,7 @@ class FeedbackAnalyzer:
             "error",
             "rollback_error",
             "git",
+            "transaction_metadata",
         ):
             if key in feedback:
                 evidence[key] = feedback[key]

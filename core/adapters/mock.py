@@ -165,12 +165,19 @@ class MockAdapter(AIAdapter):
 
             path = original.get("path")
             content = original.get("content")
+            original_change_type = original.get(
+                "change_type",
+                original.get("type", "modify"),
+            )
 
             if not isinstance(path, str) or not path.strip():
                 continue
 
+            if original_change_type not in {"create", "modify", "delete"}:
+                original_change_type = "modify"
+
             change = {
-                "type": "modify",
+                "type": original_change_type,
                 "path": path,
                 "reason": (
                     f"Correção da transação {transaction_id}: "
@@ -180,12 +187,31 @@ class MockAdapter(AIAdapter):
             }
 
             if isinstance(content, str):
-                error = str(evidence.get("error", ""))
+                normalized_content = content
 
-                if "SyntaxError" in error and content.strip() == "def broken(:\\n":
-                    change["content"] = "def broken():\\n    pass\\n"
-                else:
-                    change["content"] = content
+                marker = "com o conteúdo "
+                if normalized_content.startswith(marker):
+                    normalized_content = normalized_content[len(marker):]
+
+                error = str(evidence.get("error", ""))
+                tests_evidence = evidence.get("tests", {})
+
+                if isinstance(tests_evidence, dict):
+                    error = (
+                        error
+                        + "\n"
+                        + str(tests_evidence.get("stderr", ""))
+                        + "\n"
+                        + str(tests_evidence.get("error", ""))
+                    )
+
+                if (
+                    "SyntaxError" in error
+                    and normalized_content.strip() == "def broken(:"
+                ):
+                    normalized_content = "def broken():\n    pass\n"
+
+                change["content"] = normalized_content
 
             changes.append(change)
 
