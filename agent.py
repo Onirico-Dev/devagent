@@ -36,13 +36,20 @@ class DevAgent:
 
         return MockAdapter()
 
-    def process(self, instruction):
+    def process(self, instruction, feedback_context=None):
+        if feedback_context is None:
+            feedback_context = {}
+
+        if not isinstance(feedback_context, dict):
+            raise ValueError("Contexto de feedback inválido.")
+
         self.session.add_instruction(
             instruction
         )
 
         plan = self.pipeline.process(
-            instruction
+            instruction,
+            feedback_context=feedback_context,
         )
 
         result = {

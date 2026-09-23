@@ -180,11 +180,23 @@ class DevAgentGateway:
     # TASK CREATION
     # ------------------------------------------------------------------
 
-    def create_task(self, instruction):
+    def create_task(self, instruction, context=None):
         if not isinstance(instruction, str) or not instruction.strip():
             raise ValueError("Instrução inválida.")
 
-        result = self.agent.process(instruction)
+        if context is None:
+            context = {}
+
+        if not isinstance(context, dict):
+            raise ValueError("Contexto da tarefa inválido.")
+
+        if context:
+            result = self.agent.process(
+                instruction,
+                feedback_context=context,
+            )
+        else:
+            result = self.agent.process(instruction)
         self.task_creator.validate_plan(result)
 
         with self._task_creation_guard:

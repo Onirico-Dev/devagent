@@ -69,8 +69,11 @@ class MockAdapter(AIAdapter):
     def _generate_planner_response(self, prompt: str) -> str:
         marker = "INSTRUÇÃO DO USUÁRIO:"
         context_marker = "CONTEXTO DO PROJETO:"
+        feedback_marker = "CONTEXTO DE FEEDBACK DA TRANSAÇÃO:"
+
         instruction = ""
         context = ""
+        feedback_context = {}
 
         if marker in prompt:
             instruction = (
@@ -80,8 +83,33 @@ class MockAdapter(AIAdapter):
             )
 
         if context_marker in prompt:
-            context = prompt.split(context_marker, 1)[1].strip()
+            context = prompt.split(context_marker, 1)[1]
 
+        if feedback_marker in prompt:
+            feedback_text = prompt.split(feedback_marker, 1)[1]
+
+            if "Retorne SOMENTE JSON válido." in feedback_text:
+                feedback_text = feedback_text.split(
+                    "Retorne SOMENTE JSON válido.",
+                    1,
+                )[0]
+
+            try:
+                parsed = json.loads(feedback_text.strip())
+            except json.JSONDecodeError:
+                parsed = {}
+
+            if isinstance(parsed, dict):
+                feedback_context = parsed
+
+        if feedback_context:
+            return self._generate_feedback_response(
+                instruction,
+                context,
+                feedback_context,
+            )
+
+        context = context.strip()
         objective = instruction
 
         changes = self._build_compound_create_changes(instruction)
@@ -99,6 +127,74 @@ class MockAdapter(AIAdapter):
                 "changes": changes,
                 "tests": [],
                 "risks": [],
+            },
+            ensure_ascii=False,
+        )
+
+    def _generate_feedback_response(
+        self,
+        instruction: str,
+        context: str,
+        feedback_context: dict,
+    ) -> str:
+        transaction_id = feedback_context.get("transaction_id", "")
+        status = feedback_context.get("status", "")
+        evidence = feedback_context.get("evidence", {})
+
+        if not isinstance(evidence, dict):
+            evidence = {}
+
+        transaction_metadata = feedback_context.get(
+            "transaction_metadata",
+            {},
+        )
+
+        if not isinstance(transaction_metadata, dict):
+            transaction_metadata = {}
+
+        original_changes = transaction_metadata.get("changes", [])
+
+        if not isinstance(original_changes, list):
+            original_changes = []
+
+        changes = []
+
+        for original in original_changes:
+            if not isinstance(original, dict):
+                continue
+
+            path = original.get("path")
+            content = original.get("content")
+
+            if not isinstance(path, str) or not path.strip():
+                continue
+
+            change = {
+                "type": "modify",
+                "path": path,
+                "reason": (
+                    f"Correção da transação {transaction_id}: "
+                    f"status '{status}'; "
+                    f"falha: {evidence.get('error', 'erro de execução')}."
+                ),
+            }
+
+            if isinstance(content, str):
+                change["content"] = content
+
+            changes.append(change)
+
+        return json.dumps(
+            {
+                "objective": (
+                    f"Corrigir a transação {transaction_id} "
+                    f"que terminou com status '{status}'."
+                ),
+                "changes": changes,
+                "tests": [],
+                "risks": [
+                    "Correção requer aprovação humana."
+                ],
             },
             ensure_ascii=False,
         )
