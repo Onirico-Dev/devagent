@@ -14,7 +14,7 @@ from core.worker_state_store import WorkerStateStore
 
 
 class CreateAgent:
-    def process(self, instruction):
+    def process(self, instruction, feedback_context=None):
         return {
             "instruction": instruction,
             "objective": instruction,
@@ -1544,3 +1544,94 @@ def test_real_transaction_feedback_proposal_requires_human_approval(tmp_path):
     assert result.metadata["auto_approved_count"] == 0
     assert gateway.approved == []
     assert len(gateway.created) == 1
+
+
+def test_real_transaction_feedback_correction_approval_execution_commit(tmp_path):
+    from core.execution_feedback import ExecutionFeedback
+
+    init_git(tmp_path)
+
+    observation_store = ObservationStore(
+        tmp_path / "observations.json"
+    )
+    worker_store = WorkerStateStore(
+        tmp_path / "worker.json"
+    )
+
+    observation = ExecutionFeedback().build(
+        {
+            "approval_id": "approval-original",
+            "status": "failed",
+            "transaction_id": "tx-human-feedback",
+            "tests": {
+                "success": False,
+                "error": "TEST_FAILURE",
+            },
+            "repair_attempts": 2,
+            "error": "TEST_FAILURE",
+            "metadata": {
+                "changes": [
+                    {
+                        "change_type": "create",
+                        "path": "autonomous_smoke.py",
+                        "content": "VALUE = 42\n",
+                        "reason": "Criar arquivo.",
+                    }
+                ],
+            },
+        }
+    )
+    observation_store.append(observation)
+
+    gateway = DevAgentGateway(
+        CreateAgent(),
+        root=tmp_path,
+    )
+
+    observer = Observer(store=observation_store)
+    worker = Worker(
+        gateway,
+        observer,
+        store=worker_store,
+    )
+
+    result = worker.run_once()
+
+    assert len(result) == 1, worker.errors
+
+    proposal = result[0]
+    approval_id = proposal.approval_id
+
+    task = gateway.get_task(approval_id)
+    assert task["status"] == "pending"
+    assert task["plan"]["changes"]
+
+    change = task["plan"]["changes"][0]
+    assert change["path"] == "autonomous_smoke.py"
+    assert change["change_type"] == "create"
+
+    approval_result = gateway.approve(approval_id)
+
+    assert approval_result["status"] == "committed"
+
+    final_task = gateway.get_task(approval_id)
+    assert final_task["status"] == "committed"
+
+    target = tmp_path / "autonomous_smoke.py"
+    assert target.read_text(encoding="utf-8") == "VALUE = 42\n"
+
+    git_status = subprocess.run(
+        [
+            "git",
+            "status",
+            "--porcelain",
+            "--",
+            "autonomous_smoke.py",
+        ],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    assert git_status == ""
