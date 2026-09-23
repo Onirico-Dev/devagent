@@ -1661,3 +1661,161 @@ def test_real_transaction_feedback_correction_approval_execution_commit(tmp_path
     ).stdout
 
     assert git_status == ""
+
+
+def test_real_transaction_feedback_second_failure_creates_second_correction(tmp_path):
+    from uuid import uuid4
+
+    from core.execution_feedback import ExecutionFeedback
+    from core.observation_store import ObservationStore
+    from core.observer import Observer
+    from core.schemas.models import Change, ChangeType, Transaction
+    from core.worker import Worker
+
+    class AlwaysFailingAgent:
+        def process(self, instruction, feedback_context=None):
+            return {
+                "instruction": instruction,
+                "objective": instruction,
+                "changes": [
+                    {
+                        "change_type": "create",
+                        "path": "second_cycle_smoke.py",
+                        "content": "VALUE = 42\n",
+                        "reason": "Criar arquivo.",
+                    }
+                ],
+                "tests": [],
+                "risks": [],
+            }
+
+        def build_transaction_from_approved_plan(self, plan):
+            changes = [
+                Change(
+                    change_type=ChangeType(item["change_type"]),
+                    path=item["path"],
+                    content=item.get("content"),
+                    reason=item.get("reason", ""),
+                )
+                for item in plan["changes"]
+            ]
+
+            return Transaction(
+                transaction_id=str(uuid4()),
+                changes=changes,
+                metadata={
+                    "instruction": plan["instruction"],
+                    "objective": plan.get("objective"),
+                    "tests": plan.get("tests", []),
+                    "risks": plan.get("risks", []),
+                    "changes": [
+                        {
+                            "change_type": change.change_type.value,
+                            "path": change.path,
+                            "content": change.content,
+                            "reason": change.reason,
+                        }
+                        for change in changes
+                    ],
+                },
+            )
+
+    init_git(tmp_path)
+
+    observation_store = ObservationStore(
+        tmp_path / "observations.json"
+    )
+    worker_store = WorkerStateStore(
+        tmp_path / "worker.json"
+    )
+
+    first_feedback = ExecutionFeedback().build(
+        {
+            "approval_id": "approval-first-failure",
+            "status": "failed",
+            "transaction_id": "tx-first-failure",
+            "tests": {
+                "success": False,
+                "error": "TEST_FAILURE",
+            },
+            "repair_attempts": 0,
+            "error": "TEST_FAILURE",
+            "metadata": {
+                "changes": [
+                    {
+                        "change_type": "create",
+                        "path": "second_cycle_smoke.py",
+                        "content": "def broken(:\n",
+                        "reason": "Criar arquivo.",
+                    }
+                ]
+            },
+        }
+    )
+    observation_store.append(first_feedback)
+
+    gateway = DevAgentGateway(
+        AlwaysFailingAgent(),
+        root=tmp_path,
+    )
+    observer = Observer(store=observation_store)
+    worker = Worker(
+        gateway,
+        observer,
+        store=worker_store,
+    )
+
+    first_result = worker.run_once()
+
+    assert len(first_result) == 1, worker.errors
+
+    first_proposal = first_result[0]
+    first_approval_id = first_proposal.approval_id
+
+    first_task = gateway.get_task(first_approval_id)
+    assert first_task["status"] == "pending"
+    assert first_task["plan"]["changes"][0]["path"] == "second_cycle_smoke.py"
+
+    first_execution = gateway.approve(first_approval_id)
+
+    assert first_execution["status"] == "committed"
+
+    second_feedback = ExecutionFeedback().build(
+        {
+            "approval_id": first_approval_id,
+            "status": "failed",
+            "transaction_id": first_execution["transaction_id"],
+            "tests": {
+                "success": False,
+                "error": "SECOND_TEST_FAILURE",
+            },
+            "repair_attempts": 1,
+            "error": "SECOND_TEST_FAILURE",
+            "metadata": {
+                "changes": [
+                    {
+                        "change_type": "create",
+                        "path": "second_cycle_smoke.py",
+                        "content": "def broken(:\n",
+                        "reason": "Correção da primeira falha.",
+                    }
+                ]
+            },
+        }
+    )
+    observation_store.append(second_feedback)
+
+    second_result = worker.run_once()
+
+    assert len(second_result) == 1, worker.errors
+
+    second_proposal = second_result[0]
+    assert second_proposal.approval_id != first_approval_id
+
+    second_task = gateway.get_task(second_proposal.approval_id)
+
+    assert second_task["status"] == "pending"
+    assert second_task["plan"]["changes"][0]["path"] == "second_cycle_smoke.py"
+    assert second_task["plan"]["changes"][0]["change_type"] == "create"
+
+    assert len(worker.errors) == 0

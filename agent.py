@@ -158,6 +158,15 @@ class DevAgent:
                 "objective": plan.get("objective"),
                 "tests": plan.get("tests", []),
                 "risks": plan.get("risks", []),
+                "changes": [
+                    {
+                        "change_type": change.change_type.value,
+                        "path": change.path,
+                        "content": change.content,
+                        "reason": change.reason,
+                    }
+                    for change in converted_changes
+                ],
             },
         )
 

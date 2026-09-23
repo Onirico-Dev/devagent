@@ -634,6 +634,14 @@ def test_build_transaction_from_approved_plan_preserves_plan_metadata():
         "objective": "Criar aplicação principal",
         "tests": ["pytest -q"],
         "risks": ["baixo"],
+        "changes": [
+            {
+                "change_type": "create",
+                "path": "app.py",
+                "content": "print('OK')",
+                "reason": "Arquivo principal",
+            }
+        ],
     }
 
 def test_task_history_persists_transaction_metadata(tmp_path):
