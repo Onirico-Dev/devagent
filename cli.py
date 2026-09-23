@@ -379,6 +379,11 @@ def main(state_root: str | Path = "transactions", command_args=None):
                     "latest, status, approve, reject ou sair."
                 )
 
+        except KeyError as error:
+            message = str(error).strip("'")
+            print(f"\nErro: {message}")
+        except ValueError as error:
+            print(f"\nErro: {error}")
         except Exception as error:
             print(
                 f"\nErro: "
