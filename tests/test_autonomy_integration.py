@@ -1672,7 +1672,26 @@ def test_real_transaction_feedback_second_failure_creates_second_correction(tmp_
     from core.worker import Worker
 
     class AlwaysFailingAgent:
+        def __init__(self):
+            self.build_count = 0
+
         def process(self, instruction, feedback_context=None):
+            if feedback_context:
+                return {
+                    "instruction": instruction,
+                    "objective": instruction,
+                    "changes": [
+                        {
+                            "change_type": "create",
+                            "path": "second_cycle_smoke.py",
+                            "content": "def broken():\n    pass\n",
+                            "reason": "Correção da falha de sintaxe.",
+                        }
+                    ],
+                    "tests": [],
+                    "risks": [],
+                }
+
             return {
                 "instruction": instruction,
                 "objective": instruction,
@@ -1719,7 +1738,10 @@ def test_real_transaction_feedback_second_failure_creates_second_correction(tmp_
                 },
             )
 
-            transaction.changes[0].content = "def broken(:\n"
+            if self.build_count == 0:
+                transaction.changes[0].content = "def broken(:\n"
+
+            self.build_count += 1
             return transaction
 
     init_git(tmp_path)
@@ -1820,5 +1842,27 @@ def test_real_transaction_feedback_second_failure_creates_second_correction(tmp_
     assert second_task["status"] == "pending"
     assert second_task["plan"]["changes"][0]["path"] == "second_cycle_smoke.py"
     assert second_task["plan"]["changes"][0]["change_type"] == "create"
+    assert second_task["plan"]["changes"][0]["content"] == "def broken():\n    pass\n"
+
+    second_execution = loop.approve(second_proposal.approval_id)
+
+    assert second_execution["status"] == "committed"
+
+    corrected_file = tmp_path / "second_cycle_smoke.py"
+    assert corrected_file.read_text() == "def broken():\n    pass\n"
+
+    final_observations = observation_store.load()
+    final_transaction_results = [
+        item
+        for item in final_observations
+        if item.metadata.get("source") == "transaction_result"
+    ]
+
+    assert len(final_transaction_results) == 3
+    assert final_transaction_results[-1].metadata["status"] == "committed"
+
+    second_result_after_commit = worker.run_once()
+    assert second_result_after_commit == []
+    assert worker.errors == []
 
     assert len(worker.errors) == 0
