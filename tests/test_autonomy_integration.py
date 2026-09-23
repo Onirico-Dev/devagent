@@ -1595,6 +1595,13 @@ def test_real_transaction_feedback_correction_approval_execution_commit(tmp_path
         store=worker_store,
     )
 
+    loop = SupervisedLoop(
+        worker,
+        gateway,
+        state_store=WorkerStateStore(tmp_path / "supervised_loop.json"),
+        observer=observer,
+    )
+
     result = worker.run_once()
 
     assert len(result) == 1, worker.errors
@@ -1610,7 +1617,7 @@ def test_real_transaction_feedback_correction_approval_execution_commit(tmp_path
     assert change["path"] == "autonomous_smoke.py"
     assert change["change_type"] == "create"
 
-    approval_result = gateway.approve(approval_id)
+    approval_result = loop.approve(approval_id)
 
     assert approval_result["status"] == "committed"
 
@@ -1619,6 +1626,25 @@ def test_real_transaction_feedback_correction_approval_execution_commit(tmp_path
 
     target = tmp_path / "autonomous_smoke.py"
     assert target.read_text(encoding="utf-8") == "VALUE = 42\n"
+
+    observations = observation_store.load()
+    feedback_observations = [
+        item
+        for item in observations
+        if item.metadata.get("source") == "transaction_result"
+    ]
+
+    assert len(feedback_observations) == 2
+
+    original_feedback = feedback_observations[0]
+    assert original_feedback.metadata["transaction_id"] == "tx-human-feedback"
+    assert original_feedback.metadata["approval_id"] == "approval-original"
+    assert original_feedback.metadata["status"] == "failed"
+
+    approval_feedback = feedback_observations[1]
+    assert approval_feedback.metadata["transaction_id"] == approval_result["transaction_id"]
+    assert approval_feedback.metadata["approval_id"] == approval_id
+    assert approval_feedback.metadata["status"] == "committed"
 
     git_status = subprocess.run(
         [

@@ -1074,3 +1074,45 @@ def test_supervised_loop_records_execution_feedback():
     assert observation.metadata["source"] == "transaction_result"
     assert observation.metadata["transaction_id"] == "tx-44"
     assert observation.metadata["status"] == "committed"
+
+
+def test_supervised_loop_human_approval_records_execution_feedback(tmp_path):
+    from core.observation_store import ObservationStore
+    from core.observer import Observer
+
+    store = ObservationStore(tmp_path / "observations.json")
+    store.save([])
+    observer = Observer(store=store)
+
+    class Worker:
+        def run_once(self):
+            return []
+
+    class Gateway:
+        def list_tasks(self):
+            return []
+
+        def approve(self, approval_id):
+            return {
+                "approval_id": approval_id,
+                "transaction_id": "tx-human-approval",
+                "status": "committed",
+                "tests": {"success": True},
+                "repair_attempts": 0,
+            }
+
+    loop = SupervisedLoop(
+        worker=Worker(),
+        gateway=Gateway(),
+        observer=observer,
+    )
+
+    result = loop.approve("approval-human")
+
+    assert result["status"] == "committed"
+
+    observations = store.load()
+    assert len(observations) == 1
+    assert observations[0].metadata["source"] == "transaction_result"
+    assert observations[0].metadata["transaction_id"] == "tx-human-approval"
+    assert observations[0].metadata["approval_id"] == "approval-human"

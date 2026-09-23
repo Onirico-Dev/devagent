@@ -338,11 +338,7 @@ def main(state_root: str | Path = "transactions", command_args=None):
                     print("Uso: approve <id>")
                     continue
 
-                result = gateway.approve(parts[1])
-
-                observation = execution_feedback.build(result)
-                if observation is not None:
-                    observer.add(observation)
+                result = supervised_loop.approve(parts[1])
 
                 print("\nResultado da aprovação:")
                 print_task(gateway.get_task(parts[1]))

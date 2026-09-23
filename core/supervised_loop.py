@@ -179,6 +179,15 @@ class SupervisedLoop(LoopController):
                 raise ValueError("Feedback de execução inválido.")
             self.observer.add(observation)
 
+    def approve(self, approval_id: str) -> dict[str, Any]:
+        if not isinstance(approval_id, str) or not approval_id.strip():
+            raise ValueError("ID de aprovação inválido.")
+
+        result = self.gateway.approve(approval_id)
+        self._record_execution_feedback(result)
+        self._persist_state()
+        return result
+
     def export_state(self) -> dict[str, Any]:
         return {
             "stopped": self._stopped,

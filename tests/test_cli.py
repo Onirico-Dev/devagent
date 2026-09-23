@@ -71,6 +71,32 @@ class FakeGateway:
         return {"status": "rejected"}
 
 
+class FakeSupervisedLoop:
+    def __init__(self, worker, gateway, state_store=None, observer=None):
+        self.gateway = gateway
+        self.calls = []
+
+    def run_once(self):
+        self.calls.append(("run_once",))
+        return type(
+            "Result",
+            (),
+            {
+                "proposals": [],
+                "metadata": {},
+                "stopped": False,
+            },
+        )()
+
+    def run_continuous(self, interval_seconds=1.0, max_iterations=None):
+        self.calls.append(("run_continuous", interval_seconds, max_iterations))
+        return []
+
+    def approve(self, approval_id):
+        self.calls.append(("approve", approval_id))
+        return self.gateway.approve(approval_id)
+
+
 def test_print_task_none(capsys):
     cli.print_task(None)
     assert "Nenhuma tarefa encontrada." in capsys.readouterr().out
