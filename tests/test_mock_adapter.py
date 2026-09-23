@@ -184,6 +184,37 @@ def test_mock_modify_addition_preserves_existing_context():
     }
 
 
+def test_mock_modify_add_function_preserves_existing_context():
+    adapter = MockAdapter()
+
+    context = (
+        "=== CONTEXTO DO PROJETO ===\n"
+        "=== ARQUIVO: self_evolution_smoke.py ===\n"
+        "def hello():\n"
+        '    return "HELLO DEVAGENT"\n'
+        "=== ANÁLISE PYTHON ===\n"
+        "IMPORTS: []\n"
+        "FUNÇÕES: ['hello']\n"
+        "CLASSES: []\n"
+    )
+
+    result = adapter._build_planner_change(
+        'modifique self_evolution_smoke.py para adicionar uma função goodbye() '
+        'que retorne "GOODBYE DEVAGENT"',
+        context,
+    )
+
+    assert result["type"] == "modify"
+    assert result["path"] == "self_evolution_smoke.py"
+    assert result["content"] == (
+        "def hello():\n"
+        '    return "HELLO DEVAGENT"\n'
+        "\n"
+        "def goodbye():\n"
+        '    return "GOODBYE DEVAGENT"\n'
+    )
+
+
 def test_mock_modify_without_content_returns_empty_content():
     adapter = MockAdapter()
 

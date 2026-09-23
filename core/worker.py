@@ -68,6 +68,7 @@ class Worker:
             tuple[str, tuple[tuple[str, str], ...]],
             Observation,
         ] = {}
+        self._retry_instructions: set[str] = set()
         self._errors: list[dict[str, str]] = []
 
         if self.store is not None:
@@ -431,13 +432,60 @@ class Worker:
 
         for observation in self.observer.observe():
             key = self._observation_key(observation)
+            instruction = observation.instruction.strip()
+            retry_allowed = instruction in self._retry_instructions
 
-            if key in self._processed:
+            if key in self._processed and not retry_allowed:
                 continue
 
             try:
                 if observation.metadata.get("source") == "transaction_result":
                     feedback_result = self.feedback_handler.handle(observation)
+
+                    analysis = feedback_result.get("analysis", {})
+                    if isinstance(analysis, dict):
+                        status = analysis.get("status")
+                        evidence = analysis.get("evidence", {})
+
+                        if status in {"rolled_back", "failed"} and isinstance(evidence, dict):
+                            transaction_metadata = evidence.get(
+                                "transaction_metadata",
+                                {},
+                            )
+
+                            if isinstance(transaction_metadata, dict):
+                                failed_instruction = transaction_metadata.get(
+                                    "instruction"
+                                )
+
+                                if (
+                                    isinstance(failed_instruction, str)
+                                    and failed_instruction.strip()
+                                ):
+                                    failed_instruction = failed_instruction.strip()
+
+                                    self._retry_instructions.add(
+                                        failed_instruction
+                                    )
+                                    self._persist_state()
+
+                                    retry_keys = {
+                                        processed_key
+                                        for processed_key, processed_observation
+                                        in self._processed_observations.items()
+                                        if (
+                                            processed_observation.instruction.strip()
+                                            == failed_instruction
+                                        )
+                                    }
+
+                                    for retry_key in retry_keys:
+                                        self._processed.discard(retry_key)
+                                        self._processed_observations.pop(
+                                            retry_key,
+                                            None,
+                                        )
+
                     proposal_data = feedback_result.get("proposal")
 
                     if proposal_data is not None:
@@ -498,6 +546,10 @@ class Worker:
                     self.process_observation(observation)
                 )
 
+                if retry_allowed:
+                    self._retry_instructions.discard(instruction)
+                    self._persist_state()
+
             except Exception as exc:
                 self._errors.append(
                     {
@@ -532,6 +584,7 @@ class Worker:
                 )
             ],
             "processed_ids": sorted(self._processed_ids),
+            "retry_instructions": sorted(self._retry_instructions),
         }
 
     def restore_state(
@@ -544,6 +597,7 @@ class Worker:
 
         processed = state.get("processed", [])
         processed_ids = state.get("processed_ids", [])
+        retry_instructions = state.get("retry_instructions", [])
 
         if not isinstance(processed, list):
             raise ValueError(
@@ -553,6 +607,17 @@ class Worker:
         if not isinstance(processed_ids, list):
             raise ValueError(
                 "Estado de IDs processados inválido."
+            )
+
+        if (
+            not isinstance(retry_instructions, list)
+            or any(
+                not isinstance(item, str) or not item.strip()
+                for item in retry_instructions
+            )
+        ):
+            raise ValueError(
+                "Estado de instruções de retry inválido."
             )
 
         restored = set()
@@ -589,6 +654,10 @@ class Worker:
         self._processed = restored
         self._processed_ids = set(processed_ids)
         self._processed_observations = restored_observations
+        self._retry_instructions = {
+            item.strip()
+            for item in retry_instructions
+        }
 
         if persist:
             self._persist_state()

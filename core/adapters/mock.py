@@ -409,10 +409,7 @@ class MockAdapter(AIAdapter):
         if not modify_match:
             return None
 
-        path = modify_match.group(1).strip(
-            "\"'`.,;:"
-        )
-
+        path = modify_match.group(1).strip("\"'`.,;:")
         request = (modify_match.group(2) or "").strip()
         content = request
 
@@ -427,14 +424,38 @@ class MockAdapter(AIAdapter):
 
         addition = None
 
-        for prefix in (
-            "adicionando ",
-            "adicione ",
-            "adicionar ",
-        ):
-            if request.lower().startswith(prefix):
-                addition = request[len(prefix):].strip()
-                break
+        function_add_match = re.match(
+            r"para\s+adicionar\s+(?:uma\s+)?função\s+"
+            r"([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*([^)]*)\s*\)"
+            r"\s+que\s+retorne\s+(?:o\s+valor\s+)?"
+            r"([\"'])(.*?)\3\s*$",
+            request,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+
+        generated_addition = None
+
+        if function_add_match:
+            function_name = function_add_match.group(1)
+            parameters = function_add_match.group(2).strip()
+            return_value = function_add_match.group(4)
+
+            generated_addition = (
+                f"def {function_name}({parameters}):\n"
+                f'    return "{return_value}"'
+            )
+
+        if generated_addition is not None:
+            addition = generated_addition
+        else:
+            for prefix in (
+                "adicionando ",
+                "adicione ",
+                "adicionar ",
+            ):
+                if request.lower().startswith(prefix):
+                    addition = request[len(prefix):].strip()
+                    break
 
         if addition and context:
             file_marker = f"=== ARQUIVO: {path} ===\n"
@@ -446,7 +467,8 @@ class MockAdapter(AIAdapter):
                     .rstrip()
                 )
 
-                content = f"{existing}\n{addition}\n"
+                separator = "\n\n" if generated_addition is not None else "\n"
+                content = f"{existing}{separator}{addition}\n"
 
         return {
             "type": "modify",

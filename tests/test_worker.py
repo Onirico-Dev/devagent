@@ -854,6 +854,106 @@ def test_worker_marks_handled_transaction_result_as_processed():
     assert worker.errors == []
 
 
+def test_worker_allows_retry_after_failed_transaction():
+    class Gateway:
+        def __init__(self):
+            self.instructions = []
+
+        def create_task(self, instruction):
+            self.instructions.append(instruction)
+            return {
+                "approval_id": f"approval-{len(self.instructions)}",
+                "status": "pending",
+                "plan": {
+                    "objective": instruction,
+                    "changes": [],
+                    "tests": [],
+                    "risks": [],
+                },
+            }
+
+        def list_pending(self):
+            return []
+
+    class FeedbackHandler:
+        def handle(self, observation):
+            return {
+                "handled": True,
+                "analysis": {
+                    "transaction_id": observation.metadata["transaction_id"],
+                    "status": "rolled_back",
+                    "action_required": True,
+                    "failure_type": "syntax_error",
+                    "repair_attempts": 2,
+                    "evidence": {
+                        "transaction_metadata": {
+                            "instruction": instruction,
+                        }
+                    },
+                },
+                "proposal": {
+                    "instruction": (
+                        "Analise a transação tx-1, que terminou com status "
+                        "'rolled_back', identifique a causa da falha e proponha "
+                        "uma correção segura."
+                    ),
+                },
+            }
+
+    instruction = (
+        "modifique self_evolution_smoke.py "
+        "para adicionar goodbye()"
+    )
+
+    original = Observation(
+        instruction=instruction,
+        metadata={"source": "cli"},
+    )
+
+    feedback = Observation(
+        instruction="resultado da transação tx-1",
+        metadata={
+            "source": "transaction_result",
+            "transaction_id": "tx-1",
+            "status": "rolled_back",
+            "transaction_metadata": {
+                "instruction": instruction,
+            },
+        },
+    )
+
+    retry = Observation(
+        instruction=instruction,
+        metadata={"source": "cli"},
+    )
+
+    gateway = Gateway()
+    observer = Observer(observations=[original, feedback, retry])
+
+    worker = Worker(
+        gateway,
+        observer,
+        feedback_handler=FeedbackHandler(),
+    )
+
+    proposals = worker.run_once()
+
+    feedback_instruction = (
+        "Analise a transação tx-1, que terminou com status "
+        "'rolled_back', identifique a causa da falha e proponha "
+        "uma correção segura."
+    )
+
+    assert gateway.instructions == [
+        instruction,
+        feedback_instruction,
+        instruction,
+    ]
+    assert len(proposals) == 3
+    assert worker.errors == []
+
+
+
 def test_worker_keeps_feedback_unprocessed_when_handler_fails():
     class Gateway:
         def create_task(self, instruction):
