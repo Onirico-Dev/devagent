@@ -517,6 +517,30 @@ def test_mock_adapter_creates_multiple_files_from_compound_instruction():
     assert "add(2, 3)" in changes["test_calculator.py"]["content"]
 
 
+def test_mock_build_compound_changes_supports_function_and_pytest():
+    adapter = MockAdapter()
+    instruction = (
+        'adicione uma função hello() em um novo arquivo '
+        'self_evolution_smoke.py que retorne "HELLO DEVAGENT" '
+        'e crie um teste pytest correspondente'
+    )
+
+    result = adapter._build_compound_create_changes(instruction)
+
+    assert len(result) == 2
+
+    changes = {change["path"]: change for change in result}
+
+    assert changes["self_evolution_smoke.py"]["type"] == "create"
+    assert 'def hello():' in changes["self_evolution_smoke.py"]["content"]
+    assert 'return "HELLO DEVAGENT"' in changes["self_evolution_smoke.py"]["content"]
+
+    assert changes["test_self_evolution_smoke.py"]["type"] == "create"
+    assert "from self_evolution_smoke import hello" in changes["test_self_evolution_smoke.py"]["content"]
+    assert "def test_hello():" in changes["test_self_evolution_smoke.py"]["content"]
+    assert 'assert hello() == "HELLO DEVAGENT"' in changes["test_self_evolution_smoke.py"]["content"]
+
+
 def test_mock_build_compound_changes_supports_multiple_operations():
     adapter = MockAdapter()
 

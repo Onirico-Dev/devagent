@@ -219,7 +219,56 @@ class MockAdapter(AIAdapter):
             ensure_ascii=False,
         )
 
+    def _build_function_pytest_changes(self, instruction: str):
+        match = re.search(
+            r"""adicione\s+(?:uma\s+)?função\s+
+            ([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)
+            .*?(?:novo\s+)?arquivo\s+
+            ([A-Za-z0-9_.-]+\.py)
+            .*?retorne\s+(["'])(.*?)\4
+            .*?teste\s+pytest\s+correspondente""",
+            instruction.strip(),
+            flags=re.IGNORECASE | re.DOTALL | re.VERBOSE,
+        )
+
+        if not match:
+            return []
+
+        function_name = match.group(1)
+        parameters = match.group(2).strip()
+        module_path = match.group(3)
+        return_value = match.group(5)
+
+        module_name = module_path.rsplit(".", 1)[0].replace("/", ".")
+        test_path = f"test_{module_path}"
+
+        return [
+            {
+                "type": "create",
+                "path": module_path,
+                "content": (
+                    f"def {function_name}({parameters}):\n"
+                    f'    return "{return_value}"\n'
+                ),
+                "reason": instruction,
+            },
+            {
+                "type": "create",
+                "path": test_path,
+                "content": (
+                    f"from {module_name} import {function_name}\n\n"
+                    f"def test_{function_name}():\n"
+                    f'    assert {function_name}() == "{return_value}"\n'
+                ),
+                "reason": instruction,
+            },
+        ]
+
     def _build_compound_create_changes(self, instruction: str):
+        function_changes = self._build_function_pytest_changes(instruction)
+        if function_changes:
+            return function_changes
+
         # Caso semântico conhecido: módulo + teste pytest.
         module_match = re.search(
             r"crie\s+(?:um\s+)?(?:módulo|arquivo)\s+"
