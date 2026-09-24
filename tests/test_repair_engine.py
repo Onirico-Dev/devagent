@@ -1,4 +1,5 @@
 import json
+from core.adapters.mock import MockAdapter
 
 from core.engine.repair_engine import RepairEngine
 
@@ -407,3 +408,17 @@ def test_repair_engine_sends_failure_type_to_ai():
     assert len(ai.prompts) == 1
     assert "Tipo de falha classificado:" in ai.prompts[0]
     assert "syntax_error" in ai.prompts[0]
+
+
+def test_mock_adapter_extracts_content_from_natural_language_create_request():
+    adapter = MockAdapter()
+    response = json.loads(
+        adapter.generate(
+            "INSTRUÇÃO DO USUÁRIO: crie o arquivo cli_content_smoke.py "
+            "com print('CLI CONTENT OK')\n"
+            "CONTEXTO DO PROJETO:"
+        )
+    )
+
+    assert response["changes"][0]["path"] == "cli_content_smoke.py"
+    assert response["changes"][0]["content"] == "print('CLI CONTENT OK')"

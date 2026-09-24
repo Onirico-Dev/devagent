@@ -489,6 +489,7 @@ class MockAdapter(AIAdapter):
             " com o conteúdo ",
             " com conteudo ",
             " com o conteudo ",
+            " com ",
         )
 
         for marker in markers:
