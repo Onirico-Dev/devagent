@@ -660,3 +660,58 @@ def test_mock_feedback_does_not_apply_syntax_fix_for_other_failure_types(
     change = data["changes"][0]
 
     assert change["content"] == "def broken(:"
+
+
+def test_mock_adapter_cli_style_function_and_pytest_compound():
+    instruction = (
+        "crie o arquivo cli_compound_smoke.py contendo "
+        "def somar(a, b): return a + b "
+        "e crie um teste pytest correspondente"
+    )
+
+    result = MockAdapter().generate(
+        "INSTRUÇÃO DO USUÁRIO:\n"
+        f"{instruction}\n"
+        "CONTEXTO DO PROJETO:\n"
+    )
+
+    payload = json.loads(result)
+    assert len(payload["changes"]) == 2
+
+    changes = {change["path"]: change for change in payload["changes"]}
+
+    assert changes["cli_compound_smoke.py"]["type"] == "create"
+    assert "def somar(a, b):" in changes["cli_compound_smoke.py"]["content"]
+    assert "return a + b" in changes["cli_compound_smoke.py"]["content"]
+
+    assert changes["test_cli_compound_smoke.py"]["type"] == "create"
+    assert "from cli_compound_smoke import somar" in changes[
+        "test_cli_compound_smoke.py"
+    ]["content"]
+    assert "assert somar(2, 3) == 5" in changes[
+        "test_cli_compound_smoke.py"
+    ]["content"]
+
+
+def test_mock_adapter_repair_preserves_compound_create_content():
+    instruction = (
+        "crie o arquivo cli_compound_smoke.py contendo "
+        "def somar(a, b): return a + b "
+        "e crie um teste pytest correspondente"
+    )
+
+    prompt = (
+        "Você é o módulo de reparo automático do DevAgent.\n"
+        f"Objetivo original: {instruction}\n"
+        "Erro: SyntaxError"
+    )
+
+    result = MockAdapter().generate(prompt)
+    payload = json.loads(result)
+
+    assert payload["path"] == "cli_compound_smoke.py"
+    assert payload["content"] == (
+        "def somar(a, b):\n"
+        "    return a + b\n"
+    )
+    assert "e crie um teste pytest correspondente" not in payload["content"]

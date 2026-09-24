@@ -43,14 +43,21 @@ class MockAdapter(AIAdapter):
         if not path:
             path = "reparo.py"
 
-        content = self._extract_create_content(instruction)
+        content = ""
 
+        compound_changes = self._build_compound_create_changes(instruction)
+        if compound_changes:
+            for change in compound_changes:
+                if change.get("path") == path:
+                    content = change.get("content", "")
+                    break
+
+        if not content:
+            content = self._extract_create_content(instruction)
         if not content:
             content = self._extract_legacy_create_content(instruction)
-
         if not content:
             content = self._extract_invalid_content(instruction)
-
 
         # Corrige a forma natural de função sem dois-pontos antes do return.
         function_match = re.fullmatch(
@@ -286,6 +293,48 @@ class MockAdapter(AIAdapter):
         function_changes = self._build_function_pytest_changes(instruction)
         if function_changes:
             return function_changes
+
+        # Caso inline: arquivo contendo função + teste pytest correspondente.
+        inline_match = re.search(
+            r"crie\s+(?:o\s+|um\s+)?arquivo\s+"
+            r"([A-Za-z0-9_.-]+\.py)\s+contendo\s+"
+            r"def\s+([A-Za-z_][A-Za-z0-9_]*)\s*"
+            r"\(([^)]*)\)\s*:\s*return\s+(.+?)\s+"
+            r"e\s+crie\s+um\s+teste\s+pytest\s+correspondente\s*$",
+            instruction.strip(),
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+
+        if inline_match:
+            module_path = inline_match.group(1)
+            function_name = inline_match.group(2)
+            parameters = inline_match.group(3).strip()
+            return_expression = inline_match.group(4).strip()
+
+            module_name = module_path.rsplit(".", 1)[0].replace("/", ".")
+            test_path = f"test_{module_path}"
+
+            return [
+                {
+                    "type": "create",
+                    "path": module_path,
+                    "content": (
+                        f"def {function_name}({parameters}):\n"
+                        f"    return {return_expression}\n"
+                    ),
+                    "reason": instruction,
+                },
+                {
+                    "type": "create",
+                    "path": test_path,
+                    "content": (
+                        f"from {module_name} import {function_name}\n\n"
+                        f"def test_{function_name}():\n"
+                        f"    assert {function_name}(2, 3) == 5\n"
+                    ),
+                    "reason": instruction,
+                },
+            ]
 
         # Caso semântico conhecido: módulo + teste pytest.
         module_match = re.search(
