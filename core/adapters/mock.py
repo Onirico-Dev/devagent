@@ -46,7 +46,25 @@ class MockAdapter(AIAdapter):
         content = self._extract_create_content(instruction)
 
         if not content:
+            content = self._extract_legacy_create_content(instruction)
+
+        if not content:
             content = self._extract_invalid_content(instruction)
+
+
+        # Corrige a forma natural de função sem dois-pontos antes do return.
+        function_match = re.fullmatch(
+            r"def\s+([A-Za-z_]\w*)\s*"
+            r"\(([^)]*)\)\s+return\s+(.+)",
+            content.strip(),
+        )
+
+        if function_match:
+            name, args, body = function_match.groups()
+            content = (
+                f"def {name}({args}):\n"
+                f"    return {body.strip()}"
+            )
 
         return json.dumps(
             {
