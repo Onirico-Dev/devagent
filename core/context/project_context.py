@@ -140,21 +140,43 @@ class ProjectContext:
         )
 
     def build(self, relevant_paths=None):
-        files = self.list_files()
-
         relevant_paths = {
             Path(path)
             for path in (relevant_paths or [])
         }
 
+        files = self.list_files()
+
+        for relative in sorted(relevant_paths):
+            if relative not in files:
+                absolute = (self.root / relative).resolve()
+
+                try:
+                    absolute.relative_to(self.root)
+                except ValueError:
+                    continue
+
+                if not absolute.is_file():
+                    continue
+
+                if self._is_ignored(absolute):
+                    continue
+
+                if absolute.suffix.lower() not in self.DEFAULT_EXTENSIONS:
+                    continue
+
+                files.append(relative)
+
         prioritized = [
             path for path in files
             if path in relevant_paths
         ]
+
         remaining = [
             path for path in files
             if path not in relevant_paths
         ]
+
         files = prioritized + remaining
 
         MAX_CONTEXT_CHARS = 50000
@@ -170,14 +192,18 @@ class ProjectContext:
         included = 0
 
         for relative in files:
-            path = (
-                self.root / relative
-            ).resolve()
+            path = (self.root / relative).resolve()
 
-            if path.stat().st_size > self.max_file_size:
-                continue
+            if relative in relevant_paths:
+                try:
+                    content = path.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    content = self.read_file(relative)
+            else:
+                if path.stat().st_size > self.max_file_size:
+                    continue
 
-            content = self.read_file(relative)
+                content = self.read_file(relative)
 
             section = (
                 f"=== ARQUIVO: {relative} ===\n"

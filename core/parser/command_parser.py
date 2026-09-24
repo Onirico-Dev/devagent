@@ -163,7 +163,7 @@ class CommandParser:
         action: str,
     ) -> tuple[str, str] | None:
         match = re.match(
-            r"^arquivo\s+([^\s\"'`]+)(?:\s+(.*))?$",
+            r"^(?:o\s+|a\s+)?arquivo\s+([^\s\"'`]+)(?:\s+(.*))?$",
             remainder,
             flags=re.IGNORECASE,
         )

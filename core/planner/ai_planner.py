@@ -1,4 +1,5 @@
 import json
+import re
 
 from core.schemas.models import (
     Change,
@@ -13,6 +14,53 @@ class AIPlanner:
     def __init__(self, ai_adapter):
         self.ai = ai_adapter
 
+    @staticmethod
+    def _extract_modify_target(instruction: str) -> str | None:
+        match = re.search(
+            r"(?:modifique|modificar|altere|alterar|modify)\s+"
+            r"(?:o\s+|a\s+)?(?:arquivo\s+)?"
+            r"([A-Za-z0-9_./-]+\.py)\b",
+            instruction,
+            flags=re.IGNORECASE,
+        )
+
+        if not match:
+            return None
+
+        return match.group(1).strip("\"'`.,;:")
+
+    def _preserve_modify_target_context(
+        self,
+        instruction: str,
+        context: str,
+    ) -> str:
+        target = self._extract_modify_target(instruction)
+
+        if target:
+            marker = f"=== ARQUIVO: {target} ==="
+
+            if marker in context:
+                section = context.split(marker, 1)[1]
+
+                next_marker = section.find("\n=== ARQUIVO:")
+                if next_marker >= 0:
+                    section = section[:next_marker]
+
+                return (
+                    "=== CONTEXTO DO PROJETO ===\n"
+                    f"=== ARQUIVO ALVO DO MODIFY: {target} ===\n"
+                    f"=== ARQUIVO: {target} ==="
+                    + section
+                )
+
+        if len(context) > self.MAX_CONTEXT_CHARS:
+            return (
+                context[:self.MAX_CONTEXT_CHARS]
+                + "\n\n=== CONTEXTO TRUNCADO ==="
+            )
+
+        return context
+
     def create_plan(
         self,
         instruction: str,
@@ -23,9 +71,9 @@ class AIPlanner:
             context = ""
 
         if len(context) > self.MAX_CONTEXT_CHARS:
-            context = (
-                context[:self.MAX_CONTEXT_CHARS]
-                + "\n\n=== CONTEXTO TRUNCADO ==="
+            context = self._preserve_modify_target_context(
+                instruction,
+                context,
             )
 
         if feedback_context is None:

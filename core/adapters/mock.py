@@ -457,6 +457,96 @@ class MockAdapter(AIAdapter):
             "reason": instruction,
         }
 
+    def _build_regression_test_addition(
+        self,
+        request: str,
+    ):
+        match = re.search(
+            r"novo teste chamado\s+"
+            r"([A-Za-z_][A-Za-z0-9_]*)\."
+            r"\s*O teste deve criar uma transação com metadata contendo "
+            r"repair_cycle com remaining igual a 0, executar o Worker e "
+            r"verificar que a instrução não aparece em retry_instructions\.",
+            request,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if not match:
+            return None
+
+        name = match.group(1)
+
+        return (
+            f"def {name}():\n"
+            "    class Gateway:\n"
+            "        def __init__(self):\n"
+            "            self.instructions = []\n"
+            "\n"
+            "        def create_task(self, instruction):\n"
+            "            self.instructions.append(instruction)\n"
+            "            return {\n"
+            "                \"approval_id\": f\"approval-{len(self.instructions)}\",\n"
+            "                \"status\": \"pending\",\n"
+            "                \"plan\": {\n"
+            "                    \"objective\": instruction,\n"
+            "                    \"changes\": [],\n"
+            "                    \"tests\": [],\n"
+            "                    \"risks\": [],\n"
+            "                },\n"
+            "            }\n"
+            "\n"
+            "        def list_pending(self):\n"
+            "            return []\n"
+            "\n"
+            "    class FeedbackHandler:\n"
+            "        def handle(self, observation):\n"
+            "            return {\n"
+            "                \"handled\": True,\n"
+            "                \"analysis\": {\n"
+            "                    \"transaction_id\": \"tx-exhausted\",\n"
+            "                    \"status\": \"rolled_back\",\n"
+            "                    \"action_required\": True,\n"
+            "                    \"failure_type\": \"syntax_error\",\n"
+            "                    \"repair_attempts\": 2,\n"
+            "                    \"evidence\": {\n"
+            "                        \"transaction_metadata\": {\n"
+            "                            \"instruction\": instruction,\n"
+            "                            \"repair_cycle\": {\n"
+            "                                \"status\": \"repair_failed\",\n"
+            "                                \"attempts\": 2,\n"
+            "                                \"max_attempts\": 2,\n"
+            "                                \"remaining\": 0,\n"
+            "                            },\n"
+            "                        },\n"
+            "                    },\n"
+            "                },\n"
+            "                \"proposal\": {\n"
+            "                    \"instruction\": \"Analise a transação tx-exhausted, que terminou com status 'rolled_back', identifique a causa da falha e proponha uma correção segura.\",\n"
+            "                },\n"
+            "            }\n"
+            "\n"
+            "    instruction = \"crie arquivo exhausted_smoke.py com conteúdo inválido\"\n"
+            "    feedback = Observation(\n"
+            "        instruction=\"resultado da transação tx-exhausted\",\n"
+            "        metadata={\n"
+            "            \"source\": \"transaction_result\",\n"
+            "            \"transaction_id\": \"tx-exhausted\",\n"
+            "            \"status\": \"rolled_back\",\n"
+            "        },\n"
+            "    )\n"
+            "\n"
+            "    worker = Worker(\n"
+            "        Gateway(),\n"
+            "        Observer(observations=[feedback]),\n"
+            "        feedback_handler=FeedbackHandler(),\n"
+            "    )\n"
+            "\n"
+            "    proposals = worker.run_once()\n"
+            "\n"
+            "    assert len(proposals) == 1\n"
+            "    assert proposals[0].status == \"pending\"\n"
+            "    assert instruction not in worker._retry_instructions"
+        )
+
     def _build_modify_change(
         self,
         instruction: str,
@@ -470,7 +560,7 @@ class MockAdapter(AIAdapter):
             r"([A-Za-z0-9_./-]+\.[A-Za-z0-9_-]+)"
             r"(?:\s+(.*))?$",
             instruction,
-            flags=re.IGNORECASE,
+            flags=re.IGNORECASE | re.DOTALL,
         )
 
         if not modify_match:
@@ -489,6 +579,7 @@ class MockAdapter(AIAdapter):
                 content = request[len(prefix):].strip()
                 break
 
+        regression_addition = self._build_regression_test_addition(request)
         addition = None
 
         function_add_match = re.match(
@@ -502,7 +593,9 @@ class MockAdapter(AIAdapter):
 
         generated_addition = None
 
-        if function_add_match:
+        if regression_addition is not None:
+            generated_addition = regression_addition
+        elif function_add_match:
             function_name = function_add_match.group(1)
             parameters = function_add_match.group(2).strip()
             return_value = function_add_match.group(4)
@@ -524,18 +617,21 @@ class MockAdapter(AIAdapter):
                     addition = request[len(prefix):].strip()
                     break
 
-        if addition and context:
+        if addition is not None:
             file_marker = f"=== ARQUIVO: {path} ===\n"
+            if file_marker not in context:
+                return None
 
-            if file_marker in context:
-                existing = (
-                    context.split(file_marker, 1)[1]
-                    .split("=== ANÁLISE PYTHON ===", 1)[0]
-                    .rstrip()
-                )
+            existing = (
+                context.split(file_marker, 1)[1]
+                .split("=== ANÁLISE PYTHON ===", 1)[0]
+                .rstrip()
+            )
 
-                separator = "\n\n" if generated_addition is not None else "\n"
-                content = f"{existing}{separator}{addition}\n"
+            if generated_addition is not None:
+                content = f"{existing}\n\n{addition}\n"
+            else:
+                content = f"{existing}\n{addition}\n"
 
         return {
             "type": "modify",

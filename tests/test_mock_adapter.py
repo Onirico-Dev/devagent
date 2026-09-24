@@ -108,6 +108,47 @@ def test_mock_create_recognizes_creation_variants(instruction):
     assert result["content"] == "print('ok')"
 
 
+def test_mock_modify_addition_uses_existing_file_context():
+    adapter = MockAdapter()
+    instruction = (
+        "modifique tests/test_worker.py adicionando "
+        "def test_new():\n    pass"
+    )
+    context = (
+        "=== ARQUIVO: tests/test_worker.py ===\n"
+        "def existing_test():\n    pass\n\n"
+        "=== ANÁLISE PYTHON ===\n"
+    )
+
+    result = adapter._build_modify_change(instruction, context)
+
+    assert result["path"] == "tests/test_worker.py"
+    assert result["content"] == (
+        "def existing_test():\n    pass\n"
+        "def test_new():\n    pass\n"
+    )
+
+
+def test_mock_modify_addition_without_context_returns_none():
+    adapter = MockAdapter()
+    instruction = (
+        "modifique tests/test_worker.py adicionando "
+        "def test_new():\n    pass"
+    )
+
+    assert adapter._build_modify_change(instruction, "") is None
+
+
+def test_mock_modify_addition_without_context_returns_none():
+    adapter = MockAdapter()
+    instruction = (
+        "modifique tests/test_worker.py adicionando "
+        "def test_new():\\n    pass"
+    )
+
+    assert adapter._build_modify_change(instruction, "") is None
+
+
 @pytest.mark.parametrize(
     "instruction",
     [
