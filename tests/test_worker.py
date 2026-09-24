@@ -1267,3 +1267,36 @@ def test_worker_reuses_existing_pending_feedback_proposal():
     assert len(proposals) == 1
     assert proposals[0].approval_id == "approval-existing"
     assert worker.errors == []
+
+
+def test_retry_instructions_persist_across_worker_restart(tmp_path):
+    from core.worker_state_store import WorkerStateStore
+
+    class Gateway:
+        def create_task(self, instruction):
+            return {
+                "approval_id": "approval-retry",
+                "status": "pending",
+                "plan": {},
+            }
+
+    instruction = "corrigir arquivo após falha"
+
+    store = WorkerStateStore(tmp_path / "worker.json")
+
+    worker = Worker(
+        Gateway(),
+        Observer([]),
+        store=store,
+    )
+
+    worker._retry_instructions.add(instruction)
+    worker._persist_state()
+
+    restarted = Worker(
+        Gateway(),
+        Observer([]),
+        store=store,
+    )
+
+    assert instruction in restarted._retry_instructions

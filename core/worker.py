@@ -138,10 +138,18 @@ class Worker:
                 )
             )
 
-            return {
+            retry_instructions = set(current.get("retry_instructions", []))
+            retry_instructions.update(state["retry_instructions"])
+
+            result = {
                 "processed": processed,
                 "processed_ids": sorted(processed_ids),
             }
+
+            if retry_instructions:
+                result["retry_instructions"] = sorted(retry_instructions)
+
+            return result
 
         self.store.update(merge)
 
