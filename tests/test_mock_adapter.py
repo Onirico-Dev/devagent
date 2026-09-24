@@ -715,3 +715,45 @@ def test_mock_adapter_repair_preserves_compound_create_content():
         "    return a + b\n"
     )
     assert "e crie um teste pytest correspondente" not in payload["content"]
+
+
+def test_feedback_response_repairs_syntax_error():
+    from core.adapters.mock import MockAdapter
+
+    adapter = MockAdapter()
+
+    feedback_context = {
+        "transaction_id": "tx-syntax",
+        "status": "rolled_back",
+        "failure_type": "syntax_error",
+        "evidence": {
+            "error": "SyntaxError: invalid syntax",
+        },
+        "transaction_metadata": {
+            "instruction": "criar arquivo cli_recovery_smoke.py com conteúdo def broken(:",
+            "changes": [
+                {
+                    "change_type": "create",
+                    "path": "cli_recovery_smoke.py",
+                    "content": "def broken(:",
+                    "reason": "falha",
+                }
+            ],
+        },
+    }
+
+    response = adapter._generate_feedback_response(
+        "corrigir",
+        "",
+        feedback_context,
+    )
+
+    import json
+
+    parsed = json.loads(response)
+    changes = parsed["changes"]
+
+    assert len(changes) == 1
+    assert changes[0]["path"] == "cli_recovery_smoke.py"
+    assert changes[0]["content"] == "def broken():\n    pass\n"
+    assert changes[0]["content"] != "def broken(:"

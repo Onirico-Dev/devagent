@@ -487,27 +487,48 @@ class Worker:
                                 ):
                                     failed_instruction = failed_instruction.strip()
 
-                                    self._retry_instructions.add(
-                                        failed_instruction
+                                    repair_cycle = transaction_metadata.get(
+                                        "repair_cycle",
+                                        {},
                                     )
-                                    self._persist_state()
 
-                                    retry_keys = {
-                                        processed_key
-                                        for processed_key, processed_observation
-                                        in self._processed_observations.items()
-                                        if (
-                                            processed_observation.instruction.strip()
-                                            == failed_instruction
-                                        )
-                                    }
+                                    retry_exhausted = False
+                                    if isinstance(repair_cycle, dict):
+                                        remaining = repair_cycle.get("remaining")
+                                        attempts = repair_cycle.get("attempts")
+                                        max_attempts = repair_cycle.get("max_attempts")
 
-                                    for retry_key in retry_keys:
-                                        self._processed.discard(retry_key)
-                                        self._processed_observations.pop(
-                                            retry_key,
-                                            None,
+                                        retry_exhausted = (
+                                            remaining == 0
+                                            or (
+                                                isinstance(attempts, int)
+                                                and isinstance(max_attempts, int)
+                                                and attempts >= max_attempts
+                                            )
                                         )
+
+                                    if not retry_exhausted:
+                                        self._retry_instructions.add(
+                                            failed_instruction
+                                        )
+                                        self._persist_state()
+
+                                        retry_keys = {
+                                            processed_key
+                                            for processed_key, processed_observation
+                                            in self._processed_observations.items()
+                                            if (
+                                                processed_observation.instruction.strip()
+                                                == failed_instruction
+                                            )
+                                        }
+                                        for retry_key in retry_keys:
+                                            self._processed.discard(retry_key)
+                                            self._processed_observations.pop(
+                                                retry_key,
+                                                None,
+                                            )
+
 
                     proposal_data = feedback_result.get("proposal")
 
