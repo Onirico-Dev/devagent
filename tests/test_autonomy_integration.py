@@ -1963,3 +1963,17 @@ def test_real_autonomy_retry_instruction_persists_across_worker_restart(
     assert second_restart_cycle[0].status == "pending"
     assert restarted_gateway.created[-1] == original_instruction
     assert original_instruction not in restarted_worker._retry_instructions
+
+    final_gateway = RetryGateway()
+    final_worker = Worker(
+        final_gateway,
+        Observer(store=ObservationStore(observation_path)),
+        store=WorkerStateStore(worker_path),
+        feedback_handler=FeedbackHandler(),
+    )
+
+    final_cycle = final_worker.run_once()
+
+    assert final_cycle == []
+    assert final_gateway.created == []
+    assert original_instruction not in final_worker._retry_instructions
