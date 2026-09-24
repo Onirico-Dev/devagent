@@ -234,6 +234,7 @@ class Worker:
     def process_observation(
         self,
         observation: Observation,
+        allow_retry: bool = False,
     ) -> Proposal:
         if not isinstance(observation, Observation):
             raise ValueError("Observação inválida.")
@@ -247,7 +248,7 @@ class Worker:
 
         key = self._observation_key(observation)
 
-        if key in self._processed:
+        if key in self._processed and not allow_retry:
             raise ValueError("Observação já processada.")
 
         if self.store is None:
@@ -262,6 +263,20 @@ class Worker:
         def atomic_process(current: dict[str, Any]) -> dict[str, Any]:
             processed = list(current.get("processed", []))
             processed_ids = set(current.get("processed_ids", []))
+
+            if allow_retry:
+                processed = [
+                    item
+                    for item in processed
+                    if not (
+                        isinstance(item, dict)
+                        and item.get("instruction") == instruction
+                        and self._metadata_key(
+                            item.get("metadata", {})
+                        )
+                        == self._metadata_key(observation.metadata)
+                    )
+                ]
 
             existing_keys = {
                 (
@@ -551,7 +566,10 @@ class Worker:
                     continue
 
                 proposals.append(
-                    self.process_observation(observation)
+                    self.process_observation(
+                        observation,
+                        allow_retry=retry_allowed,
+                    )
                 )
 
                 if retry_allowed:

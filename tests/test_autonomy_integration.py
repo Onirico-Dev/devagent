@@ -1866,3 +1866,100 @@ def test_real_transaction_feedback_second_failure_creates_second_correction(tmp_
     assert worker.errors == []
 
     assert len(worker.errors) == 0
+def test_real_autonomy_retry_instruction_persists_across_worker_restart(
+    tmp_path,
+):
+    from core.execution_feedback import ExecutionFeedback
+    from core.feedback_handler import FeedbackHandler
+
+    init_git(tmp_path)
+
+    observation_path = tmp_path / "observations.json"
+    worker_path = tmp_path / "worker.json"
+
+    observation_store = ObservationStore(observation_path)
+    worker_state_store = WorkerStateStore(worker_path)
+
+    original_instruction = "criar arquivo após falha"
+
+    class RetryGateway:
+        def __init__(self):
+            self.created = []
+
+        def create_task(self, instruction):
+            self.created.append(instruction)
+            return {
+                "approval_id": f"approval-{len(self.created)}",
+                "status": "pending",
+                "plan": {
+                    "instruction": instruction,
+                    "objective": instruction,
+                    "changes": [],
+                    "tests": [],
+                    "risks": [],
+                },
+            }
+
+    observation_store.append(
+        Observation(
+            instruction=original_instruction,
+            metadata={"source": "retry-persistence-e2e"},
+        )
+    )
+
+    first_gateway = RetryGateway()
+    first_worker = Worker(
+        first_gateway,
+        Observer(store=observation_store),
+        store=worker_state_store,
+        feedback_handler=FeedbackHandler(),
+    )
+
+    first = first_worker.run_once()
+
+    assert len(first) == 1
+    assert first[0].status == "pending"
+    assert first_gateway.created == [original_instruction]
+
+    failed_result = {
+        "approval_id": first[0].approval_id,
+        "status": "failed",
+        "transaction_id": "tx-retry-persistence-e2e",
+        "tests": {
+            "success": False,
+            "error": "TEST_FAILURE",
+        },
+        "repair_attempts": 2,
+        "error": "TEST_FAILURE",
+        "metadata": {
+            "instruction": original_instruction,
+        },
+    }
+
+    feedback = ExecutionFeedback().build(failed_result)
+
+    assert feedback is not None
+    observation_store.append(feedback)
+
+    restarted_gateway = RetryGateway()
+    restarted_worker = Worker(
+        restarted_gateway,
+        Observer(store=ObservationStore(observation_path)),
+        store=WorkerStateStore(worker_path),
+        feedback_handler=FeedbackHandler(),
+    )
+
+    first_restart_cycle = restarted_worker.run_once()
+
+    assert len(first_restart_cycle) == 1
+    assert first_restart_cycle[0].autonomy_decision == "require_human"
+    assert original_instruction in restarted_worker._retry_instructions
+    assert len(restarted_gateway.created) == 1
+    assert "Analise a transação tx-retry-persistence-e2e" in restarted_gateway.created[0]
+
+    second_restart_cycle = restarted_worker.run_once()
+
+    assert len(second_restart_cycle) == 1
+    assert second_restart_cycle[0].status == "pending"
+    assert restarted_gateway.created[-1] == original_instruction
+    assert original_instruction not in restarted_worker._retry_instructions
