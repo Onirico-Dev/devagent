@@ -164,6 +164,7 @@ Regras:
             error,
             test_output,
             diagnostic=diagnostic,
+            failure_type=failure_type,
         )
 
         response = self.ai.generate(prompt)

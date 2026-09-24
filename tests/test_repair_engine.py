@@ -382,3 +382,28 @@ def test_mock_adapter_repairs_natural_language_pytest_request():
         "def test_smoke():\n"
         "    assert 2 + 2 == 4"
     )
+
+
+def test_repair_engine_sends_failure_type_to_ai():
+    response = json.dumps({
+        "diagnosis": "Erro de sintaxe",
+        "correction": "Corrigir sintaxe",
+        "risk": "baixo",
+        "action": "modify",
+        "path": "app.py",
+        "content": "print('ok')",
+    })
+
+    ai = FakeAI(response)
+    engine = RepairEngine(ai)
+
+    engine.analyze_failure(
+        instruction="corrigir app.py",
+        error="SyntaxError",
+        test_output="falhou",
+        failure_type="syntax_error",
+    )
+
+    assert len(ai.prompts) == 1
+    assert "Tipo de falha classificado:" in ai.prompts[0]
+    assert "syntax_error" in ai.prompts[0]

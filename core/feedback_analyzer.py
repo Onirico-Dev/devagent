@@ -60,6 +60,30 @@ class FeedbackAnalyzer:
             "evidence": evidence,
         }
 
+    def classify_test_result(
+        self,
+        test_result: dict[str, Any],
+        *,
+        error: str | None = None,
+        repair_attempts: int = 0,
+    ) -> str:
+        """Classifica uma falha de teste antes do encerramento da transação."""
+        if not isinstance(test_result, dict):
+            return "unknown"
+
+        evidence: dict[str, Any] = {
+            "tests": test_result,
+        }
+
+        if error:
+            evidence["error"] = error
+
+        return self._classify_failure(
+            status="failed",
+            repair_attempts=repair_attempts,
+            evidence=evidence,
+        )
+
     def _classify_failure(
         self,
         *,

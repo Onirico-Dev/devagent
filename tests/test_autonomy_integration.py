@@ -797,8 +797,12 @@ class RepairAgent(CreateAgent):
 
 
 class RepairAdapter:
+    prompts = []
+
     def generate(self, prompt):
         import json
+
+        self.prompts.append(prompt)
 
         return json.dumps(
             {
@@ -839,7 +843,8 @@ def test_real_autonomy_cycle_repairs_failed_test_and_commits(tmp_path):
         root=tmp_path,
     )
 
-    gateway.repair_engine.ai = RepairAdapter()
+    repair_adapter = RepairAdapter()
+    gateway.repair_engine.ai = repair_adapter
 
     worker = Worker(
         gateway,
@@ -859,6 +864,10 @@ def test_real_autonomy_cycle_repairs_failed_test_and_commits(tmp_path):
     assert len(result.proposals) == 1
     assert result.proposals[0].autonomy_decision == "auto_approve"
     assert result.metadata["auto_approved_count"] == 1
+
+    assert len(repair_adapter.prompts) == 1
+    assert "Tipo de falha classificado:" in repair_adapter.prompts[0]
+    assert "syntax_error" in repair_adapter.prompts[0]
 
     target = tmp_path / "autonomous_smoke.py"
     assert target.read_text(encoding="utf-8") == "VALUE = 42\n"

@@ -10,6 +10,7 @@ from core.engine.repair_executor import (
 )
 from core.schemas.models import TransactionStatus
 from core.memory.task_history import TaskHistoryStatus
+from core.feedback_analyzer import FeedbackAnalyzer
 
 
 class RepairFlow:
@@ -26,6 +27,7 @@ class RepairFlow:
         self.repair_executor = repair_executor
         self.repair_controller = repair_controller
         self.max_attempts = max_attempts
+        self.feedback_analyzer = FeedbackAnalyzer()
 
     def restore_state(self, transaction):
         state = RepairCycleState.restore(transaction)
@@ -274,11 +276,17 @@ class RepairFlow:
                 },
             }
 
+        failure_type = self.feedback_analyzer.classify_test_result(
+            test_result,
+            repair_attempts=repair_state.attempts,
+        )
+
         diagnosis, terminal_result = self._prepare_repair_attempt(
             instruction=instruction,
             transaction=transaction,
             test_result=test_result,
             repair_state=repair_state,
+            failure_type=failure_type,
         )
 
         if terminal_result is not None:
