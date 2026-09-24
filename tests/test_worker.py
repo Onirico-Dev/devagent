@@ -1375,3 +1375,73 @@ def test_worker_does_not_retry_when_repair_cycle_is_exhausted():
     assert len(proposals) == 1
     assert proposals[0].status == "pending"
     assert instruction not in worker._retry_instructions
+
+def test_worker_modify_existing_file_preserves_exhausted_retry_state():
+    class Gateway:
+        def __init__(self):
+            self.instructions = []
+
+        def create_task(self, instruction):
+            self.instructions.append(instruction)
+            return {
+                "approval_id": f"approval-{len(self.instructions)}",
+                "status": "pending",
+                "plan": {
+                    "objective": instruction,
+                    "changes": [],
+                    "tests": [],
+                    "risks": [],
+                },
+            }
+
+        def list_pending(self):
+            return []
+
+    class FeedbackHandler:
+        def handle(self, observation):
+            return {
+                "handled": True,
+                "analysis": {
+                    "transaction_id": "tx-exhausted",
+                    "status": "rolled_back",
+                    "action_required": True,
+                    "failure_type": "syntax_error",
+                    "repair_attempts": 2,
+                    "evidence": {
+                        "transaction_metadata": {
+                            "instruction": instruction,
+                            "repair_cycle": {
+                                "status": "repair_failed",
+                                "attempts": 2,
+                                "max_attempts": 2,
+                                "remaining": 0,
+                            },
+                        },
+                    },
+                },
+                "proposal": {
+                    "instruction": "Analise a transação tx-exhausted, que terminou com status 'rolled_back', identifique a causa da falha e proponha uma correção segura.",
+                },
+            }
+
+    instruction = "crie arquivo exhausted_smoke.py com conteúdo inválido"
+    feedback = Observation(
+        instruction="resultado da transação tx-exhausted",
+        metadata={
+            "source": "transaction_result",
+            "transaction_id": "tx-exhausted",
+            "status": "rolled_back",
+        },
+    )
+
+    worker = Worker(
+        Gateway(),
+        Observer(observations=[feedback]),
+        feedback_handler=FeedbackHandler(),
+    )
+
+    proposals = worker.run_once()
+
+    assert len(proposals) == 1
+    assert proposals[0].status == "pending"
+    assert instruction not in worker._retry_instructions
