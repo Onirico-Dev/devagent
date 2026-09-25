@@ -415,6 +415,58 @@ def test_mock_feedback_corrects_syntax_error_from_transaction_metadata():
     assert change["content"] == "def broken():\n    pass\n"
 
 
+def test_mock_feedback_syntax_error_preserves_valid_prefix():
+    import ast
+    import json
+
+    feedback_context = {
+        "transaction_id": "tx-feedback-invalid-suffix",
+        "status": "rolled_back",
+        "failure_type": "syntax_error",
+        "repair_attempts": 2,
+        "evidence": {
+            "error": "SyntaxError: invalid syntax",
+        },
+        "transaction_metadata": {
+            "changes": [
+                {
+                    "change_type": "modify",
+                    "path": "modify_existing_smoke.py",
+                    "content": (
+                        "def existente(): return 'ORIGINAL'\n"
+                        "def nova(): return 'NOVO'\n\n"
+                        "def multiplicar(a, b):\n"
+                        "    return a * b\n\n"
+                        "def somar(a, b):\n"
+                        "    return a + b\n"
+                        "uma alteração inválida chamada isto não é código Python\n"
+                    ),
+                    "reason": "falha",
+                }
+            ]
+        },
+    }
+
+    response = MockAdapter()._generate_feedback_response(
+        "Analise a transação tx-feedback-invalid-suffix",
+        "",
+        feedback_context,
+    )
+
+    data = json.loads(response)
+    content = data["changes"][0]["content"]
+
+    ast.parse(content)
+
+    assert "uma alteração inválida chamada isto não é código Python" not in content
+    assert "def existente(): return 'ORIGINAL'" in content
+    assert "def nova(): return 'NOVO'" in content
+    assert "def multiplicar(a, b):" in content
+    assert "return a * b" in content
+    assert "def somar(a, b):" in content
+    assert "return a + b" in content
+
+
 def test_mock_extract_create_content_supports_com_o_conteudo():
     instruction = 'crie um arquivo cli_smoke.py com o conteúdo print("CLI OK")'
 
