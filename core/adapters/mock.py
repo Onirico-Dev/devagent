@@ -234,6 +234,24 @@ class MockAdapter(AIAdapter):
                     and normalized_content.strip() == "def broken(:"
                 ):
                     normalized_content = "def broken():\n    pass\n"
+                elif failure_type == "syntax_error":
+                    import ast
+
+                    lines = normalized_content.splitlines()
+
+                    for _ in range(len(lines)):
+                        candidate = "\n".join(lines) + "\n"
+                        try:
+                            ast.parse(candidate)
+                            normalized_content = candidate
+                            break
+                        except SyntaxError as error:
+                            line_number = error.lineno
+                            if not line_number or line_number > len(lines):
+                                break
+                            del lines[line_number - 1]
+                    else:
+                        normalized_content = "\n".join(lines) + "\n"
 
                 change["content"] = normalized_content
 
