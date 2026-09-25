@@ -1116,3 +1116,64 @@ def test_supervised_loop_human_approval_records_execution_feedback(tmp_path):
     assert observations[0].metadata["source"] == "transaction_result"
     assert observations[0].metadata["transaction_id"] == "tx-human-approval"
     assert observations[0].metadata["approval_id"] == "approval-human"
+
+
+def test_supervised_loop_rejects_invalid_execution_feedback():
+    class Worker:
+        def run_once(self):
+            return []
+
+    class Gateway:
+        def list_tasks(self):
+            return []
+
+    class InvalidExecutionFeedback:
+        def build(self, result):
+            return {"invalid": True}
+
+    class Observer:
+        def add(self, observation):
+            raise AssertionError("Observer não deveria receber feedback inválido.")
+
+    loop = SupervisedLoop(
+        worker=Worker(),
+        gateway=Gateway(),
+        observer=Observer(),
+    )
+    loop.execution_feedback = InvalidExecutionFeedback()
+
+    with pytest.raises(
+        ValueError,
+        match="Feedback de execução inválido.",
+    ):
+        loop._record_execution_feedback(
+            {
+                "status": "failed",
+                "transaction_id": "tx-invalid-feedback",
+            }
+        )
+
+
+@pytest.mark.parametrize("approval_id", ["", "   ", None])
+def test_supervised_loop_rejects_invalid_approval_id(approval_id):
+    class Worker:
+        def run_once(self):
+            return []
+
+    class Gateway:
+        def list_tasks(self):
+            return []
+
+        def approve(self, approval_id):
+            raise AssertionError("Gateway não deveria receber ID inválido.")
+
+    loop = SupervisedLoop(
+        worker=Worker(),
+        gateway=Gateway(),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="ID de aprovação inválido.",
+    ):
+        loop.approve(approval_id)

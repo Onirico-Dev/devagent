@@ -128,3 +128,16 @@ def test_pipeline_feedback_generates_corrected_content(tmp_path):
     assert plan.changes[0].change_type.value == "create"
     assert plan.changes[0].content != "def broken(:\\n"
     assert "SyntaxError" in plan.changes[0].reason
+
+
+def test_execution_feedback_rejects_invalid_transaction_metadata():
+    result = {
+        "status": "failed",
+        "transaction_id": "tx-invalid-metadata",
+        "metadata": "metadata-invalida",
+    }
+
+    import pytest
+
+    with pytest.raises(ValueError, match="Metadata da transação inválida"):
+        ExecutionFeedback().build(result)

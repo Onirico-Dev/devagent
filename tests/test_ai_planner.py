@@ -518,6 +518,25 @@ def test_ai_planner_rejects_invalid_test_filename():
     ):
         AIPlanner(FixedAdapter()).create_plan("teste")
 
+
+def test_ai_planner_rejects_test_without_python_extension():
+    response = {
+        "objective": "teste",
+        "changes": [],
+        "tests": ["tests/version.txt"],
+        "risks": [],
+    }
+
+    class FixedAdapter:
+        def generate(self, prompt):
+            return json.dumps(response)
+
+    with pytest.raises(
+        ValueError,
+        match="Teste inválido",
+    ):
+        AIPlanner(FixedAdapter()).create_plan("teste")
+
 def test_ai_planner_rejects_change_with_missing_type():
     class FixedAdapter:
         def generate(self, prompt):
@@ -576,3 +595,62 @@ def test_ai_planner_accepts_optional_reason_when_omitted():
     plan = AIPlanner(FixedAdapter()).create_plan("criar arquivo.py")
 
     assert plan.changes[0].reason == ""
+
+def test_ai_planner_extracts_modify_target_and_strips_punctuation():
+    assert (
+        AIPlanner._extract_modify_target("modifique o arquivo app.py;")
+        == "app.py"
+    )
+
+
+def test_ai_planner_preserves_target_file_from_large_context():
+    planner = AIPlanner(object())
+
+    target = "app.py"
+    context = (
+        "=== ARQUIVO: app.py ===\n"
+        + "A" * AIPlanner.MAX_CONTEXT_CHARS
+        + "\n=== ARQUIVO: outro.py ===\n"
+        + "conteudo-do-outro-arquivo"
+    )
+
+    result = planner._preserve_modify_target_context(
+        "modifique o arquivo app.py",
+        context,
+    )
+
+    assert "=== ARQUIVO ALVO DO MODIFY: app.py ===" in result
+    assert "=== ARQUIVO: app.py ===" in result
+    assert "=== ARQUIVO: outro.py ===" not in result
+    assert "conteudo-do-outro-arquivo" not in result
+
+
+def test_ai_planner_preserve_modify_context_returns_original_small_context():
+    planner = AIPlanner(object())
+
+    context = "contexto pequeno"
+
+    assert (
+        planner._preserve_modify_target_context(
+            "crie arquivo.py",
+            context,
+        )
+        == context
+    )
+
+
+def test_ai_planner_rejects_invalid_feedback_context():
+    class Adapter:
+        def generate(self, prompt):
+            raise AssertionError("O adapter não deveria ser chamado.")
+
+    planner = AIPlanner(Adapter())
+
+    with pytest.raises(
+        ValueError,
+        match="Contexto de feedback inválido",
+    ):
+        planner.create_plan(
+            "apenas analisar",
+            feedback_context="contexto-invalido",
+        )

@@ -207,3 +207,20 @@ def test_unknown_failure_is_classified():
     )
 
     assert result["failure_type"] == "unknown"
+
+
+def test_classify_test_result_returns_unknown_for_non_dict():
+    analyzer = FeedbackAnalyzer()
+
+    assert analyzer.classify_test_result("resultado-invalido") == "unknown"
+
+
+def test_classify_test_result_includes_error_evidence():
+    analyzer = FeedbackAnalyzer()
+
+    result = analyzer.classify_test_result(
+        {"passed": False},
+        error="AssertionError",
+    )
+
+    assert result == "execution_error"

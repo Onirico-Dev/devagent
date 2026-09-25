@@ -1092,3 +1092,47 @@ def test_ask_ai_delegates_to_adapter():
 
     assert result == "resposta"
     assert captured["prompt"] == "teste"
+
+def test_pipeline_rejects_invalid_feedback_context():
+    pipeline = DevAgentPipeline(".")
+    with pytest.raises(ValueError, match="Contexto de feedback inválido"):
+        pipeline.process(
+            "Crie teste.py arquivo de teste",
+            feedback_context="contexto-invalido",
+        )
+
+
+def test_pipeline_ignores_non_dict_transaction_change():
+    pipeline = DevAgentPipeline(".")
+    plan = pipeline.process(
+        "Crie teste.py arquivo de teste",
+        feedback_context={
+            "transaction_metadata": {
+                "changes": [
+                    "alteração-inválida",
+                ],
+            },
+        },
+    )
+    assert plan.objective != ""
+    assert len(plan.changes) == 1
+
+def test_pipeline_collects_relevant_feedback_paths(tmp_path):
+    (tmp_path / "app.py").write_text("print('original')")
+
+    pipeline = DevAgentPipeline(tmp_path)
+
+    plan = pipeline.process(
+        "Modifique app.py ajuste o arquivo",
+        feedback_context={
+            "transaction_metadata": {
+                "changes": [
+                    {"path": "novo.py"},
+                    {"path": "app.py"},
+                ],
+            },
+        },
+    )
+
+    assert plan.objective != ""
+    assert len(plan.changes) == 1

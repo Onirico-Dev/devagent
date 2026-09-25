@@ -735,6 +735,222 @@ def test_process_observation_store_atomic_process_detects_existing_key(
         worker.process_observation(observation)
 
 
+def test_worker_create_feedback_task_signature_introspection_failure(monkeypatch):
+    import inspect
+    from core.worker import Worker
+
+    class Gateway:
+        def create_task(self, instruction):
+            return {
+                "approval_id": "approval-signature-fallback",
+                "status": "pending",
+                "plan": {},
+            }
+
+    original = inspect.signature
+
+    def broken_signature(_):
+        raise TypeError("signature indisponível")
+
+    monkeypatch.setattr(inspect, "signature", broken_signature)
+
+    worker = Worker(Gateway(), Observer([]))
+
+    result = worker._create_feedback_task("corrigir falha", {"transaction_id": "tx-1"})
+
+    assert result["approval_id"] == "approval-signature-fallback"
+
+    monkeypatch.setattr(inspect, "signature", original)
+
+
+def test_worker_rejects_invalid_feedback_proposal():
+    class Gateway:
+        def create_task(self, instruction):
+            raise AssertionError("não deveria criar tarefa")
+
+    class FeedbackHandler:
+        def handle(self, observation):
+            return {
+                "handled": True,
+                "proposal": "proposta inválida",
+            }
+
+    observation = Observation(
+        instruction="resultado",
+        metadata={
+            "source": "transaction_result",
+            "transaction_id": "tx-invalid-proposal",
+            "status": "failed",
+        },
+    )
+
+    worker = Worker(
+        Gateway(),
+        Observer([observation]),
+        feedback_handler=FeedbackHandler(),
+    )
+
+    worker.run_once()
+
+    assert len(worker.errors) == 1
+    assert "Proposta de feedback inválida." in worker.errors[0]["error"]
+
+
+def test_worker_rejects_feedback_proposal_without_instruction():
+    class Gateway:
+        def create_task(self, instruction):
+            raise AssertionError("não deveria criar tarefa")
+
+    class FeedbackHandler:
+        def handle(self, observation):
+            return {
+                "handled": True,
+                "proposal": {},
+            }
+
+    observation = Observation(
+        instruction="resultado",
+        metadata={
+            "source": "transaction_result",
+            "transaction_id": "tx-missing-instruction",
+            "status": "failed",
+        },
+    )
+
+    worker = Worker(
+        Gateway(),
+        Observer([observation]),
+        feedback_handler=FeedbackHandler(),
+    )
+
+    worker.run_once()
+
+    assert len(worker.errors) == 1
+    assert "Proposta de feedback sem instrução." in worker.errors[0]["error"]
+
+
+
+@pytest.mark.parametrize(
+    ("state", "message"),
+    [
+        (None, "Estado do Worker inválido."),
+        ({"processed": {}}, "Estado de observações processadas inválido."),
+        ({"processed": [], "processed_ids": {}}, "Estado de IDs processados inválido."),
+        (
+            {
+                "processed": [],
+                "processed_ids": [],
+                "retry_instructions": "inválido",
+            },
+            "Estado de instruções de retry inválido.",
+        ),
+        (
+            {
+                "processed": ["inválido"],
+                "processed_ids": [],
+            },
+            "Registro de estado inválido.",
+        ),
+        (
+            {
+                "processed": [{"instruction": "", "metadata": {}}],
+                "processed_ids": [],
+            },
+            "Instrução processada inválida.",
+        ),
+        (
+            {
+                "processed": [{"instruction": "ok", "metadata": []}],
+                "processed_ids": [],
+            },
+            "Metadados processados inválidos.",
+        ),
+        (
+            {
+                "processed": [],
+                "processed_ids": [123],
+            },
+            "ID processado inválido.",
+        ),
+    ],
+)
+
+def test_worker_restore_state_rejects_invalid_state(state, message):
+    class Gateway:
+        pass
+
+    worker = Worker(Gateway(), Observer([]))
+
+    with pytest.raises(ValueError, match=message):
+        worker.restore_state(state)
+
+
+@pytest.mark.parametrize(
+    "gateway",
+    [None],
+)
+def test_worker_rejects_invalid_gateway(gateway):
+    with pytest.raises(ValueError, match="Gateway inválido."):
+        Worker(gateway, Observer([]))
+
+
+def test_worker_rejects_invalid_observer():
+    with pytest.raises(ValueError, match="Observer inválido."):
+        Worker(object(), object())
+
+
+def test_worker_rejects_invalid_store():
+    with pytest.raises(ValueError, match="Store do Worker inválido."):
+        Worker(object(), Observer([]), store=object())
+
+
+@pytest.mark.parametrize(
+    "observation",
+    [None, "observação inválida", {}],
+)
+def test_worker_rejects_invalid_observation(observation):
+    worker = Worker(object(), Observer([]))
+
+    with pytest.raises(ValueError, match="Observação inválida."):
+        worker.process_observation(observation)
+
+
+def test_worker_rejects_empty_observation_instruction():
+    worker = Worker(object(), Observer([]))
+
+    observation = Observation(
+        instruction="   ",
+        metadata={},
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="A instrução da observação não pode ser vazia.",
+    ):
+        worker.process_observation(observation)
+
+def test_worker_rejects_invalid_retry_state(tmp_path):
+    from core.worker_state_store import WorkerStateStore
+
+    store = WorkerStateStore(tmp_path / "worker.json")
+
+    store.save({
+        "processed": [],
+        "processed_ids": [],
+        "retry_instructions": [123],
+    })
+
+    with pytest.raises(
+        ValueError,
+        match="Estado de instruções de retry inválido.",
+    ):
+        Worker(
+            object(),
+            Observer([]),
+            store=store,
+        )
+
+
 def test_process_observation_detects_shared_state_added_after_worker_load(
     tmp_path,
 ):
@@ -1445,3 +1661,52 @@ def test_worker_modify_existing_file_preserves_exhausted_retry_state():
     assert len(proposals) == 1
     assert proposals[0].status == "pending"
     assert instruction not in worker._retry_instructions
+
+def test_worker_allow_retry_removes_previous_processed_observation(tmp_path):
+    from core.observation import Observation
+    from core.worker_state_store import WorkerStateStore
+
+    class Gateway:
+        def create_task(self, instruction):
+            return {
+                "approval_id": "approval-retry",
+                "status": "pending",
+                "plan": {
+                    "objective": instruction,
+                    "changes": [],
+                    "tests": [],
+                    "risks": [],
+                },
+            }
+
+    instruction = "reprocessar após falha"
+
+    observation = Observation(
+        instruction=instruction,
+        metadata={"source": "transaction_result", "transaction_id": "tx-retry"},
+    )
+
+    worker = Worker(
+        Gateway(),
+        Observer([observation]),
+        store=WorkerStateStore(
+            tmp_path / "worker.json"
+        ),
+    )
+
+    worker.process_observation(observation)
+
+    assert worker._observation_key(observation) in worker._processed
+
+    retry_observation = Observation(
+        instruction=instruction,
+        metadata={"source": "transaction_result", "transaction_id": "tx-retry"},
+    )
+
+    proposal = worker.process_observation(
+        retry_observation,
+        allow_retry=True,
+    )
+
+    assert proposal.status == "pending"
+    assert proposal.approval_id == "approval-retry"

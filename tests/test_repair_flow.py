@@ -886,3 +886,43 @@ def test_run_marks_repair_none_when_limit_reached_without_repair_dict():
     assert result["tests"]["success"] is False
     assert result["repair"] is None
     assert result["repair_attempts"] == state.max_attempts
+
+def test_prepare_repair_attempt_passes_failure_type_when_supported():
+    flow, _ = make_flow()
+    transaction = make_transaction()
+    state = FakeState()
+    captured = {}
+
+    def analyze_failure(
+        instruction,
+        error,
+        test_output,
+        failure_type=None,
+    ):
+        captured["failure_type"] = failure_type
+        return {
+            "action": "none",
+            "risk": "baixo",
+            "path": "",
+            "content": "",
+            "diagnosis": "sem reparo",
+            "correction": "",
+        }
+
+    flow.repair_engine.analyze_failure = analyze_failure
+
+    diagnosis, result = flow._prepare_repair_attempt(
+        instruction="corrigir",
+        transaction=transaction,
+        test_result={
+            "success": False,
+            "stderr": "erro",
+            "stdout": "falha",
+        },
+        repair_state=state,
+        failure_type="syntax_error",
+    )
+
+    assert captured["failure_type"] == "syntax_error"
+    assert diagnosis["action"] == "none"
+    assert result["status"] == RepairCycleStatus.NO_REPAIR.value

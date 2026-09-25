@@ -135,3 +135,35 @@ def test_missing_failure_type_defaults_to_unknown():
     )
 
     assert result["failure_type"] == "unknown"
+
+
+def test_feedback_proposal_builder_rejects_invalid_failure_type():
+    analysis = {
+        "transaction_id": "tx-invalid-failure-type",
+        "status": "failed",
+        "action_required": True,
+        "failure_type": "",
+        "evidence": {},
+    }
+
+    import pytest
+
+    with pytest.raises(ValueError, match="failure_type inválido"):
+        FeedbackProposalBuilder().build(analysis)
+
+
+def test_feedback_proposal_builder_rejects_invalid_transaction_metadata():
+    analysis = {
+        "transaction_id": "tx-invalid-metadata",
+        "status": "failed",
+        "action_required": True,
+        "failure_type": "execution_error",
+        "evidence": {
+            "transaction_metadata": "metadata-invalida",
+        },
+    }
+
+    import pytest
+
+    with pytest.raises(ValueError, match="Metadata da transação inválida"):
+        FeedbackProposalBuilder().build(analysis)

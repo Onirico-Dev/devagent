@@ -358,3 +358,7 @@ def test_create_or_reuse_loads_history_before_listing_pending(creator):
     )
 
     creator.history._load.assert_called_once_with()
+
+def test_plans_equal_rejects_non_dict_plans():
+    assert TaskCreator._plans_equal(None, {}) is False
+    assert TaskCreator._plans_equal({}, None) is False

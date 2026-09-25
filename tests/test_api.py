@@ -3276,6 +3276,17 @@ def test_gateway_history_update_reraises_unexpected_keyerror(isolated_project):
         gateway._history_update("task-id", status="failed")
 
 
+def test_gateway_create_task_rejects_invalid_context():
+    from core.gateway import DevAgentGateway
+    from core.adapters.mock import MockAdapter
+    import pytest
+
+    gateway = DevAgentGateway(agent=MockAdapter())
+
+    with pytest.raises(ValueError, match="Contexto da tarefa inválido"):
+        gateway.create_task("teste", context="contexto-invalido")
+
+
 def test_gateway_create_task_rejects_invalid_instruction(isolated_project):
     from core.gateway import DevAgentGateway
 
