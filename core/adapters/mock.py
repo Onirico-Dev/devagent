@@ -1,4 +1,5 @@
 import json
+import ast
 import re
 
 from core.adapters.base import AIAdapter
@@ -604,6 +605,31 @@ class MockAdapter(AIAdapter):
                 f"def {function_name}({parameters}):\n"
                 f'    return "{return_value}"'
             )
+        else:
+            function_expression_match = re.match(
+                r"adicionando\s+(?:uma\s+)?função\s+"
+                r"([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*([^)]*)\s*\)"
+                r"\s+que\s+retorne\s+(.+?)\s*$",
+                request,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+
+            if function_expression_match:
+                function_name = function_expression_match.group(1)
+                parameters = function_expression_match.group(2).strip()
+                return_expression = function_expression_match.group(3).strip()
+
+                candidate = (
+                    f"def {function_name}({parameters}):\n"
+                    f"    return {return_expression}\n"
+                )
+
+                try:
+                    ast.parse(candidate)
+                except SyntaxError:
+                    return None
+
+                generated_addition = candidate.rstrip()
 
         if generated_addition is not None:
             addition = generated_addition
@@ -783,6 +809,26 @@ class MockAdapter(AIAdapter):
             return (
                 "def test_smoke():\n"
                 "    assert 2 + 2 == 4"
+            )
+
+        natural_import_test_pattern = re.search(
+            r"um\s+teste\s+pytest\s+que\s+importe\s+"
+            r"([a-zA-Z_]\w*)\s+de\s+([a-zA-Z_]\w*)\s+"
+            r"e\s+verifique\s+que\s+"
+            r"\1\s*\(([^)]*)\)\s*==\s*(.+?)\s*$",
+            lower,
+        )
+
+        if natural_import_test_pattern:
+            function_name = natural_import_test_pattern.group(1)
+            module_name = natural_import_test_pattern.group(2)
+            arguments = natural_import_test_pattern.group(3).strip()
+            expected = natural_import_test_pattern.group(4).strip()
+
+            return (
+                f"def test_{function_name}():\n"
+                f"    from {module_name} import {function_name}\n"
+                f"    assert {function_name}({arguments}) == {expected}"
             )
 
         markers = (

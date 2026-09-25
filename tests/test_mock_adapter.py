@@ -129,6 +129,47 @@ def test_mock_modify_addition_uses_existing_file_context():
     )
 
 
+def test_mock_modify_function_expression_generates_valid_function():
+    adapter = MockAdapter()
+    instruction = (
+        "modifique modify_existing_smoke.py adicionando "
+        "uma função multiplicar(a, b) que retorne a * b"
+    )
+    context = (
+        "=== ARQUIVO: modify_existing_smoke.py ===\n"
+        "def existente(): return 'ORIGINAL'\n"
+        "def nova(): return 'NOVO'\n"
+        "\n=== ANÁLISE PYTHON ===\n"
+    )
+
+    result = adapter._build_modify_change(instruction, context)
+
+    assert result is not None
+    assert result["path"] == "modify_existing_smoke.py"
+    assert "def existente(): return 'ORIGINAL'" in result["content"]
+    assert "def nova(): return 'NOVO'" in result["content"]
+    assert "def multiplicar(a, b):" in result["content"]
+    assert "return a * b" in result["content"]
+
+
+def test_mock_modify_invalid_function_expression_does_not_overwrite_file():
+    adapter = MockAdapter()
+    instruction = (
+        "modifique modify_existing_smoke.py adicionando "
+        "uma função quebrada(a, b) que retorne isto não é Python válido"
+    )
+    context = (
+        "=== ARQUIVO: modify_existing_smoke.py ===\n"
+        "def existente(): return 'ORIGINAL'\n"
+        "def nova(): return 'NOVO'\n"
+        "\n=== ANÁLISE PYTHON ===\n"
+    )
+
+    result = adapter._build_modify_change(instruction, context)
+
+    assert result is None
+
+
 def test_mock_modify_addition_without_context_returns_none():
     adapter = MockAdapter()
     instruction = (
@@ -798,3 +839,26 @@ def test_feedback_response_repairs_syntax_error():
     assert changes[0]["path"] == "cli_recovery_smoke.py"
     assert changes[0]["content"] == "def broken():\n    pass\n"
     assert changes[0]["content"] != "def broken(:"
+
+
+def test_mock_create_natural_pytest_import_and_assert():
+    adapter = MockAdapter()
+
+    instruction = (
+        "crie o arquivo test_modify_existing_smoke.py com um teste pytest "
+        "que importe multiplicar de modify_existing_smoke e verifique que "
+        "multiplicar(3, 4) == 12"
+    )
+
+    change = adapter._build_create_change(instruction)
+
+    assert change == {
+        "type": "create",
+        "path": "test_modify_existing_smoke.py",
+        "content": (
+            "def test_multiplicar():\n"
+            "    from modify_existing_smoke import multiplicar\n"
+            "    assert multiplicar(3, 4) == 12"
+        ),
+        "reason": instruction,
+    }
