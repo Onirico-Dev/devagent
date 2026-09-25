@@ -514,6 +514,23 @@ def test_mock_extract_invalid_content_uses_default():
     )
 
 
+def test_mock_repair_invalid_function_definition_generates_valid_python():
+    adapter = MockAdapter()
+
+    result = json.loads(
+        adapter.generate(
+            "Você é o módulo de reparo automático do DevAgent.\n"
+            "Objetivo original:\n"
+            "crie o arquivo autonomy_repair_smoke.py com conteúdo def quebrada(:\n"
+            "Erro:\n"
+            "SyntaxError"
+        )
+    )
+
+    assert result["path"] == "autonomy_repair_smoke.py"
+    assert result["content"] == "def quebrada():\n    pass"
+
+
 def test_mock_generate_legacy_repair_request_route_returns_empty():
     adapter = MockAdapter()
 

@@ -60,6 +60,15 @@ class MockAdapter(AIAdapter):
         if not content:
             content = self._extract_invalid_content(instruction)
 
+        invalid_function_match = re.fullmatch(
+            r"def\s+([A-Za-z_]\w*)\s*\(\s*:\s*",
+            content.strip(),
+        )
+
+        if invalid_function_match:
+            name = invalid_function_match.group(1)
+            content = f"def {name}():\n    pass"
+
         # Corrige a forma natural de função sem dois-pontos antes do return.
         function_match = re.fullmatch(
             r"def\s+([A-Za-z_]\w*)\s*"
