@@ -617,7 +617,16 @@ class MockAdapter(AIAdapter):
                     addition = request[len(prefix):].strip()
                     break
 
-        if addition is not None:
+        if addition is None:
+            transformation_prefixes = (
+                "para ",
+                "adicionando ",
+                "adicione ",
+                "adicionar ",
+            )
+            if request.lower().startswith(transformation_prefixes):
+                return None
+        else:
             file_marker = f"=== ARQUIVO: {path} ===\n"
             if file_marker not in context:
                 return None
