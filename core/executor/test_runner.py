@@ -154,6 +154,7 @@ class TestRunner:
         if not (
             name.startswith("test_")
             or name.endswith("_test.py")
+            or Path(file).as_posix().startswith("test_")
         ):
             raise ValueError(
                 f"Teste inválido: {file}. "
@@ -251,6 +252,7 @@ class TestRunner:
             if (
                 Path(file).name.startswith("test_")
                 or Path(file).name.endswith("_test.py")
+                or Path(file).as_posix().startswith("test_")
             )
         ]
 

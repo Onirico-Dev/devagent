@@ -61,6 +61,77 @@ class MockAdapter(AIAdapter):
         if not content:
             content = self._extract_invalid_content(instruction)
 
+        # Falha semântica de pytest: usa a evidência do assert para
+        # corrigir funções simples que retornam uma constante.
+        #
+        # Exemplo:
+        #   def soma(a, b): return 4
+        #   assert 4 == 5
+        #
+        # Nesse caso, a implementação esperada pelo teste é:
+        #   return a + b
+        semantic_source = "\n".join(
+            [
+                instruction,
+                prompt,
+            ]
+        )
+
+        error_match = re.search(
+            r"assert\s+(-?\d+(?:\.\d+)?)\s*==\s*(-?\d+(?:\.\d+)?)",
+            semantic_source,
+        )
+
+        function_match_semantic = re.search(
+            r"def\s+([A-Za-z_]\w*)\s*"
+            r"\(([^)]*)\)\s*:\s*"
+            r"(?:return\s+)?"
+            r"(-?\d+(?:\.\d+)?)",
+            instruction,
+        )
+
+        if error_match and function_match_semantic:
+            actual, expected = error_match.groups()
+            name, args, returned = function_match_semantic.groups()
+
+            arg_names = [
+                item.strip().split("=", 1)[0].strip()
+                for item in args.split(",")
+                if item.strip()
+            ]
+
+            if (
+                returned == actual
+                and actual != expected
+                and len(arg_names) == 2
+                and all(item.isidentifier() for item in arg_names)
+            ):
+                left, right = arg_names
+
+                content = (
+                    f"def {name}({args}):\n"
+                    f"    return {left} + {right}"
+                )
+
+                return json.dumps(
+                    {
+                        "diagnosis": (
+                            f"A função {name} retorna a constante {actual}, "
+                            f"mas o teste exige {expected} para os argumentos "
+                            f"fornecidos."
+                        ),
+                        "correction": (
+                            f"Substituir o retorno constante por "
+                            f"{left} + {right}."
+                        ),
+                        "risk": "baixo",
+                        "action": "modify",
+                        "path": path,
+                        "content": content,
+                    },
+                    ensure_ascii=False,
+                )
+
         invalid_function_match = re.fullmatch(
             r"def\s+([A-Za-z_]\w*)\s*\(\s*:\s*",
             content.strip(),
@@ -377,7 +448,7 @@ class MockAdapter(AIAdapter):
         # Caso inline: arquivo contendo função + teste pytest correspondente.
         inline_match = re.search(
             r"crie\s+(?:o\s+|um\s+)?arquivo\s+"
-            r"([A-Za-z0-9_.-]+\.py)\s+contendo\s+"
+            r"([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*\.py)\s+contendo\s+"
             r"def\s+([A-Za-z_][A-Za-z0-9_]*)\s*"
             r"\(([^)]*)\)\s*:\s*return\s+(.+?)\s+"
             r"e\s+crie\s+um\s+teste\s+pytest\s+correspondente\s*$",

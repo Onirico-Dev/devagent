@@ -592,6 +592,28 @@ def test_mock_extract_invalid_content_uses_default():
     )
 
 
+def test_mock_repair_semantic_assertion_failure_repairs_constant_return():
+    adapter = MockAdapter()
+    prompt = (
+        "Você é o módulo de reparo automático do DevAgent.\\n"
+        "Objetivo original:\\n"
+        "crie o arquivo core/adapters/real_repair_probe.py "
+        "contendo def soma(a, b): return 4 e crie um teste pytest correspondente\\n"
+        "Erro:\\n"
+        "E       assert 4 == 5\\n"
+        "Saída dos testes:\\n"
+        "FAILED test_core/adapters/real_repair_probe.py::test_soma - assert 4 == 5"
+    )
+
+    result = json.loads(adapter._generate_repair_response(prompt))
+
+    assert result["action"] == "modify"
+    assert result["path"] == "core/adapters/real_repair_probe.py"
+    assert result["diagnosis"]
+    assert "constante 4" in result["diagnosis"]
+    assert result["content"] == "def soma(a, b):\n    return a + b"
+
+
 def test_mock_repair_invalid_function_definition_generates_valid_python():
     adapter = MockAdapter()
 

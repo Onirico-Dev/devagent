@@ -381,6 +381,7 @@ Regras:
         if not (
             name.startswith("test_")
             or name.endswith("_test.py")
+            or normalized.startswith("test_")
         ):
             raise ValueError(
                 f"Teste inválido: {test}. "

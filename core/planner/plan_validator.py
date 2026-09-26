@@ -45,6 +45,7 @@ class PlanValidator:
         if not (
             name.startswith("test_")
             or name.endswith("_test.py")
+            or relative_path.as_posix().startswith("test_")
         ):
             raise ValueError(
                 f"Teste inválido: {test}. "
