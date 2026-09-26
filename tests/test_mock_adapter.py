@@ -1077,12 +1077,8 @@ def test_mock_binary_operation_repair_rejects_ambiguous_candidates():
         "FAILED test_core/adapters/ambiguous_probe.py::test_calcular - assert -20 == 0"
     )
 
-    result = json.loads(adapter._generate_repair_response(prompt))
-
-    assert result["action"] == "modify"
-    assert result["path"] == "core/adapters/ambiguous_probe.py"
-    assert result["content"] == "def calcular(a, b):\n    return a + b\n"
-    assert "operação" not in result["diagnosis"].lower()
+    result = adapter._generate_repair_response(prompt)
+    assert result == ""
 
 def test_mock_binary_operation_repair_uses_explicit_large_operands():
     adapter = MockAdapter()
@@ -1104,3 +1100,53 @@ def test_mock_binary_operation_repair_uses_explicit_large_operands():
     assert result["action"] == "modify"
     assert result["path"] == "core/adapters/range_probe.py"
     assert result["content"] == "def multiplicar(a, b):\n    return a * b"
+
+def test_binary_repair_fallback_does_not_override_explicit_ambiguity():
+    def apply_operation(first, second, operation):
+        if operation == "+":
+            return first + second
+        if operation == "-":
+            return first - second
+        if operation == "*":
+            return first * second
+        if operation == "/":
+            return None if second == 0 else first / second
+        return None
+
+    operator = "+"
+    first = 0
+    second = -200
+    actual = apply_operation(first, second, operator)
+    expected = 0
+
+    explicit_candidates = {
+        candidate
+        for candidate in "+-*/"
+        if candidate != operator
+        and apply_operation(first, second, candidate) == expected
+    }
+
+    assert explicit_candidates == {"*", "/"}
+
+    fallback_candidates = set()
+
+    for fallback_first in range(-100, 101):
+        for fallback_second in range(-100, 101):
+            if apply_operation(fallback_first, fallback_second, operator) != actual:
+                continue
+
+            for candidate in "+-*/":
+                if candidate == operator:
+                    continue
+
+                if apply_operation(
+                    fallback_first,
+                    fallback_second,
+                    candidate,
+                ) == expected:
+                    fallback_candidates.add(candidate)
+
+    assert fallback_candidates == {"-"}
+
+    assert len(explicit_candidates) >= 2
+    assert len(fallback_candidates) == 1

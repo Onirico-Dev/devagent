@@ -210,6 +210,9 @@ class MockAdapter(AIAdapter):
                                 == explicit_expected
                             }
 
+                            if len(candidate_operators) >= 2:
+                                return ""
+
                             if len(candidate_operators) == 1:
                                 replacement = next(iter(candidate_operators))
                                 content = (
