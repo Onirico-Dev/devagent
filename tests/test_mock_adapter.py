@@ -538,6 +538,32 @@ def test_mock_extract_repair_path():
     )
 
 
+def test_function_pytest_generation_declares_generated_test_path():
+    import json
+
+    from core.adapters.mock import MockAdapter
+
+    instruction = (
+        "adicione uma função soma(a, b) no novo arquivo "
+        "core/adapters/mock_test_declaration.py, retorne 5, "
+        "e crie um teste pytest correspondente"
+    )
+
+    response = json.loads(MockAdapter().generate(instruction))
+
+    assert response["tests"] == [
+        "test_core/adapters/mock_test_declaration.py"
+    ]
+    assert response["changes"][1]["path"] == (
+        "test_core/adapters/mock_test_declaration.py"
+    )
+
+
+def test_mock_extract_repair_path_preserves_nested_relative_path():
+    instruction = "corrija o arquivo core/adapters/mock.py"
+    assert MockAdapter._extract_repair_path(instruction) == "core/adapters/mock.py"
+
+
 def test_mock_extract_repair_path_returns_empty_when_missing():
     assert MockAdapter._extract_repair_path("corrija o arquivo") == ""
 

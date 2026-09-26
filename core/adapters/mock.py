@@ -5,6 +5,7 @@ import re
 from core.adapters.base import AIAdapter
 
 
+from pathlib import Path
 class MockAdapter(AIAdapter):
     def generate(self, prompt: str) -> str:
         if not isinstance(prompt, str):
@@ -39,7 +40,7 @@ class MockAdapter(AIAdapter):
                 .strip()
             )
 
-        path = self._extract_repair_path(instruction)
+        path = MockAdapter._extract_repair_path(instruction)
 
         if not path:
             path = "reparo.py"
@@ -116,6 +117,11 @@ class MockAdapter(AIAdapter):
                 .split(context_marker, 1)[0]
                 .strip()
             )
+        else:
+            # MockAdapter também aceita instrução direta, sem o envelope
+            # "INSTRUÇÃO DO USUÁRIO:", usado pelos testes unitários e pelo
+            # caminho simplificado do adapter.
+            instruction = prompt.strip()
 
         if context_marker in prompt:
             context = prompt.split(context_marker, 1)[1]
@@ -156,11 +162,38 @@ class MockAdapter(AIAdapter):
             )
             changes = [change] if change is not None else []
 
+        tests = [
+            change["path"]
+            for change in changes
+            if (
+                isinstance(change, dict)
+                and isinstance(change.get("path"), str)
+                and change["path"].endswith(".py")
+                and (
+                    change["path"].startswith("test_")
+                    or Path(change["path"]).name.startswith("test_")
+                )
+            )
+        ]
+
+        # Testes gerados para módulos aninhados podem usar o prefixo
+        # "test_" no diretório raiz (ex.: test_core/...). Nesse caso,
+        # o caminho completo também representa um teste gerado.
+        for change in changes:
+            if (
+                isinstance(change, dict)
+                and isinstance(change.get("path"), str)
+                and change["path"].endswith(".py")
+                and change["path"].startswith("test_")
+                and change["path"] not in tests
+            ):
+                tests.append(change["path"])
+
         return json.dumps(
             {
                 "objective": objective,
                 "changes": changes,
-                "tests": [],
+                "tests": tests,
                 "risks": [],
             },
             ensure_ascii=False,
@@ -273,15 +306,19 @@ class MockAdapter(AIAdapter):
         )
 
     def _build_function_pytest_changes(self, instruction: str):
+        pattern = (
+            r"adicione\s+(?:uma\s+)?função\s+"
+            r"([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)"
+            r".*?(?:em\s+um\s+novo\s+|em\s+um\s+|no\s+novo\s+|no\s+|em\s+novo\s+|em\s+)?arquivo\s+"
+            r"([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*\.py)"
+            r".*?retorne\s+(.+?)"
+            r"\s*,?\s*e\s+crie\s+um\s+teste\s+pytest\s+correspondente"
+        )
+
         match = re.search(
-            r"""adicione\s+(?:uma\s+)?função\s+
-            ([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)
-            .*?(?:novo\s+)?arquivo\s+
-            ([A-Za-z0-9_.-]+\.py)
-            .*?retorne\s+(["'])(.*?)\4
-            .*?teste\s+pytest\s+correspondente""",
+            pattern,
             instruction.strip(),
-            flags=re.IGNORECASE | re.DOTALL | re.VERBOSE,
+            flags=re.IGNORECASE | re.DOTALL,
         )
 
         if not match:
@@ -290,7 +327,22 @@ class MockAdapter(AIAdapter):
         function_name = match.group(1)
         parameters = match.group(2).strip()
         module_path = match.group(3)
-        return_value = match.group(5)
+        return_expression = match.group(4).strip()
+
+        # Remove pontuação residual introduzida antes da cláusula "e crie".
+        return_expression = return_expression.rstrip(" ,.")
+
+        # O valor pode ser numérico, identificador ou string entre aspas.
+        if (
+            len(return_expression) >= 2
+            and return_expression[0] in {"'", '"'}
+            and return_expression[-1] == return_expression[0]
+        ):
+            normalized_return = return_expression
+        elif re.fullmatch(r"-?\d+(?:\.\d+)?", return_expression):
+            normalized_return = return_expression
+        else:
+            normalized_return = repr(return_expression)
 
         module_name = module_path.rsplit(".", 1)[0].replace("/", ".")
         test_path = f"test_{module_path}"
@@ -301,7 +353,7 @@ class MockAdapter(AIAdapter):
                 "path": module_path,
                 "content": (
                     f"def {function_name}({parameters}):\n"
-                    f'    return "{return_value}"\n'
+                    f"    return {normalized_return}\n"
                 ),
                 "reason": instruction,
             },
@@ -311,7 +363,7 @@ class MockAdapter(AIAdapter):
                 "content": (
                     f"from {module_name} import {function_name}\n\n"
                     f"def test_{function_name}():\n"
-                    f'    assert {function_name}() == "{return_value}"\n'
+                    f"    assert {function_name}() == {normalized_return}\n"
                 ),
                 "reason": instruction,
             },
@@ -880,18 +932,21 @@ class MockAdapter(AIAdapter):
         return ""
 
     @staticmethod
-    def _extract_repair_path(
-        instruction: str,
-    ) -> str:
-        match = re.search(
-            r"\b([A-Za-z0-9_.-]+\.py)\b",
-            instruction,
+    def _extract_repair_path(instruction: str) -> str:
+        patterns = (
+            r"(?:arquivo|ficheiro)\s+"
+            r"([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*\.py)\b",
+            r"\b([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*\.py)\b",
         )
 
-        if match:
-            return match.group(1)
+        for pattern in patterns:
+            match = re.search(pattern, instruction, re.IGNORECASE)
+            if match:
+                return match.group(1)
 
         return ""
+
+    @staticmethod
 
     @staticmethod
     def _extract_invalid_content(
