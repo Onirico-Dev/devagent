@@ -132,6 +132,78 @@ class MockAdapter(AIAdapter):
                     ensure_ascii=False,
                 )
 
+        # Falha semântica de pytest: operação binária incorreta.
+        # Exemplo:
+        #   def multiplicar(a, b): return a + b
+        #   assert 5 == 6
+        #
+        # A evidência do teste permite reconstruir os operandos:
+        #   a + b = 5
+        #   a * b = 6
+        # resultando em a=2 e b=3.
+        operation_match = re.search(
+            r"def\s+([A-Za-z_]\w*)\s*"
+            r"\(([^)]*)\)\s*:\s*"
+            r"return\s+([A-Za-z_]\w*)\s*([+\-*/])\s*([A-Za-z_]\w*)",
+            instruction,
+        )
+
+        if error_match and operation_match:
+            name, args, left, operator, right = operation_match.groups()
+            actual_value, expected_value = error_match.groups()
+
+            arg_names = [
+                item.strip().split("=", 1)[0].strip()
+                for item in args.split(",")
+                if item.strip()
+            ]
+
+            if (
+                len(arg_names) == 2
+                and left == arg_names[0]
+                and right == arg_names[1]
+                and operator == "+"
+                and actual_value != expected_value
+            ):
+                try:
+                    actual = float(actual_value)
+                    expected = float(expected_value)
+                except ValueError:
+                    actual = expected = None
+
+                if actual is not None and expected is not None:
+                    candidates = []
+                    for first in range(-100, 101):
+                        for second in range(-100, 101):
+                            if first + second == actual and first * second == expected:
+                                candidates.append((first, second))
+
+                    if candidates:
+                        content = (
+                            f"def {name}({args}):\n"
+                            f"    return {left} * {right}"
+                        )
+
+                        return json.dumps(
+                            {
+                                "diagnosis": (
+                                    f"A função {name} usa a operação +, "
+                                    f"mas o teste obteve {actual_value} "
+                                    f"e exige {expected_value}. "
+                                    f"A operação * explica o resultado esperado."
+                                ),
+                                "correction": (
+                                    f"Substituir a operação {left} + {right} "
+                                    f"por {left} * {right}."
+                                ),
+                                "risk": "baixo",
+                                "action": "modify",
+                                "path": path,
+                                "content": content,
+                            },
+                            ensure_ascii=False,
+                        )
+
         invalid_function_match = re.fullmatch(
             r"def\s+([A-Za-z_]\w*)\s*\(\s*:\s*",
             content.strip(),
@@ -451,7 +523,8 @@ class MockAdapter(AIAdapter):
             r"([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*\.py)\s+contendo\s+"
             r"def\s+([A-Za-z_][A-Za-z0-9_]*)\s*"
             r"\(([^)]*)\)\s*:\s*return\s+(.+?)\s+"
-            r"e\s+crie\s+um\s+teste\s+pytest\s+correspondente\s*$",
+            r"e\s+crie\s+um\s+teste\s+pytest\s+correspondente"
+            r"(?:\s+que\s+exija\s+que\s+.+?)?\s*$",
             instruction.strip(),
             flags=re.IGNORECASE | re.DOTALL,
         )
@@ -464,6 +537,21 @@ class MockAdapter(AIAdapter):
 
             module_name = module_path.rsplit(".", 1)[0].replace("/", ".")
             test_path = f"test_{module_path}"
+
+            expected_match = re.search(
+                rf"{re.escape(function_name)}\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)\s*==\s*(-?\d+(?:\.\d+)?)",
+                instruction,
+                flags=re.IGNORECASE,
+            )
+
+            if expected_match:
+                test_left = expected_match.group(1)
+                test_right = expected_match.group(2)
+                expected = expected_match.group(3)
+            else:
+                test_left = "2"
+                test_right = "3"
+                expected = "5"
 
             return [
                 {
@@ -481,7 +569,7 @@ class MockAdapter(AIAdapter):
                     "content": (
                         f"from {module_name} import {function_name}\n\n"
                         f"def test_{function_name}():\n"
-                        f"    assert {function_name}(2, 3) == 5\n"
+                        f"    assert {function_name}({test_left}, {test_right}) == {expected}\n"
                     ),
                     "reason": instruction,
                 },

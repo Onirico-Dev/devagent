@@ -614,6 +614,26 @@ def test_mock_repair_semantic_assertion_failure_repairs_constant_return():
     assert result["content"] == "def soma(a, b):\n    return a + b"
 
 
+def test_mock_repair_semantic_assertion_failure_repairs_wrong_addition():
+    adapter = MockAdapter()
+    prompt = (
+        "Você é o módulo de reparo automático do DevAgent.\n"
+        "Objetivo original:\n"
+        "crie o arquivo core/adapters/real_multiply_probe.py "
+        "contendo def multiplicar(a, b): return a + b e crie um teste pytest correspondente\n"
+        "Erro:\n"
+        "E       assert 5 == 6\n"
+        "Saída dos testes:\n"
+        "FAILED test_core/adapters/real_multiply_probe.py::test_multiplicar - assert 5 == 6"
+    )
+
+    result = json.loads(adapter._generate_repair_response(prompt))
+
+    assert result["action"] == "modify"
+    assert result["path"] == "core/adapters/real_multiply_probe.py"
+    assert "operação" in result["diagnosis"].lower()
+    assert result["content"] == "def multiplicar(a, b):\n    return a * b"
+
 def test_mock_repair_invalid_function_definition_generates_valid_python():
     adapter = MockAdapter()
 
@@ -979,3 +999,21 @@ def test_mock_create_natural_pytest_import_and_assert():
         ),
         "reason": instruction,
     }
+
+def test_mock_inline_pytest_can_request_explicit_expected_result():
+    adapter = MockAdapter()
+    instruction = (
+        "crie o arquivo core/adapters/real_multiply_probe3.py "
+        "contendo def multiplicar(a, b): return a + b "
+        "e crie um teste pytest correspondente que exija "
+        "que multiplicar(2, 3) == 6"
+    )
+
+    changes = adapter._build_compound_create_changes(instruction)
+
+    assert changes
+    test_change = next(
+        item for item in changes
+        if item["path"] == "test_core/adapters/real_multiply_probe3.py"
+    )
+    assert "assert multiplicar(2, 3) == 6" in test_change["content"]
