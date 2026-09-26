@@ -1039,3 +1039,47 @@ def test_mock_binary_operation_repair_subtraction_to_addition():
     assert result["path"] == "core/adapters/real_add_probe.py"
     assert "operação" in result["diagnosis"].lower()
     assert result["content"] == "def somar(a, b):\n    return a + b"
+
+def test_mock_binary_operation_repair_multiplication_to_division():
+    adapter = MockAdapter()
+    prompt = (
+        "Você é o módulo de reparo automático do DevAgent.\n"
+        "Objetivo original:\n"
+        "crie o arquivo core/adapters/real_divide_probe.py "
+        "contendo def dividir(a, b): return a * b "
+        "e crie um teste pytest correspondente que exija "
+        "que dividir(6, 3) == 2\n"
+        "Erro:\n"
+        "E       assert 18 == 2\n"
+        "Saída dos testes:\n"
+        "FAILED test_core/adapters/real_divide_probe.py::test_dividir - assert 18 == 2"
+    )
+
+    result = json.loads(adapter._generate_repair_response(prompt))
+
+    assert result["action"] == "modify"
+    assert result["path"] == "core/adapters/real_divide_probe.py"
+    assert "operação" in result["diagnosis"].lower()
+    assert result["content"] == "def dividir(a, b):\n    return a / b"
+
+def test_mock_binary_operation_repair_rejects_ambiguous_candidates():
+    adapter = MockAdapter()
+    prompt = (
+        "Você é o módulo de reparo automático do DevAgent.\n"
+        "Objetivo original:\n"
+        "crie o arquivo core/adapters/ambiguous_probe.py "
+        "contendo def calcular(a, b): return a + b "
+        "e crie um teste pytest correspondente que exija "
+        "que calcular(0, -20) == 0\n"
+        "Erro:\n"
+        "E       assert -20 == 0\n"
+        "Saída dos testes:\n"
+        "FAILED test_core/adapters/ambiguous_probe.py::test_calcular - assert -20 == 0"
+    )
+
+    result = json.loads(adapter._generate_repair_response(prompt))
+
+    assert result["action"] == "modify"
+    assert result["path"] == "core/adapters/ambiguous_probe.py"
+    assert result["content"] == "def calcular(a, b):\n    return a + b\n"
+    assert "operação" not in result["diagnosis"].lower()
