@@ -133,14 +133,8 @@ class MockAdapter(AIAdapter):
                 )
 
         # Falha semântica de pytest: operação binária incorreta.
-        # Exemplo:
-        #   def multiplicar(a, b): return a + b
-        #   assert 5 == 6
-        #
-        # A evidência do teste permite reconstruir os operandos:
-        #   a + b = 5
-        #   a * b = 6
-        # resultando em a=2 e b=3.
+        # A evidência do teste permite comparar a operação atual
+        # com operações alternativas usando os valores observado/esperado.
         operation_match = re.search(
             r"def\s+([A-Za-z_]\w*)\s*"
             r"\(([^)]*)\)\s*:\s*"
@@ -162,7 +156,6 @@ class MockAdapter(AIAdapter):
                 len(arg_names) == 2
                 and left == arg_names[0]
                 and right == arg_names[1]
-                and operator == "+"
                 and actual_value != expected_value
             ):
                 try:
@@ -172,29 +165,70 @@ class MockAdapter(AIAdapter):
                     actual = expected = None
 
                 if actual is not None and expected is not None:
+                    def apply_operation(first, second, operation):
+                        if operation == "+":
+                            return first + second
+                        if operation == "-":
+                            return first - second
+                        if operation == "*":
+                            return first * second
+                        if operation == "/":
+                            if second == 0:
+                                return None
+                            return first / second
+                        return None
+
                     candidates = []
+
                     for first in range(-100, 101):
                         for second in range(-100, 101):
-                            if first + second == actual and first * second == expected:
-                                candidates.append((first, second))
+                            current_result = apply_operation(
+                                first, second, operator
+                            )
 
-                    if candidates:
+                            if current_result is None or current_result != actual:
+                                continue
+
+                            for candidate_operator in "+-*/":
+                                if candidate_operator == operator:
+                                    continue
+
+                                candidate_result = apply_operation(
+                                    first, second, candidate_operator
+                                )
+
+                                if candidate_result == expected:
+                                    candidates.append(
+                                        (
+                                            first,
+                                            second,
+                                            candidate_operator,
+                                        )
+                                    )
+
+                    candidate_operators = {
+                        item[2] for item in candidates
+                    }
+
+                    if len(candidate_operators) == 1:
+                        replacement = next(iter(candidate_operators))
                         content = (
                             f"def {name}({args}):\n"
-                            f"    return {left} * {right}"
+                            f"    return {left} {replacement} {right}"
                         )
 
                         return json.dumps(
                             {
                                 "diagnosis": (
-                                    f"A função {name} usa a operação +, "
+                                    f"A função {name} usa a operação {operator}, "
                                     f"mas o teste obteve {actual_value} "
                                     f"e exige {expected_value}. "
-                                    f"A operação * explica o resultado esperado."
+                                    f"A operação {replacement} explica "
+                                    f"o resultado esperado."
                                 ),
                                 "correction": (
-                                    f"Substituir a operação {left} + {right} "
-                                    f"por {left} * {right}."
+                                    f"Substituir a operação {left} {operator} {right} "
+                                    f"por {left} {replacement} {right}."
                                 ),
                                 "risk": "baixo",
                                 "action": "modify",

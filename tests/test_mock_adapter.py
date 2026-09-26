@@ -1017,3 +1017,25 @@ def test_mock_inline_pytest_can_request_explicit_expected_result():
         if item["path"] == "test_core/adapters/real_multiply_probe3.py"
     )
     assert "assert multiplicar(2, 3) == 6" in test_change["content"]
+
+def test_mock_binary_operation_repair_subtraction_to_addition():
+    adapter = MockAdapter()
+    prompt = (
+        "Você é o módulo de reparo automático do DevAgent.\n"
+        "Objetivo original:\n"
+        "crie o arquivo core/adapters/real_add_probe.py "
+        "contendo def somar(a, b): return a - b "
+        "e crie um teste pytest correspondente que exija "
+        "que somar(2, 3) == 5\n"
+        "Erro:\n"
+        "E       assert -1 == 5\n"
+        "Saída dos testes:\n"
+        "FAILED test_core/adapters/real_add_probe.py::test_somar - assert -1 == 5"
+    )
+
+    result = json.loads(adapter._generate_repair_response(prompt))
+
+    assert result["action"] == "modify"
+    assert result["path"] == "core/adapters/real_add_probe.py"
+    assert "operação" in result["diagnosis"].lower()
+    assert result["content"] == "def somar(a, b):\n    return a + b"
