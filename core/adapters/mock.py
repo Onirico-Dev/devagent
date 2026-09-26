@@ -133,8 +133,8 @@ class MockAdapter(AIAdapter):
                 )
 
         # Falha semântica de pytest: operação binária incorreta.
-        # A evidência do teste permite comparar a operação atual
-        # com operações alternativas usando os valores observado/esperado.
+        # Primeiro usa os argumentos explícitos do teste, quando disponíveis.
+        # A busca por força bruta permanece como fallback para compatibilidade.
         operation_match = re.search(
             r"def\s+([A-Za-z_]\w*)\s*"
             r"\(([^)]*)\)\s*:\s*"
@@ -165,6 +165,14 @@ class MockAdapter(AIAdapter):
                     actual = expected = None
 
                 if actual is not None and expected is not None:
+                    explicit_case = re.search(
+                        rf"{re.escape(name)}\s*"
+                        rf"\(\s*(-?\d+(?:\.\d+)?)\s*,\s*"
+                        rf"(-?\d+(?:\.\d+)?)\s*\)"
+                        rf"\s*==\s*(-?\d+(?:\.\d+)?)",
+                        instruction,
+                    )
+
                     def apply_operation(first, second, operation):
                         if operation == "+":
                             return first + second
@@ -177,6 +185,58 @@ class MockAdapter(AIAdapter):
                                 return None
                             return first / second
                         return None
+
+                    if explicit_case:
+                        first_text, second_text, expected_text = explicit_case.groups()
+
+                        try:
+                            first = float(first_text)
+                            second = float(second_text)
+                            explicit_expected = float(expected_text)
+                        except ValueError:
+                            first = second = explicit_expected = None
+
+                        if (
+                            first is not None
+                            and second is not None
+                            and explicit_expected is not None
+                            and apply_operation(first, second, operator) == actual
+                        ):
+                            candidate_operators = {
+                                candidate
+                                for candidate in "+-*/"
+                                if candidate != operator
+                                and apply_operation(first, second, candidate)
+                                == explicit_expected
+                            }
+
+                            if len(candidate_operators) == 1:
+                                replacement = next(iter(candidate_operators))
+                                content = (
+                                    f"def {name}({args}):\n"
+                                    f"    return {left} {replacement} {right}"
+                                )
+
+                                return json.dumps(
+                                    {
+                                        "diagnosis": (
+                                            f"A função {name} usa a operação {operator}, "
+                                            f"mas o teste obteve {actual_value} "
+                                            f"e exige {expected_value}. "
+                                            f"A operação {replacement} explica "
+                                            f"o resultado esperado."
+                                        ),
+                                        "correction": (
+                                            f"Substituir a operação {left} {operator} {right} "
+                                            f"por {left} {replacement} {right}."
+                                        ),
+                                        "risk": "baixo",
+                                        "action": "modify",
+                                        "path": path,
+                                        "content": content,
+                                    },
+                                    ensure_ascii=False,
+                                )
 
                     candidates = []
 

@@ -1083,3 +1083,24 @@ def test_mock_binary_operation_repair_rejects_ambiguous_candidates():
     assert result["path"] == "core/adapters/ambiguous_probe.py"
     assert result["content"] == "def calcular(a, b):\n    return a + b\n"
     assert "operação" not in result["diagnosis"].lower()
+
+def test_mock_binary_operation_repair_uses_explicit_large_operands():
+    adapter = MockAdapter()
+    prompt = (
+        "Você é o módulo de reparo automático do DevAgent.\n"
+        "Objetivo original:\n"
+        "crie o arquivo core/adapters/range_probe.py "
+        "contendo def multiplicar(a, b): return a + b "
+        "e crie um teste pytest correspondente que exija "
+        "que multiplicar(125, 125) == 15625\n"
+        "Erro:\n"
+        "E       assert 250 == 15625\n"
+        "Saída dos testes:\n"
+        "FAILED test_core/adapters/range_probe.py::test_multiplicar - assert 250 == 15625"
+    )
+
+    result = json.loads(adapter._generate_repair_response(prompt))
+
+    assert result["action"] == "modify"
+    assert result["path"] == "core/adapters/range_probe.py"
+    assert result["content"] == "def multiplicar(a, b):\n    return a * b"
