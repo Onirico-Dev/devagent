@@ -724,10 +724,10 @@ class MockAdapter(AIAdapter):
 
         # Caso semântico conhecido: módulo + teste pytest.
         module_match = re.search(
-            r"crie\s+(?:um\s+)?(?:módulo|arquivo)\s+"
+            r"crie\s+(?:(?:um|o)\s+)?(?:módulo|arquivo)\s+"
             r"([A-Za-z0-9_.-]+\.py)\s+contendo\s+"
             r"(.+?)\s+e\s+"
-            r"crie\s+(?:um\s+)?(?:módulo|arquivo)?\s*"
+            r"crie\s+(?:(?:um|o)\s+)?(?:módulo|arquivo)?\s*"
             r"([A-Za-z0-9_.-]+\.py)\s+contendo\s+"
             r"(.+)$",
             instruction.strip(),
@@ -749,7 +749,7 @@ class MockAdapter(AIAdapter):
             )
 
             test_match = re.search(
-                r"verifica\s+que\s+"
+                r"(?:teste\s+que\s+)?verifica(?:\s+que)?\s+"
                 r"([A-Za-z_][A-Za-z0-9_]*)"
                 r"\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)"
                 r"\s*retorna\s+(\d+)",
@@ -760,11 +760,30 @@ class MockAdapter(AIAdapter):
             if function_match and test_match:
                 function_name = function_match.group(1)
                 parameters = function_match.group(2).strip()
+
+                parameter_names = [
+                    item.strip()
+                    for item in parameters.split(",")
+                    if item.strip()
+                ]
+
+                if (
+                    len(parameter_names) != 2
+                    or not all(
+                        item.isidentifier()
+                        for item in parameter_names
+                    )
+                ):
+                    return []
+
+                left_parameter, right_parameter = parameter_names
                 left = test_match.group(2)
                 right = test_match.group(3)
                 expected = test_match.group(4)
 
-                module_name = module_path.rsplit(".", 1)[0].replace("/", ".")
+                module_name = (
+                    module_path.rsplit(".", 1)[0].replace("/", ".")
+                )
 
                 return [
                     {
@@ -772,7 +791,8 @@ class MockAdapter(AIAdapter):
                         "path": module_path,
                         "content": (
                             f"def {function_name}({parameters}):\n"
-                            "    return a + b\n"
+                            f"    return "
+                            f"{left_parameter} + {right_parameter}\n"
                         ),
                         "reason": instruction,
                     },
@@ -782,7 +802,8 @@ class MockAdapter(AIAdapter):
                         "content": (
                             f"from {module_name} import {function_name}\n\n"
                             f"def test_{function_name}():\n"
-                            f"    assert {function_name}({left}, {right}) == {expected}\n"
+                            f"    assert "
+                            f"{function_name}({left}, {right}) == {expected}\n"
                         ),
                         "reason": instruction,
                     },

@@ -833,6 +833,32 @@ def test_mock_build_compound_changes_supports_function_and_pytest():
     assert 'assert hello() == "HELLO DEVAGENT"' in changes["test_self_evolution_smoke.py"]["content"]
 
 
+def test_mock_build_compound_semantic_sum_preserves_parameter_names():
+    adapter = MockAdapter()
+    instruction = (
+        "crie o arquivo calculator.py contendo "
+        "função somar(x, y) que retorna a soma dos dois valores "
+        "e crie o arquivo test_calculator.py contendo "
+        "teste que verifica somar(2, 3) retorna 5"
+    )
+
+    result = adapter._build_compound_create_changes(instruction)
+
+    assert len(result) == 2
+
+    changes = {change["path"]: change for change in result}
+
+    assert changes["calculator.py"]["content"] == (
+        "def somar(x, y):\n"
+        "    return x + y\n"
+    )
+    assert changes["test_calculator.py"]["content"] == (
+        "from calculator import somar\n\n"
+        "def test_somar():\n"
+        "    assert somar(2, 3) == 5\n"
+    )
+
+
 def test_mock_build_compound_changes_supports_multiple_operations():
     adapter = MockAdapter()
 
