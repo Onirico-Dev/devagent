@@ -1319,3 +1319,49 @@ def test_mock_binary_operation_repair_rejects_zero_result_without_semantic_name(
         )
 
         assert adapter._generate_repair_response(instruction) == ""
+
+
+def test_mock_constant_return_rejects_ambiguous_zero_case():
+    adapter = MockAdapter()
+
+    prompt = (
+        "Você é o módulo de reparo automático do DevAgent.\n"
+        "Objetivo original:\n"
+        "crie o arquivo core/adapters/ambiguous_zero.py "
+        "contendo def calcular(a, b): return 4 e crie um teste pytest "
+        "correspondente que exija que calcular(0, 0) == 0\n"
+        "Erro:\n"
+        "E       assert 4 == 0\n"
+    )
+
+    assert adapter._generate_repair_response(prompt) == ""
+
+
+def test_mock_constant_return_uses_unique_explicit_operation():
+    adapter = MockAdapter()
+
+    cases = (
+        ("multiplicar", 5, 5, 25, "*"),
+        ("subtrair", 5, 5, 0, "-"),
+    )
+
+    for name, first, second, expected, operation in cases:
+        prompt = (
+            "Você é o módulo de reparo automático do DevAgent.\n"
+            "Objetivo original:\n"
+            f"crie o arquivo core/adapters/{name}_unique.py "
+            f"contendo def {name}(a, b): return 4 e crie um teste pytest "
+            f"correspondente que exija que {name}({first}, {second}) == {expected}\n"
+            "Erro:\n"
+            f"E       assert 4 == {expected}\n"
+        )
+
+        result = json.loads(
+            adapter._generate_repair_response(prompt)
+        )
+
+        assert result["action"] == "modify"
+        assert result["content"] == (
+            f"def {name}(a, b):\n"
+            f"    return a {operation} b"
+        )
