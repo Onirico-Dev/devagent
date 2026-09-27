@@ -634,6 +634,48 @@ def test_mock_repair_semantic_assertion_failure_repairs_wrong_addition():
     assert "operação" in result["diagnosis"].lower()
     assert result["content"] == "def multiplicar(a, b):\n    return a * b"
 
+
+def test_mock_repair_constant_return_uses_explicit_operands():
+    adapter = MockAdapter()
+    prompt = (
+        "Você é o módulo de reparo automático do DevAgent.\n"
+        "Objetivo original:\n"
+        "crie o arquivo core/adapters/explicit_constant_probe.py "
+        "contendo def soma(a, b): return 4 e crie um teste pytest "
+        "correspondente que exija que soma(2, 3) == 5\n"
+        "Erro:\n"
+        "E       assert 4 == 5\n"
+        "Saída dos testes:\n"
+        "FAILED test_core/adapters/explicit_constant_probe.py::test_soma - assert 4 == 5"
+    )
+
+    result = json.loads(adapter._generate_repair_response(prompt))
+
+    assert result["action"] == "modify"
+    assert result["path"] == "core/adapters/explicit_constant_probe.py"
+    assert result["content"] == "def soma(a, b):\n    return a + b"
+
+
+def test_mock_repair_constant_return_does_not_invent_addition_for_non_additive_expectation():
+    adapter = MockAdapter()
+    prompt = (
+        "Você é o módulo de reparo automático do DevAgent.\n"
+        "Objetivo original:\n"
+        "crie o arquivo core/adapters/explicit_constant_probe.py "
+        "contendo def multiplicar(a, b): return 4 e crie um teste pytest "
+        "correspondente que exija que multiplicar(2, 3) == 6\n"
+        "Erro:\n"
+        "E       assert 4 == 6\n"
+        "Saída dos testes:\n"
+        "FAILED test_core/adapters/explicit_constant_probe.py::test_multiplicar - assert 4 == 6"
+    )
+
+    result = json.loads(adapter._generate_repair_response(prompt))
+
+    assert result["action"] == "modify"
+    assert result["path"] == "core/adapters/explicit_constant_probe.py"
+    assert result["content"] == "def multiplicar(a, b):\n    return a * b"
+
 def test_mock_repair_invalid_function_definition_generates_valid_python():
     adapter = MockAdapter()
 

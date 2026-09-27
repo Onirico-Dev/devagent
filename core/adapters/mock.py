@@ -64,12 +64,8 @@ class MockAdapter(AIAdapter):
         # Falha semântica de pytest: usa a evidência do assert para
         # corrigir funções simples que retornam uma constante.
         #
-        # Exemplo:
-        #   def soma(a, b): return 4
-        #   assert 4 == 5
-        #
-        # Nesse caso, a implementação esperada pelo teste é:
-        #   return a + b
+        # Sem uma chamada explícita, preserva a heurística histórica
+        # constante -> soma para compatibilidade.
         semantic_source = "\n".join(
             [
                 instruction,
@@ -107,10 +103,64 @@ class MockAdapter(AIAdapter):
                 and all(item.isidentifier() for item in arg_names)
             ):
                 left, right = arg_names
+                replacement = "+"
+
+                explicit_case = re.search(
+                    rf"{re.escape(name)}\s*"
+                    rf"\(\s*(-?\d+(?:\.\d+)?)\s*,\s*"
+                    rf"(-?\d+(?:\.\d+)?)\s*\)"
+                    rf"\s*==\s*(-?\d+(?:\.\d+)?)",
+                    instruction,
+                )
+
+                if explicit_case:
+                    first_text, second_text, expected_text = (
+                        explicit_case.groups()
+                    )
+
+                    try:
+                        first = float(first_text)
+                        second = float(second_text)
+                        explicit_expected = float(expected_text)
+                    except ValueError:
+                        first = second = explicit_expected = None
+
+                    if (
+                        first is not None
+                        and second is not None
+                        and explicit_expected is not None
+                    ):
+                        def apply_operation(first, second, operation):
+                            if operation == "+":
+                                return first + second
+                            if operation == "-":
+                                return first - second
+                            if operation == "*":
+                                return first * second
+                            if operation == "/":
+                                if second == 0:
+                                    return None
+                                return first / second
+                            return None
+
+                        candidate_operators = {
+                            operation
+                            for operation in "+-*/"
+                            if apply_operation(
+                                first,
+                                second,
+                                operation,
+                            ) == explicit_expected
+                        }
+
+                        if len(candidate_operators) != 1:
+                            return ""
+
+                        replacement = next(iter(candidate_operators))
 
                 content = (
                     f"def {name}({args}):\n"
-                    f"    return {left} + {right}"
+                    f"    return {left} {replacement} {right}"
                 )
 
                 return json.dumps(
@@ -122,7 +172,7 @@ class MockAdapter(AIAdapter):
                         ),
                         "correction": (
                             f"Substituir o retorno constante por "
-                            f"{left} + {right}."
+                            f"{left} {replacement} {right}."
                         ),
                         "risk": "baixo",
                         "action": "modify",
