@@ -1262,3 +1262,22 @@ def test_binary_repair_fallback_does_not_override_explicit_ambiguity():
 
     assert len(explicit_candidates) >= 2
     assert len(fallback_candidates) == 1
+
+
+def test_mock_binary_operation_repair_rejects_zero_division_degenerate_case():
+    adapter = MockAdapter()
+
+    instruction = (
+        "Você é o módulo de reparo automático do DevAgent.\n"
+        "Objetivo original:\n"
+        "crie o arquivo core/adapters/zero_division_probe.py "
+        "contendo def dividir(a, b): return a + b "
+        "e crie um teste pytest correspondente que exija "
+        "que dividir(6, 0) == 0\n"
+        "Erro:\n"
+        "E       assert 6 == 0\n"
+        "Saída dos testes:\n"
+        "FAILED test_core/adapters/zero_division_probe.py::test_dividir - assert 6 == 0\n"
+    )
+
+    assert adapter._generate_repair_response(instruction) == ""

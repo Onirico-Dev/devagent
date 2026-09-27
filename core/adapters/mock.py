@@ -247,6 +247,13 @@ class MockAdapter(AIAdapter):
                             first = second = explicit_expected = None
 
                         if (
+                            second == 0
+                            and explicit_expected == 0
+                            and name.lower() in {"dividir", "divide", "div"}
+                        ):
+                            return ""
+
+                        if (
                             first is not None
                             and second is not None
                             and explicit_expected is not None
