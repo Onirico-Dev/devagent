@@ -246,11 +246,7 @@ class MockAdapter(AIAdapter):
                         except ValueError:
                             first = second = explicit_expected = None
 
-                        if (
-                            second == 0
-                            and explicit_expected == 0
-                            and name.lower() in {"dividir", "divide", "div"}
-                        ):
+                        if second == 0 and explicit_expected == 0:
                             return ""
 
                         if (
