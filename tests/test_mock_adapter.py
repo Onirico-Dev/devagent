@@ -1283,6 +1283,24 @@ def test_mock_binary_operation_repair_rejects_zero_division_degenerate_case():
     assert adapter._generate_repair_response(instruction) == ""
 
 
+
+def test_mock_binary_operation_repair_rejects_inconsistent_explicit_case():
+    adapter = MockAdapter()
+
+    for name in ("calcular", "multiplicar", "dividir"):
+        instruction = (
+            "Você é o módulo de reparo automático do DevAgent.\n"
+            "Objetivo original:\n"
+            f"crie o arquivo core/adapters/{name}_inconsistent_probe.py "
+            f"contendo def {name}(a, b): return a + b "
+            "e crie um teste pytest correspondente que exija "
+            f"que {name}(5, 5) == 25\n"
+            "Erro:\n"
+            "E       assert 5 == 25\n"
+        )
+
+        assert adapter._generate_repair_response(instruction) == ""
+
 def test_mock_binary_operation_repair_rejects_zero_result_without_semantic_name():
     adapter = MockAdapter()
 

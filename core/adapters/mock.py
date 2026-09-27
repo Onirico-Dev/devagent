@@ -253,8 +253,10 @@ class MockAdapter(AIAdapter):
                             first is not None
                             and second is not None
                             and explicit_expected is not None
-                            and apply_operation(first, second, operator) == actual
                         ):
+                            if apply_operation(first, second, operator) != actual:
+                                return ""
+
                             candidate_operators = {
                                 candidate
                                 for candidate in "+-*/"
@@ -276,23 +278,23 @@ class MockAdapter(AIAdapter):
                                 return json.dumps(
                                     {
                                         "diagnosis": (
-                                            f"A função {name} usa a operação {operator}, "
-                                            f"mas o teste obteve {actual_value} "
-                                            f"e exige {expected_value}. "
-                                            f"A operação {replacement} explica "
-                                            f"o resultado esperado."
-                                        ),
-                                        "correction": (
-                                            f"Substituir a operação {left} {operator} {right} "
-                                            f"por {left} {replacement} {right}."
-                                        ),
-                                        "risk": "baixo",
-                                        "action": "modify",
-                                        "path": path,
-                                        "content": content,
-                                    },
-                                    ensure_ascii=False,
-                                )
+                                        f"A função {name} usa a operação {operator}, "
+                                        f"mas o teste obteve {actual_value} "
+                                        f"e exige {expected_value}. "
+                                        f"A operação {replacement} explica "
+                                        f"o resultado esperado."
+                                    ),
+                                    "correction": (
+                                        f"Substituir a operação {left} {operator} {right} "
+                                        f"por {left} {replacement} {right}."
+                                    ),
+                                    "risk": "baixo",
+                                    "action": "modify",
+                                    "path": path,
+                                    "content": content,
+                                },
+                                ensure_ascii=False,
+                            )
 
                     candidates = []
 
