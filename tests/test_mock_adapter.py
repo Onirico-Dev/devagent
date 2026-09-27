@@ -1191,6 +1191,28 @@ def test_mock_binary_operation_repair_preserves_explicit_operator_over_heuristic
     assert result["path"] == "core/adapters/explicit_operator_probe.py"
     assert result["content"] == "def multiplicar(a, b):\n    return a * b"
 
+
+def test_mock_binary_operation_repair_preserves_negative_explicit_operand():
+    adapter = MockAdapter()
+    prompt = (
+        "Você é o módulo de reparo automático do DevAgent.\n"
+        "Objetivo original:\n"
+        "crie o arquivo core/adapters/negative_operand_probe.py "
+        "contendo def multiplicar(a, b): return a + b "
+        "e crie um teste pytest correspondente que exija "
+        "que multiplicar(-2, 4) == -8\n"
+        "Erro:\n"
+        "E       assert 2 == -8\n"
+        "Saída dos testes:\n"
+        "FAILED test_core/adapters/negative_operand_probe.py::test_multiplicar - assert 2 == -8\n"
+    )
+
+    result = json.loads(adapter._generate_repair_response(prompt))
+
+    assert result["action"] == "modify"
+    assert result["path"] == "core/adapters/negative_operand_probe.py"
+    assert result["content"] == "def multiplicar(a, b):\n    return a * b"
+
 def test_binary_repair_fallback_does_not_override_explicit_ambiguity():
     def apply_operation(first, second, operation):
         if operation == "+":
