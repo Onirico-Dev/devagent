@@ -105,21 +105,21 @@ class RepairFlow:
                 "correction": "",
             }
 
-        if diagnosis.get("risk") == "alto":
-            return (
-                diagnosis,
-                {
-                    "status": TransactionStatus.ROLLED_BACK.value,
-                    "success": False,
-                    "repair": diagnosis,
-                },
-            )
-
         if diagnosis.get("action") == "none":
             return (
                 diagnosis,
                 {
                     "status": RepairCycleStatus.NO_REPAIR.value,
+                    "success": False,
+                    "repair": diagnosis,
+                },
+            )
+
+        if diagnosis.get("risk") == "alto":
+            return (
+                diagnosis,
+                {
+                    "status": TransactionStatus.ROLLED_BACK.value,
                     "success": False,
                     "repair": diagnosis,
                 },

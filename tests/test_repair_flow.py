@@ -227,6 +227,45 @@ def test_attempt_high_risk_rolls_back_without_consuming_attempt():
     assert state.attempts == 0
 
 
+
+def test_attempt_with_mock_adapter_rejects_ambiguous_semantic_repair():
+    from core.adapters.mock import MockAdapter
+
+    engine = RepairEngine(MockAdapter())
+    executor = FakeExecutor(None)
+    controller = FakeController()
+    flow = RepairFlow(
+        repair_engine=engine,
+        repair_executor=executor,
+        repair_controller=controller,
+    )
+    transaction = make_transaction()
+    state = FakeState()
+
+    result = flow.attempt(
+        instruction=(
+            "crie o arquivo core/adapters/flow_no_operands.py "
+            "contendo def multiplicar(a, b): return a + b "
+            "e crie um teste pytest correspondente"
+        ),
+        transaction=transaction,
+        test_result={
+            "success": False,
+            "stderr": "E       assert 5 == 6",
+            "stdout": "",
+        },
+        repair_state=state,
+    )
+
+    assert result["status"] == RepairCycleStatus.NO_REPAIR.value
+    assert result["success"] is False
+    assert result["repair"]["action"] == "none"
+    assert result["repair"]["risk"] == "alto"
+    assert result["repair"]["path"] == ""
+    assert result["repair"]["content"] == ""
+    assert executor.calls == []
+    assert state.attempts == 0
+
 def test_attempt_none_action_returns_no_repair():
     diagnosis = {
         "action": "none",
