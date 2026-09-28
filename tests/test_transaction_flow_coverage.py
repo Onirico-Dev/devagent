@@ -822,6 +822,10 @@ def test_approve_locked_handles_execution_exception():
 
     assert result["status"] == TaskHistoryStatus.FAILED.value
 
+    execution = data["tx"].metadata["execution"]
+    assert execution["phase"] == "executing"
+    assert execution["changes_applied"] == 0
+
 
 def test_approve_locked_commit_exception_path():
     class CommitError(RuntimeError):

@@ -857,6 +857,13 @@ def test_gateway_rolls_back_real_executor_failure_on_second_change(tmp_path):
     assert persisted["status"] == "rolled_back"
     assert persisted["approval_id"] == approval_id
 
+    transaction = gateway.transactions.load_manifest(
+        persisted["transaction_id"]
+    )
+    execution = transaction.metadata["execution"]
+    assert execution["phase"] == "executing"
+    assert execution["changes_applied"] == 1
+
     status = subprocess.run(
         ["git", "status", "--porcelain", "--", "example.py", "version.py"],
         cwd=tmp_path,
