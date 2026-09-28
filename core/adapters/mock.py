@@ -25,111 +25,129 @@ class MockAdapter(AIAdapter):
         return self._generate_planner_response(prompt)
 
     def _generate_repair_response(self, prompt: str) -> str:
-        repair_marker = "Você é o módulo de reparo automático do DevAgent."
+        """Gera uma proposta determinística de reparo para falhas conhecidas."""
 
-        if not prompt.lstrip().startswith(repair_marker):
+        # Rota legada: esse formato não deve gerar uma proposta.
+        if prompt.lstrip().startswith("REPAIR REQUEST:"):
             return ""
 
-        instruction = ""
-        marker = "Objetivo original:"
-
-        if marker in prompt:
-            instruction = (
-                prompt.split(marker, 1)[1]
-                .split("Erro:", 1)[0]
-                .strip()
-            )
-
-        path = MockAdapter._extract_repair_path(instruction)
-
-        if not path:
-            path = "reparo.py"
-
-        content = ""
-
-        compound_changes = self._build_compound_create_changes(instruction)
-        if compound_changes:
-            for change in compound_changes:
-                if change.get("path") == path:
-                    content = change.get("content", "")
-                    break
-
-        if not content:
-            content = self._extract_create_content(instruction)
-        if not content:
-            content = self._extract_legacy_create_content(instruction)
-        if not content:
-            content = self._extract_invalid_content(instruction)
-
-        # Falha semântica de pytest: usa a evidência do assert para
-        # corrigir funções simples que retornam uma constante.
-        #
-        # Sem uma chamada explícita, preserva a heurística histórica
-        # constante -> soma para compatibilidade.
-        semantic_source = "\n".join(
-            [
-                instruction,
-                prompt,
-            ]
-        )
+        instruction = prompt.replace("\\n", "\n").replace("\\t", "\t")
 
         error_match = re.search(
             r"assert\s+(-?\d+(?:\.\d+)?)\s*==\s*(-?\d+(?:\.\d+)?)",
-            semantic_source,
-        )
-
-        function_match_semantic = re.search(
-            r"def\s+([A-Za-z_]\w*)\s*"
-            r"\(([^)]*)\)\s*:\s*"
-            r"(?:return\s+)?"
-            r"(-?\d+(?:\.\d+)?)",
             instruction,
         )
 
-        if error_match and function_match_semantic:
-            actual, expected = error_match.groups()
-            name, args, returned = function_match_semantic.groups()
+        # ------------------------------------------------------------
+        # Extração básica de caminho e conteúdo.
+        # ------------------------------------------------------------
+        objective = instruction.split("Erro:", 1)[0]
 
-            arg_names = [
-                item.strip().split("=", 1)[0].strip()
-                for item in args.split(",")
-                if item.strip()
-            ]
+        path_match = re.search(
+            r"(?:crie|modifique|corrija|altere)\s+"
+            r"(?:o\s+arquivo\s+)?([^\s]+\.py)",
+            objective,
+            re.IGNORECASE,
+        )
+
+        repair_path = (
+            path_match.group(1)
+            if path_match
+            else self._extract_repair_path(instruction)
+        )
+
+        if not repair_path:
+            repair_path = "reparo.py"
+
+        # Conteúdo declarado depois de "contendo" ou "com conteúdo".
+        content = None
+
+        containing_match = re.search(
+            r"\bcontendo\s+(.+?)(?=\s+e\s+crie\s+um\s+teste\b|\s+Erro:|$)",
+            objective,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if containing_match:
+            content = containing_match.group(1).strip()
+
+        if content is None:
+            content_match = re.search(
+                r"\bcom\s+conteúdo\s+(.+?)(?=\s+Erro:|$)",
+                objective,
+                re.IGNORECASE | re.DOTALL,
+            )
+            if content_match:
+                content = content_match.group(1).strip()
+
+        # ------------------------------------------------------------
+        # Falha semântica: retorno constante.
+        #
+        # Exemplo:
+        #   def soma(a, b): return 4
+        #   assert 4 == 5
+        #
+        # Só propõe uma operação quando os operandos explícitos
+        # determinam exatamente uma única operação.
+        # ------------------------------------------------------------
+        constant_match = re.search(
+            r"def\s+([A-Za-z_]\w*)\s*"
+            r"\(([^)]*)\)\s*:\s*"
+            r"return\s+(-?\d+(?:\.\d+)?)",
+            objective,
+        )
+
+        if error_match and constant_match:
+            actual_text, expected_text = error_match.groups()
+            name, args, returned_text = constant_match.groups()
+
+            try:
+                actual = float(actual_text)
+                expected = float(expected_text)
+                returned = float(returned_text)
+            except ValueError:
+                actual = expected = returned = None
 
             if (
-                returned == actual
+                actual is not None
+                and expected is not None
+                and returned is not None
+                and returned == actual
                 and actual != expected
-                and len(arg_names) == 2
-                and all(item.isidentifier() for item in arg_names)
             ):
-                left, right = arg_names
-                replacement = "+"
+                arg_names = [
+                    item.strip().split("=", 1)[0].strip()
+                    for item in args.split(",")
+                    if item.strip()
+                ]
 
-                explicit_case = re.search(
-                    rf"{re.escape(name)}\s*"
-                    rf"\(\s*(-?\d+(?:\.\d+)?)\s*,\s*"
-                    rf"(-?\d+(?:\.\d+)?)\s*\)"
-                    rf"\s*==\s*(-?\d+(?:\.\d+)?)",
-                    instruction,
-                )
+                if (
+                    len(arg_names) == 2
+                    and all(item.isidentifier() for item in arg_names)
+                ):
+                    left, right = arg_names
 
-                if explicit_case:
-                    first_text, second_text, expected_text = (
-                        explicit_case.groups()
+                    explicit_case = re.search(
+                        rf"{re.escape(name)}\s*"
+                        rf"\(\s*(-?\d+(?:\.\d+)?)\s*,\s*"
+                        rf"(-?\d+(?:\.\d+)?)\s*\)"
+                        rf"\s*==\s*(-?\d+(?:\.\d+)?)",
+                        instruction,
                     )
 
-                    try:
-                        first = float(first_text)
-                        second = float(second_text)
-                        explicit_expected = float(expected_text)
-                    except ValueError:
-                        first = second = explicit_expected = None
+                    if explicit_case:
+                        first_text, second_text, explicit_expected_text = (
+                            explicit_case.groups()
+                        )
 
-                    if (
-                        first is not None
-                        and second is not None
-                        and explicit_expected is not None
-                    ):
+                        try:
+                            first = float(first_text)
+                            second = float(second_text)
+                            explicit_expected = float(
+                                explicit_expected_text
+                            )
+                        except ValueError:
+                            return ""
+
                         def apply_operation(first, second, operation):
                             if operation == "+":
                                 return first + second
@@ -142,6 +160,9 @@ class MockAdapter(AIAdapter):
                                     return None
                                 return first / second
                             return None
+
+                        if second == 0 and explicit_expected == 0:
+                            return ""
 
                         candidate_operators = {
                             operation
@@ -158,43 +179,67 @@ class MockAdapter(AIAdapter):
 
                         replacement = next(iter(candidate_operators))
 
-                content = (
-                    f"def {name}({args}):\n"
-                    f"    return {left} {replacement} {right}"
-                )
+                    semantic_operations = {
+                        "somar": "+",
+                        "soma": "+",
+                        "adicionar": "+",
+                        "adicao": "+",
+                        "subtrair": "-",
+                        "subtracao": "-",
+                        "diminuir": "-",
+                        "multiplicar": "*",
+                        "multiplicacao": "*",
+                        "dividir": "/",
+                        "divisao": "/",
+                    }
 
-                return json.dumps(
-                    {
-                        "diagnosis": (
-                            f"A função {name} retorna a constante {actual}, "
-                            f"mas o teste exige {expected} para os argumentos "
-                            f"fornecidos."
-                        ),
-                        "correction": (
-                            f"Substituir o retorno constante por "
-                            f"{left} {replacement} {right}."
-                        ),
-                        "risk": "baixo",
-                        "action": "modify",
-                        "path": path,
-                        "content": content,
-                    },
-                    ensure_ascii=False,
-                )
+                    replacement = semantic_operations.get(name.lower())
 
-        # Falha semântica de pytest: operação binária incorreta.
-        # Primeiro usa os argumentos explícitos do teste, quando disponíveis.
-        # A busca por força bruta permanece como fallback para compatibilidade.
+                    if replacement is None:
+                        return ""
+
+                    content = (
+                        f"def {name}({args}):\n"
+                        f"    return {left} {replacement} {right}"
+                    )
+
+                    return json.dumps(
+                        {
+                            "diagnosis": (
+                                f"A função {name} retorna a constante "
+                                f"{actual_text}, mas o teste exige "
+                                f"{expected_text} para os argumentos "
+                                f"fornecidos."
+                            ),
+                            "correction": (
+                                "Substituir o retorno constante por "
+                                f"{left} {replacement} {right}."
+                            ),
+                            "risk": "baixo",
+                            "action": "modify",
+                            "path": repair_path,
+                            "content": content,
+                        },
+                        ensure_ascii=False,
+                    )
+
+    # ------------------------------------------------------------
+        # Falha semântica: operação binária incorreta.
+        #
+        # Sem chamada explícita com operandos, não há evidência
+        # suficiente para inferir uma operação diferente.
+        # ------------------------------------------------------------
         operation_match = re.search(
             r"def\s+([A-Za-z_]\w*)\s*"
             r"\(([^)]*)\)\s*:\s*"
-            r"return\s+([A-Za-z_]\w*)\s*([+\-*/])\s*([A-Za-z_]\w*)",
-            instruction,
+            r"return\s+([A-Za-z_]\w*)\s*([+\-*/])\s*"
+            r"([A-Za-z_]\w*)",
+            objective,
         )
 
         if error_match and operation_match:
             name, args, left, operator, right = operation_match.groups()
-            actual_value, expected_value = error_match.groups()
+            actual_text, expected_text = error_match.groups()
 
             arg_names = [
                 item.strip().split("=", 1)[0].strip()
@@ -203,196 +248,201 @@ class MockAdapter(AIAdapter):
             ]
 
             if (
-                len(arg_names) == 2
-                and left == arg_names[0]
-                and right == arg_names[1]
-                and actual_value != expected_value
+                len(arg_names) != 2
+                or left != arg_names[0]
+                or right != arg_names[1]
+                or actual_text == expected_text
             ):
-                try:
-                    actual = float(actual_value)
-                    expected = float(expected_value)
-                except ValueError:
-                    actual = expected = None
+                return ""
 
-                if actual is not None and expected is not None:
-                    explicit_case = re.search(
-                        rf"{re.escape(name)}\s*"
-                        rf"\(\s*(-?\d+(?:\.\d+)?)\s*,\s*"
-                        rf"(-?\d+(?:\.\d+)?)\s*\)"
-                        rf"\s*==\s*(-?\d+(?:\.\d+)?)",
-                        instruction,
-                    )
+            try:
+                actual = float(actual_text)
+                expected = float(expected_text)
+            except ValueError:
+                return ""
 
-                    def apply_operation(first, second, operation):
-                        if operation == "+":
-                            return first + second
-                        if operation == "-":
-                            return first - second
-                        if operation == "*":
-                            return first * second
-                        if operation == "/":
-                            if second == 0:
-                                return None
-                            return first / second
-                        return None
-
-                    if explicit_case:
-                        first_text, second_text, expected_text = explicit_case.groups()
-
-                        try:
-                            first = float(first_text)
-                            second = float(second_text)
-                            explicit_expected = float(expected_text)
-                        except ValueError:
-                            first = second = explicit_expected = None
-
-                        if second == 0 and explicit_expected == 0:
-                            return ""
-
-                        if (
-                            first is not None
-                            and second is not None
-                            and explicit_expected is not None
-                        ):
-                            if apply_operation(first, second, operator) != actual:
-                                return ""
-
-                            candidate_operators = {
-                                candidate
-                                for candidate in "+-*/"
-                                if candidate != operator
-                                and apply_operation(first, second, candidate)
-                                == explicit_expected
-                            }
-
-                            if len(candidate_operators) >= 2:
-                                return ""
-
-                            if len(candidate_operators) == 1:
-                                replacement = next(iter(candidate_operators))
-                                content = (
-                                    f"def {name}({args}):\n"
-                                    f"    return {left} {replacement} {right}"
-                                )
-
-                                return json.dumps(
-                                    {
-                                        "diagnosis": (
-                                        f"A função {name} usa a operação {operator}, "
-                                        f"mas o teste obteve {actual_value} "
-                                        f"e exige {expected_value}. "
-                                        f"A operação {replacement} explica "
-                                        f"o resultado esperado."
-                                    ),
-                                    "correction": (
-                                        f"Substituir a operação {left} {operator} {right} "
-                                        f"por {left} {replacement} {right}."
-                                    ),
-                                    "risk": "baixo",
-                                    "action": "modify",
-                                    "path": path,
-                                    "content": content,
-                                },
-                                ensure_ascii=False,
-                            )
-
-                    candidates = []
-
-                    for first in range(-100, 101):
-                        for second in range(-100, 101):
-                            current_result = apply_operation(
-                                first, second, operator
-                            )
-
-                            if current_result is None or current_result != actual:
-                                continue
-
-                            for candidate_operator in "+-*/":
-                                if candidate_operator == operator:
-                                    continue
-
-                                candidate_result = apply_operation(
-                                    first, second, candidate_operator
-                                )
-
-                                if candidate_result == expected:
-                                    candidates.append(
-                                        (
-                                            first,
-                                            second,
-                                            candidate_operator,
-                                        )
-                                    )
-
-                    candidate_operators = {
-                        item[2] for item in candidates
-                    }
-
-                    if len(candidate_operators) == 1:
-                        replacement = next(iter(candidate_operators))
-                        content = (
-                            f"def {name}({args}):\n"
-                            f"    return {left} {replacement} {right}"
-                        )
-
-                        return json.dumps(
-                            {
-                                "diagnosis": (
-                                    f"A função {name} usa a operação {operator}, "
-                                    f"mas o teste obteve {actual_value} "
-                                    f"e exige {expected_value}. "
-                                    f"A operação {replacement} explica "
-                                    f"o resultado esperado."
-                                ),
-                                "correction": (
-                                    f"Substituir a operação {left} {operator} {right} "
-                                    f"por {left} {replacement} {right}."
-                                ),
-                                "risk": "baixo",
-                                "action": "modify",
-                                "path": path,
-                                "content": content,
-                            },
-                            ensure_ascii=False,
-                        )
-
-        invalid_function_match = re.fullmatch(
-            r"def\s+([A-Za-z_]\w*)\s*\(\s*:\s*",
-            content.strip(),
-        )
-
-        if invalid_function_match:
-            name = invalid_function_match.group(1)
-            content = f"def {name}():\n    pass"
-
-        # Corrige a forma natural de função sem dois-pontos antes do return.
-        function_match = re.fullmatch(
-            r"def\s+([A-Za-z_]\w*)\s*"
-            r"\(([^)]*)\)\s+return\s+(.+)",
-            content.strip(),
-        )
-
-        if function_match:
-            name, args, body = function_match.groups()
-            content = (
-                f"def {name}({args}):\n"
-                f"    return {body.strip()}"
+            explicit_case = re.search(
+                rf"{re.escape(name)}\s*"
+                rf"\(\s*(-?\d+(?:\.\d+)?)\s*,\s*"
+                rf"(-?\d+(?:\.\d+)?)\s*\)"
+                rf"\s*==\s*(-?\d+(?:\.\d+)?)",
+                instruction,
             )
 
+            if not explicit_case:
+                return ""
+
+            first_text, second_text, explicit_expected_text = (
+                explicit_case.groups()
+            )
+
+            try:
+                first = float(first_text)
+                second = float(second_text)
+                explicit_expected = float(explicit_expected_text)
+            except ValueError:
+                return ""
+
+            def apply_operation(first, second, operation):
+                if operation == "+":
+                    return first + second
+                if operation == "-":
+                    return first - second
+                if operation == "*":
+                    return first * second
+                if operation == "/":
+                    if second == 0:
+                        return None
+                    return first / second
+                return None
+
+            current_result = apply_operation(
+                first,
+                second,
+                operator,
+            )
+
+            # A proposta só é válida se a operação atual realmente
+            # explicar o resultado observado pelo pytest.
+            if current_result != actual:
+                return ""
+
+            # Evita o caso degenerado de divisão por zero.
+            if second == 0 and explicit_expected == 0:
+                return ""
+
+            candidate_operators = {
+                operation
+                for operation in "+-*/"
+                if operation != operator
+                and apply_operation(
+                    first,
+                    second,
+                    operation,
+                ) == explicit_expected
+            }
+
+            if len(candidate_operators) != 1:
+                return ""
+
+            replacement = next(iter(candidate_operators))
+
+            content = (
+                f"def {name}({args}):\n"
+                f"    return {left} {replacement} {right}"
+            )
+
+            return json.dumps(
+                {
+                    "diagnosis": (
+                        f"A função {name} usa a operação {operator}, "
+                        f"mas o teste obteve {actual_text} e exige "
+                        f"{expected_text}. A operação {replacement} "
+                        "explica o resultado esperado."
+                    ),
+                    "correction": (
+                        f"Substituir a operação {left} {operator} {right} "
+                        f"por {left} {replacement} {right}."
+                    ),
+                    "risk": "baixo",
+                    "action": "modify",
+                    "path": repair_path,
+                    "content": content,
+                },
+                ensure_ascii=False,
+            )
+
+        # ------------------------------------------------------------
+        # Conteúdo explicitamente fornecido.
+        # ------------------------------------------------------------
+        if content is not None:
+            # Caso de definição claramente inválida:
+            # "def quebrada(:" -> função Python mínima válida.
+            invalid_function = re.fullmatch(
+                r"def\s+([A-Za-z_]\w*)\s*\(:\s*",
+                content.strip(),
+            )
+
+            if invalid_function:
+                function_name = invalid_function.group(1)
+                content = (
+                    f"def {function_name}():\n"
+                    "    pass"
+                )
+            else:
+                # Converte pedidos naturais de teste para código Python.
+                extracted_create_content = self._extract_create_content(
+                    content
+                )
+                if extracted_create_content:
+                    content = extracted_create_content
+
+                # Remove texto acidentalmente capturado depois do código.
+                content = content.strip()
+
+                # Normaliza a forma compacta de funções simples.
+                function_match = re.fullmatch(
+                    r"def\s+([A-Za-z_]\w*)\s*"
+                    r"\(([^)]*)\)\s*:?\s*"
+                    r"return\s+(.+)",
+                    content,
+                    re.DOTALL,
+                )
+
+                if function_match:
+                    name, args, expression = function_match.groups()
+
+                    # Não deixar instruções do teste contaminarem o código.
+                    expression = re.split(
+                        r"\s+e\s+crie\s+um\s+teste\b",
+                        expression,
+                        maxsplit=1,
+                        flags=re.IGNORECASE,
+                    )[0].strip()
+
+                    content = (
+                        f"def {name}({args}):\n"
+                        f"    return {expression}\n"
+                    )
+
+            # Preserva o comportamento histórico para conteúdo inválido
+            # explícito, exceto quando a rota legada já foi rejeitada.
+            return json.dumps(
+                {
+                    "diagnosis": (
+                        "O arquivo contém conteúdo que não constitui "
+                        "Python válido."
+                    ),
+                    "correction": (
+                        "O conteúdo precisa ser substituído por código "
+                        "Python válido."
+                    ),
+                    "risk": "baixo",
+                    "action": "modify",
+                    "path": repair_path,
+                    "content": content,
+                },
+                ensure_ascii=False,
+            )
+
+        # ------------------------------------------------------------
+        # Reparo genérico sem conteúdo extraível.
+        # Mantém o conteúdo default histórico do MockAdapter.
+        # ------------------------------------------------------------
         return json.dumps(
             {
                 "diagnosis": (
-                    "O arquivo contém conteúdo que "
-                    "não constitui Python válido."
+                    "O arquivo contém conteúdo que não constitui "
+                    "Python válido."
                 ),
                 "correction": (
-                    "O conteúdo precisa ser substituído "
-                    "por código Python válido."
+                    "O conteúdo precisa ser substituído por código "
+                    "Python válido."
                 ),
                 "risk": "baixo",
                 "action": "modify",
-                "path": path,
-                "content": content,
+                "path": repair_path,
+                "content": "isto não é Python válido",
             },
             ensure_ascii=False,
         )

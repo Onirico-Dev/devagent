@@ -620,7 +620,7 @@ def test_mock_repair_semantic_assertion_failure_repairs_wrong_addition():
         "Você é o módulo de reparo automático do DevAgent.\n"
         "Objetivo original:\n"
         "crie o arquivo core/adapters/real_multiply_probe.py "
-        "contendo def multiplicar(a, b): return a + b e crie um teste pytest correspondente\n"
+        "contendo def multiplicar(a, b): return a + b e crie um teste pytest correspondente que exija que multiplicar(2, 3) == 6\n"
         "Erro:\n"
         "E       assert 5 == 6\n"
         "Saída dos testes:\n"
@@ -1365,3 +1365,27 @@ def test_mock_constant_return_uses_unique_explicit_operation():
             f"def {name}(a, b):\n"
             f"    return a {operation} b"
         )
+
+
+def test_mock_binary_operation_without_explicit_operands_does_not_use_bruteforce_fallback():
+    adapter = MockAdapter()
+
+    cases = (
+        ("somar", "-", -1, 5),
+        ("dividir", "*", 18, 2),
+    )
+
+    for name, operator, actual, expected in cases:
+        prompt = (
+            "Você é o módulo de reparo automático do DevAgent.\n"
+            "Objetivo original:\n"
+            f"crie o arquivo core/adapters/{name}_no_operands_probe.py "
+            f"contendo def {name}(a, b): return a {operator} b "
+            "e crie um teste pytest correspondente\n"
+            "Erro:\n"
+            f"E       assert {actual} == {expected}\n"
+        )
+
+        result = adapter._generate_repair_response(prompt)
+
+        assert result == ""
