@@ -4,6 +4,52 @@ from core.adapters.mock import MockAdapter
 from core.engine.repair_engine import RepairEngine
 
 
+def test_repair_engine_with_mock_adapter_uses_explicit_operands():
+    from core.adapters.mock import MockAdapter
+    from core.engine.repair_engine import RepairEngine
+
+    engine = RepairEngine(MockAdapter())
+
+    result = engine.analyze_failure(
+        instruction=(
+            "crie o arquivo core/adapters/integration_probe.py "
+            "contendo def multiplicar(a, b): return a + b "
+            "e crie um teste pytest correspondente "
+            "que exija que multiplicar(2, 3) == 6"
+        ),
+        error="AssertionError",
+        test_output="E       assert 5 == 6",
+    )
+
+    assert result["action"] == "modify"
+    assert result["path"].endswith("integration_probe.py")
+    assert result["content"] == (
+        "def multiplicar(a, b):\n"
+        "    return a * b"
+    )
+
+
+def test_repair_engine_with_mock_adapter_rejects_binary_inference_without_operands():
+    from core.adapters.mock import MockAdapter
+    from core.engine.repair_engine import RepairEngine
+
+    engine = RepairEngine(MockAdapter())
+
+    result = engine.analyze_failure(
+        instruction=(
+            "crie o arquivo core/adapters/integration_no_operands.py "
+            "contendo def multiplicar(a, b): return a + b "
+            "e crie um teste pytest correspondente"
+        ),
+        error="AssertionError",
+        test_output="E       assert 5 == 6",
+    )
+
+    assert result["action"] == "none"
+    assert result["path"] == ""
+    assert result["content"] == ""
+
+
 class FakeAI:
     def __init__(self, response):
         self.response = response
