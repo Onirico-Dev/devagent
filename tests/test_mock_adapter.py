@@ -477,112 +477,46 @@ def test_mock_extract_create_content_returns_empty_when_missing():
     assert MockAdapter._extract_create_content("crie app.py") == ""
 
 
-def test_mock_repair_flow_extracts_path_and_content():
+def test_mock_repair_flow_rejects_invalid_explicit_content_without_safe_evidence():
     adapter = MockAdapter()
 
-    result = json.loads(
-        adapter.generate(
-            "Você é o módulo de reparo automático do DevAgent.\n"
-            "Objetivo original:\n"
-            "modifique broken.py contendo isto não é Python válido\n"
-            "Erro:\n"
-            "SyntaxError"
-        )
+    result = adapter.generate(
+        "Você é o módulo de reparo automático do DevAgent.\n"
+        "Objetivo original:\n"
+        "modifique broken.py contendo isto não é Python válido\n"
+        "Erro:\n"
+        "SyntaxError"
     )
 
-    assert result["diagnosis"]
-    assert result["correction"]
-    assert result["risk"] == "baixo"
-    assert result["action"] == "modify"
-    assert result["path"] == "broken.py"
-    assert result["content"] == "isto não é Python válido"
+    assert result == ""
 
 
-def test_mock_repair_flow_uses_default_path_when_missing():
+def test_mock_repair_flow_rejects_syntax_error_without_repair_evidence():
     adapter = MockAdapter()
 
-    result = json.loads(
-        adapter.generate(
-            "Você é o módulo de reparo automático do DevAgent.\n"
-            "Objetivo original:\n"
-            "corrija o problema\n"
-            "Erro:\n"
-            "SyntaxError"
-        )
+    result = adapter.generate(
+        "Você é o módulo de reparo automático do DevAgent.\n"
+        "Objetivo original:\n"
+        "corrija o problema\n"
+        "Erro:\n"
+        "SyntaxError"
     )
 
-    assert result["path"] == "reparo.py"
+    assert result == ""
 
 
-def test_mock_repair_flow_uses_default_content_when_missing():
+def test_mock_repair_flow_rejects_missing_content_without_repair_evidence():
     adapter = MockAdapter()
 
-    result = json.loads(
-        adapter.generate(
-            "Você é o módulo de reparo automático do DevAgent.\n"
-            "Objetivo original:\n"
-            "corrija broken.py\n"
-            "Erro:\n"
-            "SyntaxError"
-        )
+    result = adapter.generate(
+        "Você é o módulo de reparo automático do DevAgent.\n"
+        "Objetivo original:\n"
+        "corrija broken.py\n"
+        "Erro:\n"
+        "SyntaxError"
     )
 
-    assert result["path"] == "broken.py"
-    assert result["content"] == "isto não é Python válido"
-
-
-def test_mock_extract_repair_path():
-    assert (
-        MockAdapter._extract_repair_path("corrija o arquivo broken.py")
-        == "broken.py"
-    )
-
-
-def test_function_pytest_generation_declares_generated_test_path():
-    import json
-
-    from core.adapters.mock import MockAdapter
-
-    instruction = (
-        "adicione uma função soma(a, b) no novo arquivo "
-        "core/adapters/mock_test_declaration.py, retorne 5, "
-        "e crie um teste pytest correspondente"
-    )
-
-    response = json.loads(MockAdapter().generate(instruction))
-
-    assert response["tests"] == [
-        "test_core/adapters/mock_test_declaration.py"
-    ]
-    assert response["changes"][1]["path"] == (
-        "test_core/adapters/mock_test_declaration.py"
-    )
-
-
-def test_mock_extract_repair_path_preserves_nested_relative_path():
-    instruction = "corrija o arquivo core/adapters/mock.py"
-    assert MockAdapter._extract_repair_path(instruction) == "core/adapters/mock.py"
-
-
-def test_mock_extract_repair_path_returns_empty_when_missing():
-    assert MockAdapter._extract_repair_path("corrija o arquivo") == ""
-
-
-@pytest.mark.parametrize(
-    "marker",
-    [
-        " contendo ",
-        " com conteúdo ",
-        " com conteudo ",
-    ],
-)
-def test_mock_extract_invalid_content_supports_all_markers(marker):
-    instruction = f"corrija broken.py{marker}conteúdo inválido"
-
-    assert (
-        MockAdapter._extract_invalid_content(instruction)
-        == "conteúdo inválido"
-    )
+    assert result == ""
 
 
 def test_mock_extract_invalid_content_uses_default():

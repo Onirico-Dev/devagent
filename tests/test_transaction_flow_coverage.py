@@ -584,7 +584,7 @@ def test_handle_non_commit_exception_returns_rollback_result():
         rollback_fn=flow.rollback_transaction,
     )
 
-    assert result["status"] == TaskHistoryStatus.FAILED.value
+    assert result["status"] == TaskHistoryStatus.ROLLED_BACK.value
     assert result["error"] == "execução"
 
 

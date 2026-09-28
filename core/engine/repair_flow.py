@@ -106,6 +106,26 @@ class RepairFlow:
             }
 
         if diagnosis.get("action") == "none":
+            execution = getattr(
+                transaction,
+                "metadata",
+                {},
+            ).get(
+                "execution",
+                {},
+            )
+
+            if execution.get("changes_applied", 0) > 0:
+                repair_state.record(
+                    action="none",
+                    status=TaskHistoryStatus.REPAIRING.value,
+                    error=(
+                        test_result.get("stderr")
+                        or test_result.get("output", "")
+                    ),
+                )
+                repair_state.persist(transaction)
+
             return (
                 diagnosis,
                 {

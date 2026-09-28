@@ -397,10 +397,30 @@ class SafeExecutor:
 
     def execute(self, transaction):
         transaction.status = TransactionStatus.EXECUTING
+
+        metadata = getattr(
+            transaction,
+            "metadata",
+            None,
+        )
+        if metadata is None:
+            metadata = {}
+            transaction.metadata = metadata
+
+        execution = metadata.setdefault(
+            "execution",
+            {},
+        )
+        execution["phase"] = "executing"
+        execution["changes_applied"] = 0
+
         try:
             for change in transaction.changes:
                 self.execute_change(change)
+                execution["changes_applied"] += 1
         except Exception:
             transaction.status = TransactionStatus.FAILED
             raise
+
+        execution["phase"] = "completed"
         return transaction

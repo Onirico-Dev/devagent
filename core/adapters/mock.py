@@ -405,17 +405,20 @@ class MockAdapter(AIAdapter):
                         f"    return {expression}\n"
                     )
 
-            # Preserva o comportamento histórico para conteúdo inválido
-            # explícito, exceto quando a rota legada já foi rejeitada.
+            # Conteúdo inválido sem evidência semântica suficiente
+            # não autoriza uma proposta de alteração executável.
+            try:
+                compile(content, repair_path, "exec")
+            except (SyntaxError, TypeError, ValueError):
+                return ""
+
             return json.dumps(
                 {
                     "diagnosis": (
-                        "O arquivo contém conteúdo que não constitui "
-                        "Python válido."
+                        "O conteúdo fornecido constitui código Python válido."
                     ),
                     "correction": (
-                        "O conteúdo precisa ser substituído por código "
-                        "Python válido."
+                        "Aplicar o conteúdo explicitamente fornecido."
                     ),
                     "risk": "baixo",
                     "action": "modify",
@@ -425,27 +428,9 @@ class MockAdapter(AIAdapter):
                 ensure_ascii=False,
             )
 
-        # ------------------------------------------------------------
-        # Reparo genérico sem conteúdo extraível.
-        # Mantém o conteúdo default histórico do MockAdapter.
-        # ------------------------------------------------------------
-        return json.dumps(
-            {
-                "diagnosis": (
-                    "O arquivo contém conteúdo que não constitui "
-                    "Python válido."
-                ),
-                "correction": (
-                    "O conteúdo precisa ser substituído por código "
-                    "Python válido."
-                ),
-                "risk": "baixo",
-                "action": "modify",
-                "path": repair_path,
-                "content": "isto não é Python válido",
-            },
-            ensure_ascii=False,
-        )
+        # Sem conteúdo extraível e sem evidência semântica segura:
+        # não propor reparo.
+        return ""
 
     def _generate_planner_response(self, prompt: str) -> str:
         marker = "INSTRUÇÃO DO USUÁRIO:"
@@ -715,6 +700,62 @@ class MockAdapter(AIAdapter):
         ]
 
     def _build_compound_create_changes(self, instruction: str):
+        # Forma abreviada de múltiplas operações com a mesma ação:
+        # "alterar a.py e b.py", "modificar a.py e b.py", etc.
+        same_action_match = re.match(
+            r"^\s*"
+            r"(crie|criar|create|modifique|modificar|"
+            r"altere|alterar|modify|delete|apague|remova|remover)"
+            r"\s+"
+            r"(.+?)"
+            r"\s*$",
+            instruction,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+
+        if same_action_match:
+            action = same_action_match.group(1)
+            targets_text = same_action_match.group(2)
+
+            targets = re.split(
+                r"\s+e\s+",
+                targets_text,
+                flags=re.IGNORECASE,
+            )
+
+            if len(targets) >= 2:
+                changes = []
+
+                for target in targets:
+                    target = target.strip()
+                    target = re.sub(
+                        r"^(?:o|a|arquivo|módulo)\s+",
+                        "",
+                        target,
+                        flags=re.IGNORECASE,
+                    ).strip("\"'`.,;:")
+
+                    if not re.fullmatch(
+                        r"[A-Za-z0-9_./-]+\.[A-Za-z0-9_-]+",
+                        target,
+                    ):
+                        changes = []
+                        break
+
+                    change = self._build_planner_change(
+                        f"{action} {target}",
+                        "",
+                    )
+
+                    if change is None:
+                        changes = []
+                        break
+
+                    changes.append(change)
+
+                if len(changes) >= 2:
+                    return changes
+
         function_changes = self._build_function_pytest_changes(instruction)
         if function_changes:
             return function_changes

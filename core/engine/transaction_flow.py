@@ -151,11 +151,25 @@ class TransactionFlow:
         repair_state,
         approval_id,
     ):
+        execution = transaction.metadata.setdefault(
+            "execution",
+            {},
+        )
+        execution["phase"] = "preparing"
+        execution["changes_applied"] = 0
+        self.transactions.persist_manifest(transaction)
+
         self._prepare_transaction(transaction)
+
+        execution["phase"] = "executing"
+        self.transactions.persist_manifest(transaction)
 
         self.executor.execute(
             transaction
         )
+
+        execution["phase"] = "testing"
+        self.transactions.persist_manifest(transaction)
 
         repair_state.mark_testing()
         transaction.status = TransactionStatus.TESTING
@@ -612,12 +626,46 @@ class TransactionFlow:
 
             raise
 
+        execution = getattr(
+            transaction,
+            "metadata",
+            {},
+        ).get(
+            "execution",
+            {},
+        )
+
+        has_execution_marker = bool(execution)
+
+        partial_execution = (
+            execution.get("phase") == "executing"
+            and execution.get("changes_applied", 0) > 0
+        )
+
+        # Compatibilidade com transações artificiais/legadas que já
+        # chegam em EXECUTING sem o marcador de execução. O fluxo real
+        # sempre grava o marcador antes de chamar o executor.
+        legacy_execution = (
+            not has_execution_marker
+            and getattr(
+                transaction,
+                "status",
+                None,
+            ) == TransactionStatus.EXECUTING
+        )
+
+        rollback_status = (
+            TaskHistoryStatus.ROLLED_BACK.value
+            if partial_execution or legacy_execution
+            else TaskHistoryStatus.FAILED.value
+        )
+
         result = rollback_fn(
             approval_id=approval_id,
             transaction=transaction,
             repair_state=repair_state,
             error=error,
-            status=TaskHistoryStatus.FAILED.value,
+            status=rollback_status,
         )
 
         if result.get("rollback_error"):
