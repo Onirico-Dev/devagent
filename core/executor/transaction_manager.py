@@ -278,6 +278,7 @@ class TransactionManager:
 
             if commit_result is not None:
                 self.transition(current, TransactionStatus.COMMITTED)
+                current.metadata["recovery"] = True
                 current.metadata["recovery_git"] = dict(commit_result)
                 self.persist_manifest(current)
                 return current
@@ -286,9 +287,13 @@ class TransactionManager:
             self.rollback(current)
         except Exception as error:
             self.transition(current, TransactionStatus.FAILED)
+            current.metadata["recovery"] = True
             current.metadata["recovery_error"] = str(error)
             self.persist_manifest(current)
+            return current
 
+        current.metadata["recovery"] = True
+        self.persist_manifest(current)
         return current
 
     def recover_incomplete_transactions(

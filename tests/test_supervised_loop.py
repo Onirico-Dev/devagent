@@ -1126,6 +1126,54 @@ def test_supervised_loop_records_execution_feedback():
     assert observation.metadata["status"] == "committed"
 
 
+def test_supervised_loop_propagates_feedback_failure_after_successful_approval():
+    class Worker:
+        def run_once(self):
+            return [{
+                "instruction": "crie arquivo.txt",
+                "approval_id": "feedback-after-approve",
+                "status": "pending",
+                "plan": {
+                    "objective": "crie arquivo.txt",
+                    "changes": [],
+                    "tests": [],
+                    "risks": [],
+                },
+                "autonomy_decision": "auto_approve",
+            }]
+
+    class Gateway:
+        def __init__(self):
+            self.approved = []
+
+        def list_tasks(self):
+            return []
+
+        def approve(self, approval_id):
+            self.approved.append(approval_id)
+            return {
+                "approval_id": approval_id,
+                "transaction_id": "tx-feedback-after-approve",
+                "status": "committed",
+            }
+
+    class Observer:
+        def add(self, observation):
+            raise RuntimeError("FEEDBACK_PERSIST_FAILURE")
+
+    gateway = Gateway()
+    loop = SupervisedLoop(
+        worker=Worker(),
+        gateway=gateway,
+        observer=Observer(),
+    )
+
+    with pytest.raises(RuntimeError, match="FEEDBACK_PERSIST_FAILURE"):
+        loop.run_once()
+
+    assert gateway.approved == ["feedback-after-approve"]
+    assert loop.iterations == 1
+
 def test_supervised_loop_human_approval_records_execution_feedback(tmp_path):
     from core.observation_store import ObservationStore
     from core.observer import Observer

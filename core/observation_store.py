@@ -171,6 +171,61 @@ class ObservationStore:
                 )
                 process_lock.close()
 
+    def append_if_absent(
+        self,
+        observation: Observation,
+    ) -> bool:
+        if not isinstance(observation, Observation):
+            raise ValueError("Observação inválida.")
+
+        transaction_id = observation.metadata.get("transaction_id")
+        source = observation.metadata.get("source")
+
+        if source != "transaction_result":
+            raise ValueError(
+                "append_if_absent exige observação de resultado de transação."
+            )
+
+        if not isinstance(transaction_id, str) or not transaction_id.strip():
+            raise ValueError(
+                "Observação de resultado sem transaction_id."
+            )
+
+        with self._lock:
+            process_lock = self._process_lock()
+            try:
+                records = self._read()
+
+                for record in records:
+                    if not isinstance(record, dict):
+                        continue
+
+                    metadata = record.get("metadata", {})
+                    if not isinstance(metadata, dict):
+                        continue
+
+                    if (
+                        metadata.get("source") == "transaction_result"
+                        and metadata.get("transaction_id") == transaction_id
+                    ):
+                        return False
+
+                records.append(
+                    {
+                        "instruction": observation.instruction,
+                        "metadata": dict(observation.metadata),
+                    }
+                )
+
+                self._write(records)
+                return True
+            finally:
+                fcntl.flock(
+                    process_lock.fileno(),
+                    fcntl.LOCK_UN,
+                )
+                process_lock.close()
+
     def append(self, observation: Observation) -> None:
         if not isinstance(observation, Observation):
             raise ValueError("Observação inválida.")

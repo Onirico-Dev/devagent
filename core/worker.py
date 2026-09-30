@@ -8,6 +8,7 @@ from core.worker_state_store import WorkerStateStore
 from core.autonomy_policy import AutonomyDecision, AutonomyPolicy
 from core.schemas.models import Plan
 from core.feedback_handler import FeedbackHandler
+from core.execution_feedback import ExecutionFeedback
 
 
 @dataclass(frozen=True)
@@ -470,7 +471,48 @@ class Worker:
             autonomy_decision=autonomy_decision,
         )
 
+    def _reconcile_terminal_feedback(self) -> None:
+        list_tasks = getattr(self.gateway, "list_tasks", None)
+        if not callable(list_tasks):
+            return
+
+        tasks = list_tasks()
+        if not isinstance(tasks, list):
+            return
+
+        feedback_builder = ExecutionFeedback()
+
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+
+            if task.get("recovery") is True:
+                continue
+
+            status = task.get("status")
+            transaction_id = task.get("transaction_id")
+
+            if status not in ExecutionFeedback.FINAL_STATUSES:
+                continue
+
+            if not isinstance(transaction_id, str) or not transaction_id.strip():
+                continue
+
+            result = dict(task)
+            result["approval_id"] = task.get(
+                "approval_id",
+                task.get("task_id"),
+            )
+
+            observation = feedback_builder.build(result)
+            if observation is None:
+                continue
+
+            self.observer.add_if_absent(observation)
+
     def run_once(self) -> list[Proposal]:
+        self._reconcile_terminal_feedback()
+
         proposals = []
         self._errors = []
 

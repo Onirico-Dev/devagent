@@ -2091,3 +2091,122 @@ def test_real_autonomy_cycle_repair_physical_mismatch_rolls_back(
     ).stdout
 
     assert git_status == ""
+
+def test_real_transaction_feedback_is_recovered_after_restart(tmp_path):
+    from core.execution_feedback import ExecutionFeedback
+
+    init_git(tmp_path)
+
+    observation_store = ObservationStore(tmp_path / "observations.json")
+    worker_store = WorkerStateStore(tmp_path / "worker.json")
+
+    observation = ExecutionFeedback().build(
+        {
+            "approval_id": "approval-original",
+            "transaction_id": "tx-human-feedback",
+            "status": "failed",
+            "tests": {"passed": False},
+            "repair_attempts": 2,
+            "metadata": {
+                "instruction": "corrigir arquivo quebrado",
+                "objective": "autonomous correction",
+                "repair_cycle": {
+                    "attempts": 2,
+                    "max_attempts": 2,
+                },
+                "change": {
+                    "type": "create",
+                    "path": "autonomous_smoke.py",
+                    "content": "VALUE = 42\n",
+                },
+            },
+        }
+    )
+
+    observation_store.append(observation)
+
+    gateway = DevAgentGateway(CreateAgent(), root=tmp_path)
+
+    class FailingFeedbackObserver(Observer):
+        def add(self, observation):
+            if observation.metadata.get("source") == "transaction_result":
+                raise RuntimeError("FEEDBACK_PERSIST_FAILURE")
+            return super().add(observation)
+
+    observer = FailingFeedbackObserver(store=observation_store)
+    worker = Worker(gateway, observer, store=worker_store)
+    loop = SupervisedLoop(
+        worker=worker,
+        gateway=gateway,
+        observer=observer,
+        state_store=WorkerStateStore(tmp_path / "supervised_loop.json"),
+    )
+
+    result = worker.run_once()
+    assert len(result) == 1
+
+    approval_id = result[0].approval_id
+
+    try:
+        loop.approve(approval_id)
+    except RuntimeError as error:
+        assert str(error) == "FEEDBACK_PERSIST_FAILURE"
+    else:
+        raise AssertionError("A falha de persistência do feedback deveria propagar.")
+
+    target = tmp_path / "autonomous_smoke.py"
+    assert target.read_text(encoding="utf-8") == "VALUE = 42\n"
+
+    committed_task = gateway.get_task(approval_id)
+    assert committed_task["status"] == "committed"
+
+    observations_before_restart = observation_store.load()
+    feedback_before_restart = [
+        item
+        for item in observations_before_restart
+        if item.metadata.get("source") == "transaction_result"
+    ]
+    assert len(feedback_before_restart) == 1
+    assert feedback_before_restart[0].metadata["status"] == "failed"
+
+    restarted_gateway = DevAgentGateway(CreateAgent(), root=tmp_path)
+    restarted_observation_store = ObservationStore(tmp_path / "observations.json")
+    restarted_observer = Observer(store=restarted_observation_store)
+    restarted_worker = Worker(
+        restarted_gateway,
+        restarted_observer,
+        store=worker_store,
+    )
+
+    restarted_worker.run_once()
+
+    observations_after_restart = restarted_observation_store.load()
+    feedback_after_restart = [
+        item
+        for item in observations_after_restart
+        if item.metadata.get("source") == "transaction_result"
+    ]
+
+    assert len(feedback_after_restart) == 2
+    assert sorted(
+        item.metadata["status"] for item in feedback_after_restart
+    ) == ["committed", "failed"]
+
+    committed_feedback = [
+        item
+        for item in feedback_after_restart
+        if item.metadata["status"] == "committed"
+    ]
+    assert len(committed_feedback) == 1
+    assert committed_feedback[0].metadata["transaction_id"] == committed_task["transaction_id"]
+
+    restarted_worker.run_once()
+
+    observations_after_second_restart_cycle = restarted_observation_store.load()
+    feedback_after_second_restart_cycle = [
+        item
+        for item in observations_after_second_restart_cycle
+        if item.metadata.get("source") == "transaction_result"
+    ]
+
+    assert len(feedback_after_second_restart_cycle) == 2
