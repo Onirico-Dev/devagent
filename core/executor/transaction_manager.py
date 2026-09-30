@@ -233,6 +233,36 @@ class TransactionManager:
 
         return transactions
 
+    def list_terminal_transactions(self):
+        transactions = []
+
+        if not self.backup_dir.exists():
+            return transactions
+
+        terminal_statuses = {
+            TransactionStatus.COMMITTED,
+            TransactionStatus.ROLLED_BACK,
+            TransactionStatus.FAILED,
+        }
+
+        for manifest in self.backup_dir.glob("*.json"):
+            if manifest.is_symlink() or not manifest.is_file():
+                continue
+
+            transaction_id = manifest.name[:-5]
+            if not transaction_id:
+                continue
+
+            try:
+                transaction = self.load_manifest(transaction_id)
+            except ValueError:
+                continue
+
+            if transaction.status in terminal_statuses:
+                transactions.append(transaction)
+
+        return transactions
+
     def _recovery_lock(self, transaction_id):
         lock_path = self.backup_dir / (
             f".{transaction_id}.recovery.lock"

@@ -104,8 +104,10 @@ class DevAgentGateway:
                 commit_detector=self.git.find_transaction_commit,
             )
 
+        terminal_transactions = self.transactions.list_terminal_transactions()
+
         self.recovery_reconciler.reconcile(
-            recovered_transactions
+            recovered_transactions + terminal_transactions
         )
 
         self.repair_flow = RepairFlow(
