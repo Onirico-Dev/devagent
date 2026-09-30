@@ -54,6 +54,35 @@ def test_reconcile_updates_task_by_approval_id():
     ]
 
 
+def test_reconcile_deduplicates_same_transaction():
+    history = FakeHistory()
+    history.tasks = [
+        {
+            "task_id": "task-duplicate",
+            "transaction_id": "tx-duplicate",
+        }
+    ]
+
+    transaction = FakeTransaction(
+        "tx-duplicate",
+        TaskHistoryStatus.COMMITTED.value,
+    )
+
+    RecoveryReconciler(history).reconcile(
+        [transaction, transaction]
+    )
+
+    assert history.updates == [
+        (
+            "task-duplicate",
+            {
+                "status": TaskHistoryStatus.COMMITTED.value,
+                "transaction_id": "tx-duplicate",
+            },
+        )
+    ]
+
+
 def test_reconcile_falls_back_to_transaction_id():
     history = FakeHistory()
     history.tasks = [{"task_id": "task-2", "transaction_id": "tx-2"}]

@@ -14,8 +14,19 @@ class RecoveryReconciler:
         self.history = history
 
     def reconcile(self, transactions):
+        reconciled = set()
+
         for transaction in transactions:
-            status = getattr(transaction.status, "value", transaction.status)
+            transaction_id = transaction.transaction_id
+
+            if transaction_id in reconciled:
+                continue
+
+            status = getattr(
+                transaction.status,
+                "value",
+                transaction.status,
+            )
 
             if status not in self.FINAL_STATUSES:
                 continue
@@ -31,8 +42,7 @@ class RecoveryReconciler:
                     (
                         item
                         for item in self.history.list_all()
-                        if item.get("transaction_id")
-                        == transaction.transaction_id
+                        if item.get("transaction_id") == transaction_id
                     ),
                     None,
                 )
@@ -43,5 +53,6 @@ class RecoveryReconciler:
             self.history.update(
                 task["task_id"],
                 status=status,
-                transaction_id=transaction.transaction_id,
+                transaction_id=transaction_id,
             )
+            reconciled.add(transaction_id)
