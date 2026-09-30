@@ -1814,3 +1814,76 @@ def test_process_observation_crash_after_atomic_persist_preserves_other_retries(
 
     assert retry_a in restarted._retry_instructions
     assert retry_b in restarted._retry_instructions
+
+def test_worker_restart_reuses_pending_proposal_after_crash_before_persist(
+    tmp_path,
+):
+    from core.observation import Observation
+    from core.observer import Observer
+    from core.worker import Worker
+    from core.worker_state_store import WorkerStateStore
+
+    class Gateway:
+        def __init__(self):
+            self.pending = []
+            self.create_calls = 0
+
+        def list_pending(self):
+            return list(self.pending)
+
+        def create_task(self, instruction):
+            self.create_calls += 1
+            result = {
+                "approval_id": f"approval-{self.create_calls}",
+                "status": "pending",
+                "plan": {},
+            }
+            self.pending.append(
+                {
+                    "instruction": instruction,
+                    **result,
+                }
+            )
+            return result
+
+    class CrashBeforePersistStore(WorkerStateStore):
+        def _save_unlocked(self, state):
+            raise RuntimeError("simulated crash before durable persist")
+
+    path = tmp_path / "worker.json"
+    gateway = Gateway()
+    observation = Observation("nova tarefa", {})
+
+    crashing_worker = Worker(
+        gateway,
+        Observer([]),
+        store=CrashBeforePersistStore(path),
+    )
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        crashing_worker.process_observation(observation)
+
+    assert gateway.create_calls == 1
+    assert gateway.pending[0]["approval_id"] == "approval-1"
+    assert not path.exists()
+
+    restarted = Worker(
+        gateway,
+        Observer([]),
+        store=WorkerStateStore(path),
+    )
+
+    proposal = restarted.process_observation(observation)
+
+    assert proposal.approval_id == "approval-1"
+    assert gateway.create_calls == 1
+    assert restarted.processed_ids == {"approval-1"}
+
+    persisted = WorkerStateStore(path).load()
+    assert persisted["processed"] == [
+        {
+            "instruction": "nova tarefa",
+            "metadata": {},
+        }
+    ]
+    assert persisted["processed_ids"] == ["approval-1"]
