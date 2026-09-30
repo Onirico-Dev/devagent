@@ -215,3 +215,123 @@ def test_save_suppresses_temporary_cleanup_error(monkeypatch, tmp_path):
 
     with pytest.raises(OSError, match="replace failed"):
         store.save([Observation("teste", {})])
+
+def test_append_if_absent_adds_transaction_result_once(tmp_path: Path):
+    store = ObservationStore(tmp_path / "observations.json")
+    observation = Observation(
+        "resultado da transação",
+        {
+            "source": "transaction_result",
+            "transaction_id": "tx-idempotent",
+            "status": "committed",
+        },
+    )
+
+    assert store.append_if_absent(observation) is True
+    assert store.append_if_absent(observation) is False
+    assert store.load() == [observation]
+
+
+def test_append_if_absent_rejects_non_transaction_result(tmp_path: Path):
+    store = ObservationStore(tmp_path / "observations.json")
+    observation = Observation(
+        "observação comum",
+        {
+            "source": "test",
+            "transaction_id": "tx-invalid-source",
+        },
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="append_if_absent exige observação de resultado de transação",
+    ):
+        store.append_if_absent(observation)
+
+
+def test_append_if_absent_rejects_missing_transaction_id(tmp_path: Path):
+    store = ObservationStore(tmp_path / "observations.json")
+    observation = Observation(
+        "resultado da transação",
+        {
+            "source": "transaction_result",
+        },
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Observação de resultado sem transaction_id",
+    ):
+        store.append_if_absent(observation)
+
+def _observation_store_append_if_absent_process(
+    path,
+    start_event,
+    ready_queue,
+    result_queue,
+):
+    from core.observation import Observation
+    from core.observation_store import ObservationStore
+
+    store = ObservationStore(path)
+    observation = Observation(
+        "resultado recuperado",
+        {
+            "source": "transaction_result",
+            "transaction_id": "tx-concurrent-idempotent",
+            "status": "committed",
+        },
+    )
+
+    ready_queue.put("ready")
+    start_event.wait(timeout=10)
+    result_queue.put(store.append_if_absent(observation))
+
+
+def test_append_if_absent_is_idempotent_across_processes(tmp_path):
+    import multiprocessing as mp
+
+    path = tmp_path / "observations.json"
+    ObservationStore(path).save([])
+
+    context = mp.get_context("spawn")
+    start_event = context.Event()
+    ready_queue = context.Queue()
+    result_queue = context.Queue()
+
+    processes = [
+        context.Process(
+            target=_observation_store_append_if_absent_process,
+            args=(
+                str(path),
+                start_event,
+                ready_queue,
+                result_queue,
+            ),
+        )
+        for _ in range(2)
+    ]
+
+    for process in processes:
+        process.start()
+
+    ready_queue.get(timeout=10)
+    ready_queue.get(timeout=10)
+    start_event.set()
+
+    for process in processes:
+        process.join(timeout=15)
+
+    assert all(not process.is_alive() for process in processes)
+    assert all(process.exitcode == 0 for process in processes)
+
+    results = [result_queue.get(timeout=10) for _ in range(2)]
+
+    assert sorted(results) == [False, True]
+
+    observations = ObservationStore(path).load()
+
+    assert len(observations) == 1
+    assert observations[0].metadata["transaction_id"] == (
+        "tx-concurrent-idempotent"
+    )

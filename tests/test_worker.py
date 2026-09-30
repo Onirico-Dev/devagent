@@ -1887,3 +1887,70 @@ def test_worker_restart_reuses_pending_proposal_after_crash_before_persist(
         }
     ]
     assert persisted["processed_ids"] == ["approval-1"]
+def test_worker_reconcile_terminal_feedback_filters_invalid_tasks():
+    from core.observer import Observer
+    from core.worker import Worker
+
+    class Gateway:
+        def list_tasks(self):
+            return [
+                {
+                    "task_id": "task-committed",
+                    "approval_id": "approval-committed",
+                    "transaction_id": "tx-committed",
+                    "status": "committed",
+                },
+                {
+                    "task_id": "task-failed",
+                    "approval_id": "approval-failed",
+                    "transaction_id": "tx-failed",
+                    "status": "failed",
+                },
+                {
+                    "task_id": "task-rolled-back",
+                    "approval_id": "approval-rolled-back",
+                    "transaction_id": "tx-rolled-back",
+                    "status": "rolled_back",
+                },
+                {
+                    "task_id": "task-pending",
+                    "approval_id": "approval-pending",
+                    "transaction_id": "tx-pending",
+                    "status": "pending",
+                },
+                {
+                    "task_id": "task-no-tx",
+                    "approval_id": "approval-no-tx",
+                    "status": "failed",
+                },
+                {
+                    "task_id": "task-recovery",
+                    "approval_id": "approval-recovery",
+                    "transaction_id": "tx-recovery",
+                    "status": "failed",
+                    "recovery": True,
+                },
+            ]
+
+    observer = Observer()
+    worker = Worker(Gateway(), observer)
+
+    worker._reconcile_terminal_feedback()
+
+    observations = observer.observe()
+
+    assert len(observations) == 3
+
+    assert {
+        observation.metadata["transaction_id"]
+        for observation in observations
+    } == {
+        "tx-committed",
+        "tx-failed",
+        "tx-rolled-back",
+    }
+
+    assert all(
+        observation.metadata["source"] == "transaction_result"
+        for observation in observations
+    )
