@@ -1812,7 +1812,7 @@ def test_process_observation_crash_after_atomic_persist_preserves_other_retries(
         store=WorkerStateStore(path),
     )
 
-    assert retry_a in restarted._retry_instructions
+    assert retry_a not in restarted._retry_instructions
     assert retry_b in restarted._retry_instructions
 
 def test_worker_restart_reuses_pending_proposal_after_crash_before_persist(

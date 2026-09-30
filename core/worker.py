@@ -292,6 +292,12 @@ class Worker:
                     )
                 ]
 
+                retry_instructions = [
+                    item
+                    for item in retry_instructions
+                    if item != instruction
+                ]
+
             existing_keys = {
                 (
                     item.get("instruction"),
@@ -614,7 +620,6 @@ class Worker:
 
                 if retry_allowed:
                     self._retry_instructions.discard(instruction)
-                    self._persist_state()
 
             except Exception as exc:
                 self._errors.append(
