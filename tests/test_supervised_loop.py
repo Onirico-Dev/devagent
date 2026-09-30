@@ -604,6 +604,56 @@ def test_supervised_loop_persists_iteration_when_auto_approve_fails(tmp_path):
     assert loop.iterations == 1
     assert store.load()["iterations"] == 1
 
+def test_supervised_loop_propagates_persist_failure_after_successful_auto_approval():
+    class Worker:
+        def run_once(self):
+            return [{
+                "instruction": "crie arquivo.txt",
+                "approval_id": "persist-after-approve",
+                "status": "pending",
+                "plan": {
+                    "objective": "crie arquivo.txt",
+                    "changes": [],
+                    "tests": [],
+                    "risks": [],
+                },
+                "autonomy_decision": "auto_approve",
+            }]
+
+    class Gateway:
+        def __init__(self):
+            self.approved = []
+
+        def list_tasks(self):
+            return []
+
+        def approve(self, approval_id):
+            self.approved.append(approval_id)
+            return {
+                "approval_id": approval_id,
+                "status": "committed",
+            }
+
+    class FailingStore:
+        def load(self):
+            return {}
+
+        def save(self, state):
+            raise RuntimeError("PERSIST_AFTER_APPROVE")
+
+    gateway = Gateway()
+    loop = SupervisedLoop(
+        worker=Worker(),
+        gateway=gateway,
+        state_store=FailingStore(),
+    )
+
+    with pytest.raises(RuntimeError, match="PERSIST_AFTER_APPROVE"):
+        loop.run_once()
+
+    assert gateway.approved == ["persist-after-approve"]
+    assert loop.iterations == 1
+
 def test_supervised_loop_persists_state_when_worker_fails(tmp_path):
     from core.worker_state_store import WorkerStateStore
 
