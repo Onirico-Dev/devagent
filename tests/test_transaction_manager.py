@@ -1155,6 +1155,81 @@ def test_transaction_manifest_lists_recoverable_transactions(tmp_path):
     }
 
 
+def test_transaction_manifest_lists_terminal_transactions(tmp_path):
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Transaction, TransactionStatus
+
+    manager = TransactionManager(root=tmp_path)
+
+    committed = Transaction(transaction_id="tx-committed")
+    rolled_back = Transaction(transaction_id="tx-rolled-back")
+    failed = Transaction(transaction_id="tx-failed")
+    executing = Transaction(transaction_id="tx-executing")
+    testing = Transaction(transaction_id="tx-testing")
+
+    manager.begin(committed)
+    manager.begin(rolled_back)
+    manager.begin(failed)
+    manager.begin(executing)
+    manager.begin(testing)
+
+    manager.transition(committed, TransactionStatus.COMMITTED)
+    manager.persist_manifest(committed)
+
+    manager.transition(rolled_back, TransactionStatus.ROLLED_BACK)
+    manager.persist_manifest(rolled_back)
+
+    manager.transition(failed, TransactionStatus.FAILED)
+    manager.persist_manifest(failed)
+
+    manager.transition(testing, TransactionStatus.TESTING)
+    manager.persist_manifest(testing)
+
+    terminal = manager.list_terminal_transactions()
+
+    assert {item.transaction_id for item in terminal} == {
+        "tx-committed",
+        "tx-rolled-back",
+        "tx-failed",
+    }
+
+
+def test_list_terminal_transactions_returns_empty_without_backup_dir(tmp_path):
+    from core.executor.transaction_manager import TransactionManager
+
+    manager = TransactionManager(root=tmp_path)
+
+    assert manager.list_terminal_transactions() == []
+
+
+def test_list_terminal_transactions_ignores_invalid_manifest(tmp_path):
+    from core.executor.transaction_manager import TransactionManager
+
+    manager = TransactionManager(root=tmp_path)
+    manager.backup_dir.mkdir(parents=True, exist_ok=True)
+    (manager.backup_dir / "invalid.json").write_text(
+        "{invalid",
+        encoding="utf-8",
+    )
+
+    assert manager.list_terminal_transactions() == []
+
+
+def test_list_terminal_transactions_ignores_manifest_symlink(tmp_path):
+    from core.executor.transaction_manager import TransactionManager
+
+    manager = TransactionManager(root=tmp_path)
+    manager.backup_dir.mkdir(parents=True, exist_ok=True)
+
+    target = manager.backup_dir / "real.json"
+    target.write_text("{}", encoding="utf-8")
+
+    link = manager.backup_dir / "link.json"
+    link.symlink_to(target)
+
+    assert manager.list_terminal_transactions() == []
+
+
 def test_recover_incomplete_transactions_is_idempotent(tmp_path, monkeypatch):
     from core.executor.transaction_manager import TransactionManager
     from core.schemas.models import Transaction, TransactionStatus
