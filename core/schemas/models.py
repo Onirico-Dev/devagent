@@ -19,6 +19,103 @@ class TransactionStatus(str, Enum):
     FAILED = "failed"
 
 
+@dataclass(frozen=True)
+class TestResult:
+    success: bool
+    returncode: int
+    stdout: str = ""
+    stderr: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TestResult":
+        if not isinstance(data, dict):
+            raise ValueError("Resultado de testes inválido.")
+
+        success = data.get("success", False)
+        if not isinstance(success, bool):
+            raise ValueError("O campo success do resultado de testes deve ser booleano.")
+
+        returncode = data.get("returncode", 0 if success else 1)
+        if not isinstance(returncode, int):
+            raise ValueError("O campo returncode do resultado de testes deve ser inteiro.")
+
+        stdout = data.get("stdout", "")
+        stderr = data.get("stderr", "")
+
+        if not isinstance(stdout, str):
+            raise ValueError("stdout do resultado de testes deve ser uma string.")
+        if not isinstance(stderr, str):
+            raise ValueError("stderr do resultado de testes deve ser uma string.")
+
+        return cls(
+            success=success,
+            returncode=returncode,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "success": self.success,
+            "returncode": self.returncode,
+            "stdout": self.stdout,
+            "stderr": self.stderr,
+        }
+
+    @classmethod
+    def combine_many(
+        cls,
+        results: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not results:
+            return cls(
+                success=True,
+                returncode=0,
+            ).to_dict()
+
+        combined = cls.from_dict(results[0])
+
+        for result in results[1:]:
+            combined = cls.from_dict(
+                cls.combine(
+                    combined.to_dict(),
+                    result,
+                )
+            )
+
+        return combined.to_dict()
+
+    @classmethod
+    def combine(
+        cls,
+        primary: dict[str, Any],
+        secondary: dict[str, Any],
+    ) -> dict[str, Any]:
+        first = cls.from_dict(primary)
+        second = cls.from_dict(secondary)
+
+        success = first.success and second.success
+
+        return cls(
+            success=success,
+            returncode=(
+                second.returncode
+                if not second.success
+                else first.returncode
+            ),
+            stdout="\n".join(
+                part
+                for part in (first.stdout, second.stdout)
+                if part
+            ),
+            stderr="\n".join(
+                part
+                for part in (first.stderr, second.stderr)
+                if part
+            ),
+        ).to_dict()
+
+
 @dataclass
 class FileInfo:
     path: str

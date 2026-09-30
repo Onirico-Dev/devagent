@@ -1986,3 +1986,108 @@ def test_real_autonomy_retry_instruction_persists_across_worker_restart(
     assert final_cycle == []
     assert final_gateway.created == []
     assert original_instruction not in final_worker._retry_instructions
+
+def test_real_autonomy_cycle_repair_physical_mismatch_rolls_back(
+    tmp_path,
+    monkeypatch,
+):
+    init_git(tmp_path)
+
+    observation_store = ObservationStore(
+        tmp_path / "observations.json"
+    )
+    worker_store = WorkerStateStore(
+        tmp_path / "worker.json"
+    )
+    loop_store = WorkerStateStore(
+        tmp_path / "supervised_loop.json"
+    )
+
+    observation_store.save(
+        [
+            Observation(
+                "criar arquivo autonomamente",
+                {"source": "repair-physical-mismatch"},
+            )
+        ]
+    )
+
+    gateway = DevAgentGateway(
+        RepairAgent(),
+        root=tmp_path,
+    )
+
+    repair_adapter = RepairAdapter()
+    repair_adapter.prompts = []
+    gateway.repair_engine.ai = repair_adapter
+
+    original_execute_change = gateway.executor.execute_change
+
+    def execute_change_with_physical_mismatch(change):
+        if change.content == "VALUE = 42\n":
+            target = tmp_path / change.path
+            target.write_text(
+                "VALUE = 999\n",
+                encoding="utf-8",
+            )
+            return None
+
+        return original_execute_change(change)
+
+    monkeypatch.setattr(
+        gateway.executor,
+        "execute_change",
+        execute_change_with_physical_mismatch,
+    )
+
+    worker = Worker(
+        gateway,
+        Observer(store=observation_store),
+        store=worker_store,
+        autonomy_policy=AutonomyPolicy(),
+    )
+
+    loop = SupervisedLoop(
+        worker,
+        gateway,
+        state_store=loop_store,
+    )
+
+    result = loop.run_once()
+
+    assert len(result.proposals) == 1
+    assert result.proposals[0].autonomy_decision == "auto_approve"
+    assert result.metadata["auto_approved_count"] == 1
+
+    assert len(repair_adapter.prompts) == 1
+
+    target = tmp_path / "autonomous_smoke.py"
+    assert not target.exists()
+
+    proposal = result.proposals[0]
+    task = gateway.get_task(proposal.approval_id)
+
+    assert task["status"] == "rolled_back"
+
+    transaction = gateway.transactions.load_manifest(
+        task["transaction_id"]
+    )
+
+    assert transaction.status.value == "rolled_back"
+    assert transaction.metadata["repair_cycle"]["attempts"] == 1
+
+    git_status = subprocess.run(
+        [
+            "git",
+            "status",
+            "--porcelain",
+            "--",
+            "autonomous_smoke.py",
+        ],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    assert git_status == ""

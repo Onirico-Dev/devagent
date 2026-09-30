@@ -1392,7 +1392,10 @@ def test_gateway_recovers_testing_transaction_after_restart(tmp_path):
         transaction_id=transaction.transaction_id,
     )
     repair_state.mark_testing()
-    transaction.status = TransactionStatus.TESTING
+    gateway.transactions.transition(
+        transaction,
+        TransactionStatus.TESTING,
+    )
     repair_state.persist(transaction)
 
     approval_id = "testing-restart-approval"

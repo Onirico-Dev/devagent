@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.engine.repair_executor import RepairExecutor
+from core.engine.repair_executor import RepairExecutor, RepairExecutorStatus
 from core.schemas.models import ChangeType, TransactionStatus
 from core.security import SecurityPolicy
 from core.executor.transaction_manager import TransactionManager
@@ -330,6 +330,47 @@ def test_execute_repair_rejects_duplicate_create(tmp_path):
         )
 
 
+def test_execute_repair_persists_manifest_after_change_registration(tmp_path):
+    fake_executor = FakeExecutor()
+    repair_executor = make_executor(
+        tmp_path,
+        executor=fake_executor,
+    )
+    transaction = make_transaction(tmp_path)
+
+    result = repair_executor.execute_repair(
+        repair={
+            "action": "create",
+            "path": "novo.py",
+            "content": "VALUE = 1\n",
+            "risk": "baixo",
+        },
+        instruction="reparar",
+        transaction=transaction,
+    )
+
+    assert result["success"] is True
+
+    manifest = (
+        tmp_path
+        / "transactions"
+        / "tx-test.json"
+    )
+    assert manifest.exists()
+
+    data = __import__("json").loads(
+        manifest.read_text(encoding="utf-8")
+    )
+
+    assert data["changes"] == [
+        {
+            "change_type": "create",
+            "path": "novo.py",
+            "content": "VALUE = 1\n",
+            "reason": "Correção automática",
+        }
+    ]
+
 def test_execute_repair_registers_create_and_records_metadata(tmp_path):
     fake_executor = FakeExecutor()
     repair_executor = make_executor(
@@ -353,7 +394,6 @@ def test_execute_repair_registers_create_and_records_metadata(tmp_path):
 
     assert result["success"] is True
     assert result["status"] == "repair_applied"
-    assert transaction.status == TransactionStatus.TESTING
     assert transaction.metadata["created"] == ["novo.py"]
     assert len(transaction.changes) == 1
     assert len(transaction.metadata["repairs"]) == 1
@@ -399,6 +439,55 @@ def test_execute_repair_backs_up_existing_file(tmp_path):
     assert transaction.changes[0].change_type == ChangeType.MODIFY
 
 
+def test_execute_repair_persists_registered_change_before_executor_failure(
+    tmp_path,
+):
+    fake_executor = FakeExecutor(
+        error=RuntimeError("falha física"),
+    )
+    repair_executor = make_executor(
+        tmp_path,
+        executor=fake_executor,
+    )
+    transaction = make_transaction(tmp_path)
+
+    result = repair_executor.execute_repair(
+        repair={
+            "action": "create",
+            "path": "arquivo.py",
+            "content": "VALUE = 1\\n",
+            "risk": "baixo",
+        },
+        instruction="reparar",
+        transaction=transaction,
+    )
+
+    assert result["success"] is False
+    assert result["status"] == "failed"
+    assert result["error"] == "falha física"
+
+    manifest = (
+        tmp_path
+        / "transactions"
+        / "tx-test.json"
+    )
+    assert manifest.exists()
+
+    data = __import__("json").loads(
+        manifest.read_text(encoding="utf-8")
+    )
+
+    assert data["changes"] == [
+        {
+            "change_type": "create",
+            "path": "arquivo.py",
+            "content": "VALUE = 1\\n",
+            "reason": "Correção automática",
+        }
+    ]
+    assert data["metadata"]["created"] == ["arquivo.py"]
+    assert len(transaction.changes) == 1
+
 def test_execute_repair_marks_failed_when_executor_raises(tmp_path):
     fake_executor = FakeExecutor(
         error=RuntimeError("falha física"),
@@ -423,7 +512,6 @@ def test_execute_repair_marks_failed_when_executor_raises(tmp_path):
     assert result["success"] is False
     assert result["status"] == "failed"
     assert result["error"] == "falha física"
-    assert transaction.status == TransactionStatus.FAILED
 
 
 def test_execute_repair_marks_failed_when_test_runner_raises(tmp_path):
@@ -451,7 +539,6 @@ def test_execute_repair_marks_failed_when_test_runner_raises(tmp_path):
     assert result["success"] is False
     assert result["status"] == "failed"
     assert result["error"] == "falha no test runner"
-    assert transaction.status == TransactionStatus.FAILED
 
 
 def test_execute_repair_rejects_non_boolean_test_success(tmp_path):
@@ -509,7 +596,6 @@ def test_execute_repair_without_test_runner_returns_applied(tmp_path):
     assert result["success"] is True
     assert result["status"] == "repair_applied"
     assert result["repair"]["path"] == "arquivo.py"
-    assert transaction.status == TransactionStatus.TESTING
 
 
 def test_execute_repair_normalizes_invalid_test_result(tmp_path):
@@ -778,4 +864,53 @@ def test_execute_repair_marks_failed_when_semantic_test_runner_raises(
     assert result["success"] is False
     assert result["status"] == "failed"
     assert result["error"] == "falha nos testes semânticos"
-    assert transaction.status == TransactionStatus.FAILED
+
+
+def test_repair_executor_rejects_physical_mismatch(tmp_path):
+    from core.engine.post_execution import PostExecutionVerifier
+    from core.schemas.models import Transaction
+
+    class MismatchExecutor:
+        def execute_change(self, change):
+            target = tmp_path / change.path
+            target.write_text("VALUE = 999\\n", encoding="utf-8")
+
+    class PassingTestRunner:
+        def run(self, paths):
+            return {
+                "success": True,
+                "stdout": "",
+                "stderr": "",
+            }
+
+    repair_executor = make_executor(
+        tmp_path,
+        test_runner=PassingTestRunner(),
+        executor=MismatchExecutor(),
+    )
+    repair_executor.post_execution_verifier = PostExecutionVerifier(tmp_path)
+
+    transaction = Transaction(
+        transaction_id="repair-verification-mismatch",
+        changes=[],
+        metadata={},
+    )
+
+    repair = {
+        "action": "create",
+        "path": "verified_repair.py",
+        "content": "VALUE = 42\\n",
+        "correction": "Corrigir valor.",
+        "risk": "baixo",
+    }
+
+    result = repair_executor.execute_repair(
+        repair=repair,
+        instruction="corrigir valor",
+        transaction=transaction,
+    )
+
+    assert result["success"] is False
+    assert result["status"] == RepairExecutorStatus.REPAIR_FAILED.value
+    assert result["verification"]["success"] is False
+    assert result["verification"]["status"] == "content_mismatch"

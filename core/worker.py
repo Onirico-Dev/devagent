@@ -231,6 +231,20 @@ class Worker:
             metadata=dict(observation.metadata),
         )
 
+    def _persist_processed_state(self, operation) -> None:
+        processed = set(self._processed)
+        processed_ids = set(self._processed_ids)
+        processed_observations = dict(self._processed_observations)
+
+        try:
+            operation()
+            self._persist_state()
+        except Exception:
+            self._processed = processed
+            self._processed_ids = processed_ids
+            self._processed_observations = processed_observations
+            raise
+
     def process_observation(
         self,
         observation: Observation,
@@ -570,20 +584,24 @@ class Worker:
                         proposals.append(proposal)
                         approval_id = proposal.approval_id
                     else:
-                        self._processed.add(key)
-                        self._processed_observations[key] = Observation(
-                            instruction=observation.instruction.strip(),
-                            metadata=dict(observation.metadata),
-                        )
-                        self._persist_state()
+                        def mark_feedback_processed():
+                            self._processed.add(key)
+                            self._processed_observations[key] = Observation(
+                                instruction=observation.instruction.strip(),
+                                metadata=dict(observation.metadata),
+                            )
+
+                        self._persist_processed_state(mark_feedback_processed)
                         continue
 
-                    self._mark_processed(
-                        key=key,
-                        observation=observation,
-                        approval_id=approval_id,
-                    )
-                    self._persist_state()
+                    def mark_transaction_processed():
+                        self._mark_processed(
+                            key=key,
+                            observation=observation,
+                            approval_id=approval_id,
+                        )
+
+                    self._persist_processed_state(mark_transaction_processed)
                     continue
 
                 proposals.append(

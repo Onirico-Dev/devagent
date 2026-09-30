@@ -118,7 +118,7 @@ class RepairFlow:
             if execution.get("changes_applied", 0) > 0:
                 repair_state.record(
                     action="none",
-                    status=TaskHistoryStatus.REPAIRING.value,
+                    status=RepairCycleStatus.REPAIRING,
                     error=(
                         test_result.get("stderr")
                         or test_result.get("output", "")
@@ -160,7 +160,7 @@ class RepairFlow:
                 "action",
                 "unknown",
             ),
-            status=TaskHistoryStatus.REPAIRING.value,
+            status=RepairCycleStatus.REPAIRING,
         )
         repair_state.persist(transaction)
 
@@ -205,6 +205,23 @@ class RepairFlow:
             repair_state.persist(transaction)
 
             return repair_result
+
+        verification = repair_result.get("verification")
+        if (
+            isinstance(verification, dict)
+            and not verification.get("success")
+        ):
+            repair_state.mark_repair_failed(
+                error="Falha na verificação física do reparo.",
+            )
+            repair_state.persist(transaction)
+
+            return self._build_repair_rollback_result(
+                repair_result=repair_result,
+                test_result=repair_result.get("tests", {}),
+                repair_state=repair_state,
+                error="Falha na verificação física do reparo.",
+            )["result"]
 
         test_result = repair_result.get("tests")
 

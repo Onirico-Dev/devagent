@@ -247,7 +247,7 @@ class TransactionManager:
             commit_result = commit_detector(current.transaction_id)
 
             if commit_result is not None:
-                current.status = TransactionStatus.COMMITTED
+                self.transition(current, TransactionStatus.COMMITTED)
                 current.metadata["recovery_git"] = dict(commit_result)
                 self.persist_manifest(current)
                 return current
@@ -255,7 +255,7 @@ class TransactionManager:
         try:
             self.rollback(current)
         except Exception as error:
-            current.status = TransactionStatus.FAILED
+            self.transition(current, TransactionStatus.FAILED)
             current.metadata["recovery_error"] = str(error)
             self.persist_manifest(current)
 
@@ -446,6 +446,46 @@ class TransactionManager:
         )
 
 
+    _ALLOWED_TRANSITIONS = {
+        TransactionStatus.PENDING: {
+            TransactionStatus.EXECUTING,
+        },
+        TransactionStatus.EXECUTING: {
+            TransactionStatus.TESTING,
+            TransactionStatus.COMMITTED,
+            TransactionStatus.ROLLED_BACK,
+            TransactionStatus.FAILED,
+        },
+        TransactionStatus.TESTING: {
+            TransactionStatus.COMMITTED,
+            TransactionStatus.ROLLED_BACK,
+            TransactionStatus.FAILED,
+        },
+        TransactionStatus.FAILED: {
+            TransactionStatus.ROLLED_BACK,
+        },
+        TransactionStatus.COMMITTED: set(),
+        TransactionStatus.ROLLED_BACK: set(),
+    }
+
+    def transition(self, transaction, new_status):
+        current_status = transaction.status
+        if current_status is None:
+            current_status = TransactionStatus.PENDING
+
+        if current_status == new_status:
+            return transaction
+
+        allowed = self._ALLOWED_TRANSITIONS.get(current_status, set())
+        if new_status not in allowed:
+            raise ValueError(
+                f"Transição de estado inválida: "
+                f"{current_status.value} -> {new_status.value}"
+            )
+
+        transaction.status = new_status
+        return transaction
+
     def begin(self, transaction):
         if (
             not getattr(transaction, "transaction_id", None)
@@ -453,7 +493,7 @@ class TransactionManager:
         ):
             transaction.transaction_id = str(uuid.uuid4())
 
-        transaction.status = TransactionStatus.EXECUTING
+        self.transition(transaction, TransactionStatus.EXECUTING)
 
         backup_relative = self.backup_dir.relative_to(self.root)
         backup_parent_relative = backup_relative.parent
@@ -949,9 +989,7 @@ class TransactionManager:
             backup_root,
         )
 
-        transaction.status = (
-            TransactionStatus.ROLLED_BACK
-        )
+        self.transition(transaction, TransactionStatus.ROLLED_BACK)
         self.persist_manifest(transaction)
 
         return transaction

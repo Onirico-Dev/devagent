@@ -96,6 +96,10 @@ class Transactions:
     def persist_manifest(self, tx):
         self.manifests.append(tx)
 
+    def transition(self, transaction, new_status):
+        transaction.status = new_status
+        return transaction
+
 
 class Security:
     def __init__(self):

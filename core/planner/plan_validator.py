@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from core.parser.command_parser import Command
 from core.schemas.models import Change, ChangeType, Plan
 
 
@@ -169,6 +170,45 @@ class PlanValidator:
             self._validate_change(change)
 
         return True
+
+    def validate_command_coherence(self, command: Command, plan: Plan):
+        if not isinstance(command, Command):
+            raise TypeError(
+                "O comando deve ser uma instância de Command."
+            )
+
+        self.validate(plan)
+
+        if command.action not in (
+            "create",
+            "modify",
+            "delete",
+        ):
+            return True
+
+        if not command.target:
+            return True
+
+        expected_type = {
+            "create": ChangeType.CREATE,
+            "modify": ChangeType.MODIFY,
+            "delete": ChangeType.DELETE,
+        }[command.action]
+
+        for change in plan.changes:
+            if (
+                change.path == command.target
+                and change.change_type == expected_type
+            ):
+                return True
+
+        operation = expected_type.value.upper()
+
+        raise ValueError(
+            f"Plano incoerente com o comando: "
+            f"esperada alteração {operation} para "
+            f"{command.target}."
+        )
 
     def validate_project_coherence(self, plan: Plan):
         self.validate(plan)

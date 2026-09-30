@@ -35,7 +35,7 @@ def test_create_file():
     executor = SafeExecutor(root)
     result = executor.execute(transaction)
 
-    assert result.status == TransactionStatus.EXECUTING
+    assert result is transaction
     assert Path("novo.py").read_text(encoding="utf-8") == 'print("ok")'
 
     Path("novo.py").unlink()
@@ -58,7 +58,7 @@ def test_create_existing_file_fails():
     with pytest.raises(FileExistsError):
         executor.execute(transaction)
 
-    assert transaction.status == TransactionStatus.FAILED
+    assert transaction.status == TransactionStatus.PENDING
     assert target.read_text(encoding="utf-8") == "original"
 
     target.unlink()
@@ -79,7 +79,7 @@ def test_modify_file():
     executor = SafeExecutor(".")
     result = executor.execute(transaction)
 
-    assert result.status == TransactionStatus.EXECUTING
+    assert result is transaction
     assert target.read_text(encoding="utf-8") == "depois"
 
     target.unlink()
@@ -99,7 +99,7 @@ def test_modify_missing_file_fails():
     with pytest.raises(FileNotFoundError):
         executor.execute(transaction)
 
-    assert transaction.status == TransactionStatus.FAILED
+    assert transaction.status == TransactionStatus.PENDING
 
 
 def test_delete_file():
@@ -116,7 +116,7 @@ def test_delete_file():
     executor = SafeExecutor(".")
     result = executor.execute(transaction)
 
-    assert result.status == TransactionStatus.EXECUTING
+    assert result is transaction
     assert not target.exists()
 
 
@@ -133,7 +133,7 @@ def test_delete_missing_file_fails():
     with pytest.raises(FileNotFoundError):
         executor.execute(transaction)
 
-    assert transaction.status == TransactionStatus.FAILED
+    assert transaction.status == TransactionStatus.PENDING
 
 
 def test_path_outside_project_is_blocked():
@@ -3802,6 +3802,36 @@ def test_safe_executor_rejects_delete_directory(tmp_path):
         match="Caminho não é um arquivo",
     ):
         executor.execute_change(change)
+
+
+
+def test_safe_executor_rejects_content_mutated_after_prior_validation(tmp_path):
+    from core.executor.safe_executor import SafeExecutor
+    from core.schemas.models import Change, ChangeType
+
+    executor = SafeExecutor(tmp_path)
+    target = tmp_path / "mutated.txt"
+
+    change = Change(
+        path="mutated.txt",
+        change_type=ChangeType.CREATE,
+        content="conteudo seguro",
+    )
+
+    # Simula a validação anterior do plano/transação.
+    executor.security.validate_content(change.content)
+
+    # O objeto da transação foi alterado depois dessa validação.
+    change.content = "exec("
+
+    with pytest.raises(
+        PermissionError,
+        match="Conteúdo de alto risco não autorizado",
+    ):
+        executor.execute_change(change)
+
+    assert not target.exists()
+
 
 
 def test_git_manager_normalize_paths_none(tmp_path):

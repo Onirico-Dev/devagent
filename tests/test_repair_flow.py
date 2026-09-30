@@ -366,6 +366,54 @@ def test_attempt_applies_repair_and_marks_verified():
     assert ("verified",) in state.calls
 
 
+
+def test_attempt_rejects_repair_when_physical_verification_fails():
+    diagnosis = {
+        "action": "modify",
+        "risk": "baixo",
+        "path": "x.py",
+        "content": "x = 1",
+        "correction": "Corrigir conteúdo.",
+    }
+    executor_result = {
+        "success": False,
+        "status": RepairExecutorStatus.REPAIR_FAILED.value,
+        "tests": {
+            "success": True,
+            "stdout": "passed",
+            "stderr": "",
+        },
+        "verification": {
+            "success": False,
+            "status": "content_mismatch",
+            "path": "x.py",
+        },
+        "repair": diagnosis,
+    }
+
+    flow, _ = make_flow(
+        diagnosis=diagnosis,
+        executor_result=executor_result,
+    )
+    transaction = make_transaction()
+    state = FakeState()
+
+    result = flow.attempt(
+        instruction="corrigir",
+        transaction=transaction,
+        test_result={"success": False},
+        repair_state=state,
+    )
+
+    assert result["success"] is False
+    assert result["status"] == TransactionStatus.ROLLED_BACK.value
+    assert result["repair"] == diagnosis
+    assert result["repair_attempts"] == 1
+    assert (
+        "repair_failed",
+        "Falha na verificação física do reparo.",
+    ) in state.calls
+
 def test_attempt_uses_unknown_action_when_missing():
     diagnosis = {
         "risk": "baixo",

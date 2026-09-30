@@ -1,6 +1,8 @@
 from enum import Enum
 from pathlib import Path
 
+from core.schemas.models import ChangeType
+
 
 class PostExecutionStatus(str, Enum):
     MISSING = "missing"
@@ -52,4 +54,62 @@ class PostExecutionVerifier:
             "success": True,
             "status": PostExecutionStatus.VERIFIED.value,
             "path": str(path),
+        }
+
+    def verify_change(self, change):
+        """Verifica o estado físico produzido por uma Change executada."""
+
+        if change.change_type == ChangeType.DELETE:
+            target = (self.project_root / change.path).resolve()
+
+            try:
+                target.relative_to(self.project_root)
+            except ValueError as exc:
+                raise PermissionError(
+                    "Caminho inválido: fora do projeto."
+                ) from exc
+
+            if target.exists():
+                return {
+                    "success": False,
+                    "status": PostExecutionStatus.CONTENT_MISMATCH.value,
+                    "path": str(change.path),
+                }
+
+            return {
+                "success": True,
+                "status": PostExecutionStatus.VERIFIED.value,
+                "path": str(change.path),
+            }
+
+        return self.verify_path(
+            change.path,
+            expected_content=change.content,
+        )
+
+    def verify_transaction(self, transaction):
+        """Verifica todas as alterações de uma transação."""
+
+        results = [
+            self.verify_change(change)
+            for change in transaction.changes
+        ]
+
+        failed = next(
+            (result for result in results if not result["success"]),
+            None,
+        )
+
+        if failed is not None:
+            return {
+                "success": False,
+                "status": failed["status"],
+                "path": failed["path"],
+                "changes": results,
+            }
+
+        return {
+            "success": True,
+            "status": PostExecutionStatus.VERIFIED.value,
+            "changes": results,
         }

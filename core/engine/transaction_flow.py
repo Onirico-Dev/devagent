@@ -1,6 +1,6 @@
 from core.engine.repair_cycle_state import RepairCycleState
 from core.memory.task_history import TaskHistoryStatus
-from core.schemas.models import TransactionStatus
+from core.schemas.models import TestResult, TransactionStatus
 from core.supervisor import ApprovalStatus
 from core.executor.git_manager import GitStatus
 
@@ -24,6 +24,7 @@ class TransactionFlow:
         restore_repair_state_fn=None,
         repair_cycle_fn=None,
         commit_error_type=RuntimeError,
+        post_execution_verifier=None,
     ):
         self.agent = agent
         self.supervisor = supervisor
@@ -40,6 +41,7 @@ class TransactionFlow:
         self._restore_repair_state = restore_repair_state_fn
         self._repair_cycle = repair_cycle_fn
         self.commit_error_type = commit_error_type
+        self.post_execution_verifier = post_execution_verifier
 
     def evaluate_execution(self, result):
         if not isinstance(result, dict):
@@ -168,11 +170,19 @@ class TransactionFlow:
             transaction
         )
 
+        verification = None
+        if self.post_execution_verifier is not None:
+            verification = self.post_execution_verifier.verify_transaction(
+                transaction
+            )
+            execution["verification"] = verification
+            self.transactions.persist_manifest(transaction)
+
         execution["phase"] = "testing"
         self.transactions.persist_manifest(transaction)
 
         repair_state.mark_testing()
-        transaction.status = TransactionStatus.TESTING
+        self.transactions.transition(transaction, TransactionStatus.TESTING)
         repair_state.persist(transaction)
         self.transactions.persist_manifest(transaction)
 
@@ -189,10 +199,18 @@ class TransactionFlow:
             ]
         )
 
-        return self._run_declared_tests(
+        result = self._run_declared_tests(
             transaction,
             test_result,
         )
+
+        if verification is not None:
+            result["verification"] = verification
+
+            if not verification.get("success"):
+                result["success"] = False
+
+        return result
 
     def _finalize_execution_result(
         self,
@@ -293,7 +311,7 @@ class TransactionFlow:
             error.result = git_result
             raise error
 
-        transaction.status = TransactionStatus.COMMITTED
+        self.transactions.transition(transaction, TransactionStatus.COMMITTED)
         repair_state.mark_committed()
         self.transactions.persist_manifest(transaction)
         repair_state.persist(transaction)
@@ -353,7 +371,7 @@ class TransactionFlow:
         rollback_error,
     ):
         if rollback_error is not None:
-            transaction.status = TransactionStatus.FAILED
+            self.transactions.transition(transaction, TransactionStatus.FAILED)
             repair_state.mark_failed(
                 str(rollback_error)
             )
@@ -534,61 +552,10 @@ class TransactionFlow:
             semantic_result = self.tests.run_tests(
                 declared_tests,
             )
-
-            return {
-                "success": (
-                    test_result.get("success", False)
-                    and semantic_result.get(
-                        "success",
-                        False,
-                    )
-                ),
-                "returncode": (
-                    semantic_result.get(
-                        "returncode",
-                        test_result.get(
-                            "returncode",
-                            1,
-                        ),
-                    )
-                    if not semantic_result.get(
-                        "success",
-                        False,
-                    )
-                    else test_result.get(
-                        "returncode",
-                        0,
-                    )
-                ),
-                "stdout": "\n".join(
-                    part
-                    for part in (
-                        test_result.get(
-                            "stdout",
-                            "",
-                        ),
-                        semantic_result.get(
-                            "stdout",
-                            "",
-                        ),
-                    )
-                    if part
-                ),
-                "stderr": "\n".join(
-                    part
-                    for part in (
-                        test_result.get(
-                            "stderr",
-                            "",
-                        ),
-                        semantic_result.get(
-                            "stderr",
-                            "",
-                        ),
-                    )
-                    if part
-                ),
-            }
+            return TestResult.combine(
+                test_result,
+                semantic_result,
+            )
 
         return test_result
 

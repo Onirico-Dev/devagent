@@ -80,6 +80,10 @@ class DevAgentPipeline:
                 command
             )
 
+        self.validator.validate_command_coherence(
+            command,
+            plan,
+        )
         self.validator.validate_project_coherence(
             plan
         )

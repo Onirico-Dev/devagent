@@ -189,7 +189,40 @@ class CommandParser:
     ) -> tuple[str, str]:
         words = remainder.split(maxsplit=1)
 
-        target = cls._clean(words[0])
+        if not words:
+            return "", ""
+
+        candidate = cls._clean(words[0])
+
+        # Palavras reservadas também podem ser alvo quando aparecem
+        # explicitamente na primeira posição do comando.
+        if candidate.lower() in cls.RESERVED_TARGET_WORDS:
+            target = candidate
+            if len(words) > 1:
+                instruction = cls._clean_instruction(words[1])
+            else:
+                instruction = ""
+            instruction = cls._clear_instruction_for_delete(
+                action,
+                instruction,
+            )
+            return target, instruction
+
+        # O fallback só infere um alvo quando a primeira palavra
+        # tem aparência de arquivo ou caminho.
+        if not (
+            candidate.endswith(".py")
+            or "/" in candidate
+            or "\\" in candidate
+        ):
+            instruction = cls._clean_instruction(remainder)
+            instruction = cls._clear_instruction_for_delete(
+                action,
+                instruction,
+            )
+            return "", instruction
+
+        target = candidate
 
         if len(words) > 1:
             instruction = cls._clean_instruction(words[1])
@@ -200,6 +233,7 @@ class CommandParser:
             action,
             instruction,
         )
+
         return target, instruction
 
     def parse(self, text: str) -> Command:

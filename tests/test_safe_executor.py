@@ -852,7 +852,7 @@ def test_execute_returns_successful_transaction(tmp_path):
     result = executor.execute(transaction)
 
     assert result is transaction
-    assert transaction.status == TransactionStatus.EXECUTING
+    assert transaction.status is None
 
 
 def test_execute_marks_transaction_failed_when_change_fails(tmp_path):
@@ -879,7 +879,7 @@ def test_execute_marks_transaction_failed_when_change_fails(tmp_path):
     ):
         executor.execute(transaction)
 
-    assert transaction.status == TransactionStatus.FAILED
+    assert transaction.status is None
 
 
 def test_modify_file_in_parent_maps_eloop_to_value_error(

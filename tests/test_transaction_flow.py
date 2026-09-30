@@ -96,6 +96,10 @@ class FakeTransactions:
         self.begin_calls.append(transaction)
         return transaction
 
+    def transition(self, transaction, new_status):
+        transaction.status = new_status
+        return transaction
+
     def register_created(self, transaction, path):
         self.registered.append((transaction, path))
 

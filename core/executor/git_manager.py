@@ -213,6 +213,16 @@ class GitManager:
             text=True,
         )
 
+    def _unstage_paths(self, paths):
+        if not paths:
+            return
+        subprocess.run(
+            ["git", "reset", "--quiet", "--", *paths],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+        )
+
     def _validate_commit_request(
         self,
         transaction_id,
@@ -272,17 +282,18 @@ class GitManager:
         self,
         transaction_id,
         message,
+        paths,
     ):
         try:
             commit = subprocess.run(
-                ["git", "commit", "-m", message],
+                ["git", "commit", "-m", message, "--only", "--", *paths],
                 cwd=self.root,
                 capture_output=True,
                 text=True,
             )
 
             if commit.returncode != 0:
-                self._unstage_all()
+                self._unstage_paths(paths)
 
                 return {
                     "status": GitStatus.ERROR.value,
@@ -295,7 +306,7 @@ class GitManager:
             return None
 
         except Exception:
-            self._unstage_all()
+            self._unstage_paths(paths)
             raise
 
     def _build_commit_result(
@@ -411,6 +422,7 @@ class GitManager:
         commit_error = self._commit_staged_paths(
             transaction_id,
             message,
+            changed_paths,
         )
 
         if commit_error is not None:

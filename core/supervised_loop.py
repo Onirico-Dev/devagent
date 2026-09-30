@@ -131,7 +131,12 @@ class SupervisedLoop(LoopController):
                         plan = Plan.from_dict(
                             dict(plan_data or {})
                         )
-                        decision = AutonomyPolicy().evaluate(plan)
+                        autonomy_policy = getattr(
+                            self.worker,
+                            "autonomy_policy",
+                            None,
+                        ) or AutonomyPolicy()
+                        decision = autonomy_policy.evaluate(plan)
                     except (
                         TypeError,
                         ValueError,

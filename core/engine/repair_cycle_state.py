@@ -40,9 +40,16 @@ class RepairCycleState:
     history: list = field(default_factory=list)
 
     def record(self, action, status, error=""):
+        if not isinstance(status, RepairCycleStatus):
+            raise TypeError(
+                "record() exige um RepairCycleStatus."
+            )
+
+        normalized_status = status.value
+
         self.attempts += 1
         self.last_action = action
-        self.status = status
+        self.status = normalized_status
         normalized_error = str(error) if error else ""
         self.last_error = normalized_error
 
@@ -50,7 +57,7 @@ class RepairCycleState:
             {
                 "attempt": self.attempts,
                 "action": action,
-                "status": status,
+                "status": normalized_status,
                 "error": normalized_error,
             }
         )

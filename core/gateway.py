@@ -9,6 +9,7 @@ from core.executor.safe_executor import SafeExecutor
 from core.executor.transaction_manager import TransactionManager
 from core.executor.test_runner import TestRunner
 from core.executor.git_manager import GitManager, GitStatus
+from core.engine.post_execution import PostExecutionVerifier
 from core.engine.repair_engine import RepairEngine
 from core.engine.repair_executor import RepairExecutor, RepairExecutorStatus
 from core.engine.repair_controller import RepairController
@@ -54,6 +55,7 @@ class DevAgentGateway:
         )
         self.security = SecurityPolicy(root)
         self.executor = SafeExecutor(root)
+        self.post_execution_verifier = PostExecutionVerifier(root)
         self.transactions = TransactionManager(root)
         self.tests = TestRunner(root)
         self.git = GitManager(root)
@@ -67,6 +69,7 @@ class DevAgentGateway:
             transaction_manager=self.transactions,
             executor=self.executor,
             test_runner=self.tests,
+            post_execution_verifier=self.post_execution_verifier,
         )
 
         self.repair_controller = RepairController(
@@ -127,6 +130,7 @@ class DevAgentGateway:
             restore_repair_state_fn=lambda transaction: self._restore_repair_state(transaction),
             repair_cycle_fn=lambda **kwargs: self._run_repair_cycle(**kwargs),
             commit_error_type=CommitTransactionError,
+            post_execution_verifier=self.post_execution_verifier,
         )
 
     @contextmanager
@@ -209,19 +213,6 @@ class DevAgentGateway:
                     )
                 finally:
                     fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-
-    def execute_approved(self, approval_id):
-        request = self.supervisor.get(approval_id)
-
-        if request is None:
-            raise KeyError("Tarefa não encontrada.")
-
-        if request.get("status") != ApprovalStatus.APPROVED.value:
-            raise ValueError(
-                "Tarefa não está aprovada."
-            )
-
-        return self.approve(approval_id)
 
     def _evaluate_execution(self, result):
         return self.transaction_flow.evaluate_execution(result)

@@ -2,7 +2,7 @@ from enum import Enum
 from core.schemas.models import (
     Change,
     ChangeType,
-    TransactionStatus,
+    TestResult,
 )
 
 
@@ -21,11 +21,13 @@ class RepairExecutor:
         transaction_manager,
         executor,
         test_runner=None,
+        post_execution_verifier=None,
     ):
         self.security = security
         self.transaction_manager = transaction_manager
         self.executor = executor
         self.test_runner = test_runner
+        self.post_execution_verifier = post_execution_verifier
 
     def _validate_risk(self, repair):
         declared_risk = repair.get("risk", "baixo")
@@ -182,6 +184,8 @@ class RepairExecutor:
             }
         )
 
+        self.transaction_manager.persist_manifest(transaction)
+
         return change
 
     def _build_no_test_runner_result(self, transaction):
@@ -198,62 +202,10 @@ class RepairExecutor:
         test_result,
         semantic_result,
     ):
-        semantic_success = semantic_result.get(
-            "success",
-            False,
+        return TestResult.combine(
+            test_result,
+            semantic_result,
         )
-
-        return {
-            "success": (
-                test_result.get(
-                    "success",
-                    False,
-                )
-                and semantic_success
-            ),
-            "returncode": (
-                semantic_result.get(
-                    "returncode",
-                    test_result.get(
-                        "returncode",
-                        1,
-                    ),
-                )
-                if not semantic_success
-                else test_result.get(
-                    "returncode",
-                    0,
-                )
-            ),
-            "stdout": "\n".join(
-                part
-                for part in (
-                    test_result.get(
-                        "stdout",
-                        "",
-                    ),
-                    semantic_result.get(
-                        "stdout",
-                        "",
-                    ),
-                )
-                if part
-            ),
-            "stderr": "\n".join(
-                part
-                for part in (
-                    test_result.get(
-                        "stderr",
-                        "",
-                    ),
-                    semantic_result.get(
-                        "stderr",
-                        "",
-                    ),
-                )
-                if part
-            ),
-        }
 
     def _run_declared_repair_tests(
         self,
@@ -284,13 +236,11 @@ class RepairExecutor:
         )
 
     def _normalize_repair_test_result(self, test_result):
-        if (
-            not isinstance(test_result, dict)
-            or not isinstance(
-                test_result.get("success", False),
-                bool,
-            )
-        ):
+        try:
+            return TestResult.from_dict(
+                test_result,
+            ).to_dict()
+        except (TypeError, ValueError):
             return {
                 "success": False,
                 "status": RepairExecutorStatus.INVALID_TEST_RESULT.value,
@@ -298,14 +248,11 @@ class RepairExecutor:
                 "stdout": "",
             }
 
-        return test_result
-
     def _run_repair_tests(
         self,
         change,
         transaction,
     ):
-        transaction.status = TransactionStatus.TESTING
 
         if self.test_runner is None:
             return self._build_no_test_runner_result(
@@ -340,8 +287,7 @@ class RepairExecutor:
         try:
             self.executor.execute_change(change)
         except Exception as exc:
-            transaction.status = TransactionStatus.FAILED
-            return {
+                return {
                 "success": False,
                 "status": RepairExecutorStatus.FAILED.value,
                 "transaction_id": transaction.transaction_id,
@@ -350,14 +296,26 @@ class RepairExecutor:
                 "repair": repair,
             }
 
+        verification = None
+        if self.post_execution_verifier is not None:
+            verification = self.post_execution_verifier.verify_change(change)
+            if not verification.get("success"):
+                return {
+                    "success": False,
+                    "status": RepairExecutorStatus.REPAIR_FAILED.value,
+                    "transaction_id": transaction.transaction_id,
+                    "instruction": instruction,
+                    "repair": repair,
+                    "verification": verification,
+                }
+
         try:
             test_result = self._run_repair_tests(
                 change,
                 transaction,
             )
         except Exception as exc:
-            transaction.status = TransactionStatus.FAILED
-            return {
+                return {
                 "success": False,
                 "status": RepairExecutorStatus.FAILED.value,
                 "transaction_id": transaction.transaction_id,
@@ -391,4 +349,5 @@ class RepairExecutor:
             "instruction": instruction,
             "repair": repair,
             "tests": test_result,
+            "verification": verification,
         }

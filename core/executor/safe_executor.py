@@ -6,12 +6,14 @@ from pathlib import Path
 
 from core.executor.secure_filesystem import SecureFileSystem
 
-from core.schemas.models import ChangeType, TransactionStatus
+from core.schemas.models import ChangeType
+from core.security import SecurityPolicy
 
 
 class SafeExecutor:
     def __init__(self, root: str = "."):
         self.root = Path(root).resolve()
+        self.security = SecurityPolicy(self.root)
 
     def _safe_path(self, relative_path: str) -> Path:
         relative = Path(relative_path)
@@ -380,7 +382,20 @@ class SafeExecutor:
             os.close(parent_fd)
 
     def execute_change(self, change):
-        self._safe_path(change.path)
+        target = self._safe_path(change.path)
+
+        if (
+            change.change_type in (ChangeType.MODIFY, ChangeType.DELETE)
+            and target.exists()
+            and not target.is_file()
+        ):
+            raise ValueError(f"Caminho não é um arquivo: {change.path}")
+
+        self.security.validate_path(change.path)
+
+        if change.change_type in (ChangeType.CREATE, ChangeType.MODIFY):
+            self.security.validate_content(change.content)
+
         relative = Path(change.path)
 
         if change.change_type == ChangeType.CREATE:
@@ -396,7 +411,6 @@ class SafeExecutor:
 
 
     def execute(self, transaction):
-        transaction.status = TransactionStatus.EXECUTING
 
         metadata = getattr(
             transaction,
@@ -419,7 +433,6 @@ class SafeExecutor:
                 self.execute_change(change)
                 execution["changes_applied"] += 1
         except Exception:
-            transaction.status = TransactionStatus.FAILED
             raise
 
         execution["phase"] = "completed"

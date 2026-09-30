@@ -1,4 +1,4 @@
-from core.engine.repair_cycle_state import RepairCycleState
+from core.engine.repair_cycle_state import RepairCycleState, RepairCycleStatus
 
 
 def test_repair_cycle_state_records_attempt():
@@ -6,7 +6,7 @@ def test_repair_cycle_state_records_attempt():
 
     state.record(
         action="modify",
-        status="failed",
+        status=RepairCycleStatus.FAILED,
         error="teste falhou",
     )
 
@@ -24,7 +24,7 @@ def test_repair_cycle_state_can_be_restored():
 
     original.record(
         "modify",
-        "failed",
+        RepairCycleStatus.FAILED,
         "erro",
     )
 
@@ -45,14 +45,14 @@ def test_repair_cycle_state_stops_at_limit():
 
     state.record(
         "modify",
-        "failed",
+        RepairCycleStatus.FAILED,
     )
 
     assert state.can_continue()
 
     state.record(
         "modify",
-        "failed",
+        RepairCycleStatus.FAILED,
     )
 
     assert not state.can_continue()
@@ -251,7 +251,7 @@ def test_repair_state_survives_task_history_reload(tmp_path):
 
     history.update(
         "approval-persist",
-        status="failed",
+        status=RepairCycleStatus.FAILED,
         transaction_id="tx-persist",
         extra={
             "repair_state": repair_state,
@@ -315,7 +315,7 @@ def test_repair_cycle_state_remaining_attempts():
 
     state.record(
         "modify",
-        "failed",
+        RepairCycleStatus.FAILED,
         "erro 1",
     )
 
@@ -323,7 +323,7 @@ def test_repair_cycle_state_remaining_attempts():
 
     state.record(
         "modify",
-        "failed",
+        RepairCycleStatus.FAILED,
         "erro 2",
     )
 
