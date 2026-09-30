@@ -410,7 +410,12 @@ class SafeExecutor:
             )
 
 
-    def execute(self, transaction):
+    def execute(self, transaction, on_change_applied=None):
+
+        if on_change_applied is not None and not callable(on_change_applied):
+            raise ValueError(
+                "Callback de progresso inválido."
+            )
 
         metadata = getattr(
             transaction,
@@ -432,6 +437,9 @@ class SafeExecutor:
             for change in transaction.changes:
                 self.execute_change(change)
                 execution["changes_applied"] += 1
+
+                if on_change_applied is not None:
+                    on_change_applied()
         except Exception:
             raise
 

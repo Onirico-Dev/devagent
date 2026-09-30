@@ -125,7 +125,7 @@ class FakeExecutor:
     def __init__(self):
         self.calls = []
 
-    def execute(self, transaction):
+    def execute(self, transaction, on_change_applied=None):
         self.calls.append(transaction)
 
 

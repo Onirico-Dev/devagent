@@ -167,7 +167,10 @@ class TransactionFlow:
         self.transactions.persist_manifest(transaction)
 
         self.executor.execute(
-            transaction
+            transaction,
+            on_change_applied=lambda: self.transactions.persist_manifest(
+                transaction
+            ),
         )
 
         verification = None

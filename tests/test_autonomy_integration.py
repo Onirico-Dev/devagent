@@ -388,7 +388,7 @@ def test_real_autonomy_cycle_recovers_after_crash(
         state_store=loop_store,
     )
 
-    def crash_during_execution(transaction):
+    def crash_during_execution(transaction, on_change_applied=None):
         raise SystemExit(
             "CRASH_DURING_AUTONOMOUS_EXECUTION"
         )
@@ -1158,7 +1158,7 @@ def test_real_autonomy_restart_after_recovery_does_not_reprocess_observation(
         state_store=WorkerStateStore(loop_path),
     )
 
-    def crash_during_execution(transaction):
+    def crash_during_execution(transaction, on_change_applied=None):
         raise SystemExit("CRASH_BEFORE_COMPLETION")
 
     monkeypatch.setattr(

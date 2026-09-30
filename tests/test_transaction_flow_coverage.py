@@ -114,10 +114,17 @@ class Executor:
         self.error = error
         self.calls = []
 
-    def execute(self, tx):
+    def execute(self, tx, on_change_applied=None):
         self.calls.append(tx)
+
         if self.error:
             raise self.error
+
+        execution = tx.metadata.setdefault("execution", {})
+        for _ in tx.changes:
+            execution["changes_applied"] += 1
+            if on_change_applied is not None:
+                on_change_applied()
 
 
 class FakeTestRunner:
@@ -739,6 +746,42 @@ def test_finalize_execution_result_rolls_back_after_failed_repair():
 
     assert result["status"] == TaskHistoryStatus.ROLLED_BACK.value
     assert result["error"] == "não corrigido"
+
+
+
+def test_execute_and_test_transaction_persists_after_each_change():
+    changes = [
+        SimpleNamespace(
+            path="a.py",
+            change_type=SimpleNamespace(value="create"),
+        ),
+        SimpleNamespace(
+            path="b.py",
+            change_type=SimpleNamespace(value="create"),
+        ),
+    ]
+
+    transaction = tx(
+        changes=changes,
+        metadata={"tests": []},
+    )
+
+    flow, data = build(
+        transaction=transaction,
+        test_result={"success": True},
+    )
+
+    flow._execute_and_test_transaction(
+        data["tx"],
+        data["state"],
+        "a1",
+    )
+
+    assert len(data["transactions"].manifests) >= 4
+
+    execution = data["tx"].metadata["execution"]
+    assert execution["changes_applied"] == 2
+    assert execution["phase"] == "testing"
 
 
 def test_execute_and_test_transaction_full_path():

@@ -874,6 +874,123 @@ def test_gateway_rolls_back_real_executor_failure_on_second_change(tmp_path):
     assert status == ""
 
 
+
+def test_gateway_recovers_after_crash_after_first_change(tmp_path):
+    import subprocess
+
+    from agent import DevAgent
+    from core.gateway import DevAgentGateway
+    from core.memory.task_history import TaskHistoryStatus
+
+    example = tmp_path / "example.py"
+    version = tmp_path / "version.py"
+
+    original_example = (
+        'def hello():\n'
+        '    return "hello"\n'
+    )
+    original_version = (
+        'def version():\n'
+        '    return "0.1"\n'
+    )
+
+    example.write_text(original_example, encoding="utf-8")
+    version.write_text(original_version, encoding="utf-8")
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "add", "."],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "test: crash after first change"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    gateway = DevAgentGateway(
+        DevAgent(tmp_path),
+        root=tmp_path,
+    )
+
+    task = gateway.create_task(
+        "alterar example.py e version.py"
+    )
+    approval_id = task["approval_id"]
+
+    original_execute_change = gateway.executor.execute_change
+    calls = []
+
+    def crash_before_second_change(change):
+        calls.append(change.path)
+
+        if len(calls) == 2:
+            raise SystemExit("CRASH_BEFORE_SECOND_CHANGE")
+
+        return original_execute_change(change)
+
+    gateway.executor.execute_change = crash_before_second_change
+
+    with pytest.raises(
+        SystemExit,
+        match="CRASH_BEFORE_SECOND_CHANGE",
+    ):
+        gateway.approve(approval_id)
+
+    assert len(calls) == 2
+
+    assert example.read_text(encoding="utf-8") != original_example
+
+    persisted_before_restart = gateway.transactions.load_manifest(
+        gateway.history.get(approval_id)["transaction_id"]
+    )
+    execution_before_restart = (
+        persisted_before_restart.metadata["execution"]
+    )
+
+    assert execution_before_restart["phase"] == "executing"
+    assert execution_before_restart["changes_applied"] == 1
+
+    restarted = DevAgentGateway(
+        DevAgent(tmp_path),
+        root=tmp_path,
+    )
+
+    assert example.read_text(encoding="utf-8") == original_example
+    assert version.read_text(encoding="utf-8") == original_version
+
+    persisted = restarted.history.get(approval_id)
+
+    assert persisted is not None
+    assert persisted["status"] == TaskHistoryStatus.ROLLED_BACK.value
+    assert persisted["transaction_id"] is not None
+    assert restarted.transactions.list_recoverable_transactions() == []
+
 def test_gateway_recovers_after_crash_during_repair_execution(tmp_path):
     import subprocess
 
@@ -1602,7 +1719,7 @@ def test_gateway_recovers_after_crash_after_history_executing_before_execution(
     task = gateway.create_task("alterar example.py")
     approval_id = task["approval_id"]
 
-    def crash_before_execution(transaction):
+    def crash_before_execution(transaction, on_change_applied=None):
         raise SystemExit("CRASH_BEFORE_EXECUTION")
 
     monkeypatch.setattr(
