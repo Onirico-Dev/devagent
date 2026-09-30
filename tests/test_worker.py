@@ -1710,3 +1710,107 @@ def test_worker_allow_retry_removes_previous_processed_observation(tmp_path):
 
     assert proposal.status == "pending"
     assert proposal.approval_id == "approval-retry"
+def test_worker_retry_consumption_preserves_other_persisted_retries(tmp_path):
+    from core.worker_state_store import WorkerStateStore
+
+    class Gateway:
+        def __init__(self):
+            self.instructions = []
+
+        def create_task(self, instruction):
+            self.instructions.append(instruction)
+            return {
+                "approval_id": f"approval-{len(self.instructions)}",
+                "status": "pending",
+                "plan": {
+                    "objective": instruction,
+                    "changes": [],
+                    "tests": [],
+                    "risks": [],
+                },
+            }
+
+    store = WorkerStateStore(tmp_path / "worker.json")
+    worker = Worker(
+        Gateway(),
+        Observer([]),
+        store=store,
+    )
+
+    retry_a = "corrigir arquivo A"
+    retry_b = "corrigir arquivo B"
+
+    worker._retry_instructions.update({retry_a, retry_b})
+    worker._persist_state()
+
+    worker.process_observation(
+        Observation(instruction=retry_a, metadata={}),
+        allow_retry=True,
+    )
+    worker._retry_instructions.discard(retry_a)
+    worker._persist_state()
+
+    restarted = Worker(
+        Gateway(),
+        Observer([]),
+        store=store,
+    )
+
+    assert retry_a not in restarted._retry_instructions
+    assert retry_b in restarted._retry_instructions
+def test_process_observation_crash_after_atomic_persist_preserves_other_retries(
+    tmp_path,
+):
+    from core.observation import Observation
+    from core.observer import Observer
+    from core.worker import Worker
+    from core.worker_state_store import WorkerStateStore
+
+    class Gateway:
+        def create_task(self, instruction):
+            return {
+                "approval_id": f"approval-{instruction}",
+                "status": "pending",
+                "plan": {},
+            }
+
+    class CrashAfterPersistStore(WorkerStateStore):
+        def _save_unlocked(self, state):
+            super()._save_unlocked(state)
+            raise RuntimeError("simulated crash after durable persist")
+
+    path = tmp_path / "worker.json"
+
+    store = WorkerStateStore(path)
+    worker = Worker(
+        Gateway(),
+        Observer([]),
+        store=store,
+    )
+
+    retry_a = "corrigir arquivo A"
+    retry_b = "corrigir arquivo B"
+
+    worker._retry_instructions.update({retry_a, retry_b})
+    worker._persist_state()
+
+    crashing_worker = Worker(
+        Gateway(),
+        Observer([]),
+        store=CrashAfterPersistStore(path),
+    )
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        crashing_worker.process_observation(
+            Observation(retry_a, {}),
+            allow_retry=True,
+        )
+
+    restarted = Worker(
+        Gateway(),
+        Observer([]),
+        store=WorkerStateStore(path),
+    )
+
+    assert retry_a in restarted._retry_instructions
+    assert retry_b in restarted._retry_instructions

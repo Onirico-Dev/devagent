@@ -138,8 +138,7 @@ class Worker:
                 )
             )
 
-            retry_instructions = set(current.get("retry_instructions", []))
-            retry_instructions.update(state["retry_instructions"])
+            retry_instructions = set(state["retry_instructions"])
 
             result = {
                 "processed": processed,
@@ -277,6 +276,7 @@ class Worker:
         def atomic_process(current: dict[str, Any]) -> dict[str, Any]:
             processed = list(current.get("processed", []))
             processed_ids = set(current.get("processed_ids", []))
+            retry_instructions = list(current.get("retry_instructions", []))
 
             if allow_retry:
                 processed = [
@@ -332,6 +332,7 @@ class Worker:
             return {
                 "processed": processed,
                 "processed_ids": sorted(processed_ids),
+                "retry_instructions": sorted(set(retry_instructions)),
             }
 
         try:
