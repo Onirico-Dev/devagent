@@ -401,3 +401,33 @@ def test_create_or_reuse_reconciles_orphan_pending_approval_after_history_crash(
         instruction="crie app.py",
         plan=plan,
     )
+
+def test_create_or_reuse_does_not_reuse_ambiguous_orphan_approval(creator):
+    plan = make_plan()
+    creator.history.list_pending.return_value = []
+    creator.supervisor.list_pending.return_value = {
+        "123": {
+            "status": "pending",
+            "plan": plan,
+        },
+        "124": {
+            "status": "pending",
+            "plan": plan,
+        },
+    }
+    creator.supervisor.request_approval.return_value = "125"
+
+    result = creator.create_or_reuse("crie app.py", plan)
+
+    assert result == {
+        "approval_id": "125",
+        "status": "pending",
+        "plan": plan,
+    }
+
+    creator.supervisor.request_approval.assert_called_once_with(plan)
+    creator.history.create.assert_called_once_with(
+        approval_id="125",
+        instruction="crie app.py",
+        plan=plan,
+    )

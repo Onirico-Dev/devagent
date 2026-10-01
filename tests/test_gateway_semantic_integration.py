@@ -2262,3 +2262,41 @@ def test_gateway_reconciles_terminal_manifest_after_commit_history_crash(
         == history_before_restart["transaction_id"]
     )
     assert target.read_text(encoding="utf-8") != "old\n"
+
+def test_gateway_reconciles_orphan_approval_after_task_history_crash(tmp_path):
+    gateway = DevAgentGateway(FakeAgent(), root=tmp_path)
+
+    original_create = gateway.history.create
+    crash = {"enabled": True}
+
+    def create_with_crash(*args, **kwargs):
+        if crash["enabled"]:
+            crash["enabled"] = False
+            raise RuntimeError("CRASH_AFTER_APPROVAL")
+        return original_create(*args, **kwargs)
+
+    gateway.history.create = create_with_crash
+
+    with pytest.raises(RuntimeError, match="CRASH_AFTER_APPROVAL"):
+        gateway.create_task("alterar example.py e version.py")
+
+    pending_approvals = gateway.supervisor.list_pending()
+
+    assert len(pending_approvals) == 1
+    original_approval_id = next(iter(pending_approvals))
+
+    assert gateway.history.list_pending() == []
+
+    restarted = DevAgentGateway(FakeAgent(), root=tmp_path)
+
+    result = restarted.create_task("alterar example.py e version.py")
+
+    assert result["approval_id"] == original_approval_id
+    assert result["status"] == "pending"
+
+    pending_approvals = restarted.supervisor.list_pending()
+    pending_tasks = restarted.history.list_pending()
+
+    assert list(pending_approvals) == [original_approval_id]
+    assert len(pending_tasks) == 1
+    assert pending_tasks[0]["approval_id"] == original_approval_id
