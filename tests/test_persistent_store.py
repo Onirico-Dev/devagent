@@ -483,3 +483,29 @@ def test_persistent_store_serializes_concurrent_updates_across_processes(
     assert all(process.exitcode == 0 for process in processes)
 
     assert PersistentStore(path).load() == {"count": 2}
+
+def test_persistent_store_save_preserves_replaced_state_when_directory_fsync_fails(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "state.json"
+    store = PersistentStore(path)
+    store.save({"value": 0})
+
+    original_fsync = os.fsync
+    calls = 0
+
+    def failing_directory_fsync(fd):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("directory fsync failure")
+        return original_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", failing_directory_fsync)
+
+    with pytest.raises(OSError, match="directory fsync failure"):
+        store.save({"value": 1})
+
+    assert store.load() == {"value": 1}
+    assert list(tmp_path.glob(".state.json.*.tmp")) == []
