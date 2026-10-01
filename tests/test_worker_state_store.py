@@ -163,3 +163,33 @@ def test_update_accepts_callable_transform(tmp_path):
 
     assert result == {"count": 2}
     assert store.load() == {"count": 2}
+
+def test_save_preserves_replaced_state_when_directory_fsync_fails(
+    tmp_path,
+    monkeypatch,
+):
+    import os
+    import pytest
+    from core.worker_state_store import WorkerStateStore
+
+    path = tmp_path / "state.json"
+    store = WorkerStateStore(path)
+    store.save({"count": 0})
+
+    original_fsync = os.fsync
+    calls = 0
+
+    def failing_directory_fsync(fd):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("directory fsync failure")
+        return original_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", failing_directory_fsync)
+
+    with pytest.raises(OSError, match="directory fsync failure"):
+        store.save({"count": 1})
+
+    assert store.load() == {"count": 1}
+    assert list(tmp_path.glob(".state.json.*.tmp")) == []
