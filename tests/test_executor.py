@@ -4589,3 +4589,85 @@ def test_safe_executor_delete_fsyncs_parent_directory(
 
     assert not target.exists()
     assert len(directory_fsyncs) == 1
+
+def test_git_manager_commit_transaction_preserves_pre_staged_unrelated_changes(
+    tmp_path,
+):
+    import subprocess
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    tracked = tmp_path / "tracked.py"
+    unrelated = tmp_path / "unrelated.py"
+
+    tracked.write_text("original tracked\n", encoding="utf-8")
+    unrelated.write_text("original unrelated\n", encoding="utf-8")
+
+    subprocess.run(
+        ["git", "add", "tracked.py", "unrelated.py"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "initial"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    tracked.write_text("transaction change\n", encoding="utf-8")
+    unrelated.write_text("pre-staged unrelated change\n", encoding="utf-8")
+
+    subprocess.run(
+        ["git", "add", "unrelated.py"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    manager = GitManager(tmp_path)
+
+    result = manager.commit_transaction(
+        "transaction-pre-staged",
+        "alterar tracked.py",
+        paths=["tracked.py"],
+    )
+
+    assert result["status"] == "committed"
+    assert result["files"] == ["tracked.py"]
+
+    committed = subprocess.run(
+        ["git", "show", "--format=", "--name-only", "HEAD"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+
+    assert committed == ["tracked.py"]
+
+    staged = subprocess.run(
+        ["git", "diff", "--cached", "--name-only"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+
+    assert staged == ["unrelated.py"]
