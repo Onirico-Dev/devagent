@@ -3255,3 +3255,43 @@ def test_recover_incomplete_transactions_recovers_after_recovery_guard(
     )
 
     assert recovered == [transaction]
+
+@pytest.mark.parametrize(
+    ("current_status", "new_status"),
+    [
+        (TransactionStatus.PENDING, TransactionStatus.TESTING),
+        (TransactionStatus.PENDING, TransactionStatus.COMMITTED),
+        (TransactionStatus.PENDING, TransactionStatus.ROLLED_BACK),
+        (TransactionStatus.PENDING, TransactionStatus.FAILED),
+        (TransactionStatus.EXECUTING, TransactionStatus.PENDING),
+        (TransactionStatus.TESTING, TransactionStatus.PENDING),
+        (TransactionStatus.TESTING, TransactionStatus.EXECUTING),
+        (TransactionStatus.FAILED, TransactionStatus.PENDING),
+        (TransactionStatus.FAILED, TransactionStatus.EXECUTING),
+        (TransactionStatus.FAILED, TransactionStatus.TESTING),
+        (TransactionStatus.FAILED, TransactionStatus.COMMITTED),
+        (TransactionStatus.COMMITTED, TransactionStatus.PENDING),
+        (TransactionStatus.COMMITTED, TransactionStatus.EXECUTING),
+        (TransactionStatus.COMMITTED, TransactionStatus.TESTING),
+        (TransactionStatus.COMMITTED, TransactionStatus.ROLLED_BACK),
+        (TransactionStatus.COMMITTED, TransactionStatus.FAILED),
+        (TransactionStatus.ROLLED_BACK, TransactionStatus.PENDING),
+        (TransactionStatus.ROLLED_BACK, TransactionStatus.EXECUTING),
+        (TransactionStatus.ROLLED_BACK, TransactionStatus.TESTING),
+        (TransactionStatus.ROLLED_BACK, TransactionStatus.COMMITTED),
+        (TransactionStatus.ROLLED_BACK, TransactionStatus.FAILED),
+    ],
+)
+def test_transaction_manager_rejects_invalid_state_transitions(
+    tmp_path,
+    current_status,
+    new_status,
+):
+    manager = TransactionManager(root=tmp_path)
+    transaction = make_transaction(tmp_path)
+    transaction.status = current_status
+
+    with pytest.raises(ValueError, match="Transição de estado inválida"):
+        manager.transition(transaction, new_status)
+
+    assert transaction.status == current_status
