@@ -1449,6 +1449,23 @@ def test_persist_manifest_uses_pending_when_transaction_has_no_status(
     assert restored.status == TransactionStatus.PENDING
 
 
+def test_load_manifest_rejects_invalid_status(tmp_path):
+    from core.executor.transaction_manager import TransactionManager
+
+    manager = TransactionManager(root=tmp_path)
+    manifest = manager._manifest_path("tx-invalid-status")
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(
+        '{"transaction_id": "tx-invalid-status", '
+        '"status": "INVALID", "changes": [], '
+        '"metadata": {}, "repair_state": {}}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError):
+        manager.load_manifest("tx-invalid-status")
+
+
 def test_list_recoverable_transactions_ignores_empty_manifest_name(
     tmp_path,
 ):
