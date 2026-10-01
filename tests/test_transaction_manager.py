@@ -3211,6 +3211,35 @@ def test_backup_file_suppresses_destination_cleanup_error_when_manifest_persist_
     assert destination.exists()
 
 
+def test_recover_incomplete_transactions_releases_lock_on_unhandled_error(
+    tmp_path,
+    monkeypatch,
+):
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Transaction
+
+    manager = TransactionManager(root=tmp_path)
+    transaction = Transaction(transaction_id="tx-lock-release")
+    manager.begin(transaction)
+
+    def fail_recovery(*_args):
+        raise RuntimeError("simulated recovery failure")
+
+    monkeypatch.setattr(manager, "_recover_transaction", fail_recovery)
+
+    with pytest.raises(RuntimeError, match="simulated recovery failure"):
+        manager.recover_incomplete_transactions()
+
+    lock = manager._recovery_lock("tx-lock-release")
+    try:
+        assert lock is not None
+    finally:
+        import fcntl
+
+        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        lock.close()
+
+
 def test_recover_incomplete_transactions_commits_when_commit_detector_finds_commit(
     tmp_path,
 ):
