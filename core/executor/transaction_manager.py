@@ -176,6 +176,51 @@ class TransactionManager:
         if not isinstance(metadata, dict):
             raise ValueError("Campo 'metadata' inválido no manifesto.")
 
+        backup = metadata.get("backup")
+        if backup is not None and not isinstance(backup, str):
+            raise ValueError(
+                "Campo 'metadata.backup' inválido no manifesto."
+            )
+
+        created = metadata.get("created")
+        if created is not None:
+            if not isinstance(created, list):
+                raise ValueError(
+                    "Campo 'metadata.created' inválido no manifesto."
+                )
+            if not all(isinstance(path, str) for path in created):
+                raise ValueError(
+                    "Campo 'metadata.created' inválido no manifesto."
+                )
+
+        created_identity = metadata.get("created_identity")
+        if created_identity is not None:
+            if not isinstance(created_identity, dict):
+                raise ValueError(
+                    "Campo 'metadata.created_identity' inválido no manifesto."
+                )
+
+            for relative_path, identity in created_identity.items():
+                if not isinstance(relative_path, str):
+                    raise ValueError(
+                        "Campo 'metadata.created_identity' inválido no manifesto."
+                    )
+                if not isinstance(identity, dict):
+                    raise ValueError(
+                        "Campo 'metadata.created_identity' inválido no manifesto."
+                    )
+
+                for field in ("st_dev", "st_ino"):
+                    value = identity.get(field)
+                    if value is not None and (
+                        not isinstance(value, int)
+                        or isinstance(value, bool)
+                    ):
+                        raise ValueError(
+                            "Campo 'metadata.created_identity' inválido "
+                            "no manifesto."
+                        )
+
         repair_state = data.get("repair_state", {})
         if not isinstance(repair_state, dict):
             raise ValueError(

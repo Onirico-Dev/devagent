@@ -2873,6 +2873,87 @@ def test_load_manifest_rejects_non_dict_metadata(tmp_path):
         manager.load_manifest("tx-invalid-metadata")
 
 
+@pytest.mark.parametrize(
+    "metadata, field",
+    [
+        ({"backup": 123}, "backup"),
+        ({"created": {}}, "created"),
+        ({"created": [123]}, "created"),
+        ({"created_identity": []}, "created_identity"),
+        ({"created_identity": {"file.py": []}}, "created_identity"),
+        (
+            {"created_identity": {"file.py": {"st_dev": "x"}}},
+            "created_identity",
+        ),
+        (
+            {"created_identity": {"file.py": {"st_ino": True}}},
+            "created_identity",
+        ),
+    ],
+)
+def test_load_manifest_rejects_invalid_metadata_fields(
+    tmp_path,
+    metadata,
+    field,
+):
+    manager = TransactionManager(root=tmp_path)
+    backup_dir = tmp_path / "transactions"
+    backup_dir.mkdir(parents=True)
+
+    (backup_dir / "tx-invalid-metadata-field.json").write_text(
+        __import__("json").dumps(
+            {
+                "transaction_id": "tx-invalid-metadata-field",
+                "status": "executing",
+                "changes": [],
+                "metadata": metadata,
+                "repair_state": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=rf"metadata\.{field}",
+    ):
+        manager.load_manifest("tx-invalid-metadata-field")
+
+
+def test_load_manifest_preserves_valid_metadata_fields(tmp_path):
+    manager = TransactionManager(root=tmp_path)
+    backup_dir = tmp_path / "transactions"
+    backup_dir.mkdir(parents=True)
+
+    metadata = {
+        "backup": "transactions/tx-valid-metadata",
+        "created": ["created.py"],
+        "created_identity": {
+            "created.py": {
+                "st_dev": 1,
+                "st_ino": 2,
+            }
+        },
+    }
+
+    (backup_dir / "tx-valid-metadata.json").write_text(
+        __import__("json").dumps(
+            {
+                "transaction_id": "tx-valid-metadata",
+                "status": "executing",
+                "changes": [],
+                "metadata": metadata,
+                "repair_state": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    restored = manager.load_manifest("tx-valid-metadata")
+
+    assert restored.metadata == metadata
+
+
 def test_load_manifest_rejects_non_dict_repair_state(tmp_path):
     manager = TransactionManager(root=tmp_path)
     backup_dir = tmp_path / "transactions"
