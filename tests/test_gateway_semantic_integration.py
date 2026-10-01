@@ -2300,3 +2300,38 @@ def test_gateway_reconciles_orphan_approval_after_task_history_crash(tmp_path):
     assert list(pending_approvals) == [original_approval_id]
     assert len(pending_tasks) == 1
     assert pending_tasks[0]["approval_id"] == original_approval_id
+
+def test_gateway_approve_crash_after_supervisor_approval_leaves_inconsistent_state(
+    tmp_path,
+):
+    gateway = DevAgentGateway(FakeAgent(), root=tmp_path)
+
+    created = gateway.create_task("alterar example.py e version.py")
+    approval_id = created["approval_id"]
+
+    original_history_update = gateway.transaction_flow._history_update
+
+    def crash_after_approval(*args, **kwargs):
+        raise RuntimeError("CRASH_AFTER_SUPERVISOR_APPROVAL")
+
+    gateway.transaction_flow._history_update = crash_after_approval
+
+    with pytest.raises(
+        RuntimeError,
+        match="CRASH_AFTER_SUPERVISOR_APPROVAL",
+    ):
+        gateway.approve(approval_id)
+
+    approval = gateway.supervisor.get(approval_id)
+    task = gateway.history.get(approval_id)
+
+    assert approval["status"] == "approved"
+    assert task["status"] == TaskHistoryStatus.PENDING.value
+
+    gateway.transaction_flow._history_update = original_history_update
+
+    with pytest.raises(
+        ValueError,
+        match="Solicitação não está pendente",
+    ):
+        gateway.approve(approval_id)
