@@ -194,15 +194,15 @@ class ProjectContext:
         for relative in files:
             path = (self.root / relative).resolve()
 
+            if path.stat().st_size > self.max_file_size:
+                continue
+
             if relative in relevant_paths:
                 try:
                     content = path.read_text(encoding="utf-8")
                 except UnicodeDecodeError:
                     content = self.read_file(relative)
             else:
-                if path.stat().st_size > self.max_file_size:
-                    continue
-
                 content = self.read_file(relative)
 
             section = (

@@ -405,3 +405,14 @@ def test_build_prioritizes_relevant_paths(tmp_path):
     assert target_pos < a_pos
     assert target_pos < z_pos
     assert "TARGET = 2" in result
+
+def test_build_skips_oversized_relevant_path(tmp_path):
+    context = ProjectContext(tmp_path, max_file_size=5)
+
+    large = tmp_path / "target.py"
+    large.write_text("123456", encoding="utf-8")
+
+    result = context.build(relevant_paths=["target.py"])
+
+    assert "=== ARQUIVO: target.py ===" not in result
+    assert "ARQUIVOS INCLUÍDOS NO CONTEXTO: 0" in result
