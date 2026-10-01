@@ -199,6 +199,7 @@ def test_validate_plan_propagates_blocked_path(creator):
 
 def test_create_or_reuse_creates_new_task(creator):
     creator.history.list_pending.return_value = []
+    creator.supervisor.list_pending.return_value = {}
     creator.supervisor.request_approval.return_value = "123"
 
     plan = make_plan()
@@ -350,6 +351,7 @@ def test_create_or_reuse_normalizes_instruction_whitespace(creator):
 
 def test_create_or_reuse_loads_history_before_listing_pending(creator):
     creator.history.list_pending.return_value = []
+    creator.supervisor.list_pending.return_value = {}
     creator.supervisor.request_approval.return_value = "123"
 
     creator.create_or_reuse(
@@ -362,3 +364,40 @@ def test_create_or_reuse_loads_history_before_listing_pending(creator):
 def test_plans_equal_rejects_non_dict_plans():
     assert TaskCreator._plans_equal(None, {}) is False
     assert TaskCreator._plans_equal({}, None) is False
+
+def test_create_or_reuse_reconciles_orphan_pending_approval_after_history_crash(
+    creator,
+):
+    plan = make_plan()
+    creator.history.list_pending.return_value = []
+
+    creator.supervisor.list_pending.return_value = {}
+    creator.supervisor.request_approval.return_value = "123"
+    creator.history.create.side_effect = RuntimeError("CRASH_AFTER_HISTORY")
+
+    with pytest.raises(RuntimeError, match="CRASH_AFTER_HISTORY"):
+        creator.create_or_reuse("crie app.py", plan)
+
+    creator.history.create.side_effect = None
+    creator.supervisor.list_pending.return_value = {
+        "123": {
+            "status": "pending",
+            "plan": plan,
+        }
+    }
+
+    result = creator.create_or_reuse("crie app.py", plan)
+
+    assert result == {
+        "approval_id": "123",
+        "status": "pending",
+        "plan": plan,
+    }
+
+    creator.supervisor.request_approval.assert_called_once_with(plan)
+    assert creator.history.create.call_count == 2
+    creator.history.create.assert_called_with(
+        approval_id="123",
+        instruction="crie app.py",
+        plan=plan,
+    )

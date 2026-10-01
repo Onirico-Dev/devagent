@@ -12,7 +12,6 @@ class TaskCreator:
             raise ValueError("Plano inválido retornado pelo agente.")
 
         changes = result.get("changes")
-
         if not isinstance(changes, list) or not changes:
             raise ValueError("Plano não possui lista de alterações.")
 
@@ -49,6 +48,33 @@ class TaskCreator:
             and left.get("changes", []) == right.get("changes", [])
         )
 
+    def _find_orphan_approval(self, result):
+        pending = self.supervisor.list_pending()
+        if not isinstance(pending, dict):
+            return None
+
+        matches = []
+
+        for approval_id, request in pending.items():
+            if not isinstance(request, dict):
+                continue
+
+            if not self._plans_equal(request.get("plan"), result):
+                continue
+
+            matches.append((approval_id, request))
+
+        if len(matches) != 1:
+            return None
+
+        approval_id, request = matches[0]
+
+        return {
+            "approval_id": approval_id,
+            "status": request["status"],
+            "plan": request["plan"],
+        }
+
     def create_or_reuse(self, instruction, result):
         normalized_instruction = " ".join(instruction.split())
 
@@ -71,6 +97,17 @@ class TaskCreator:
                 "status": task["status"],
                 "plan": task["plan"],
             }
+
+        orphan = self._find_orphan_approval(result)
+
+        if orphan is not None:
+            self.history.create(
+                approval_id=orphan["approval_id"],
+                instruction=instruction,
+                plan=result,
+            )
+
+            return orphan
 
         approval_id = self.supervisor.request_approval(result)
 
