@@ -46,6 +46,15 @@ class SecureFileSystem:
                         os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                         dir_fd=fd,
                     )
+                except OSError as error:
+                    if getattr(error, "errno", None) in (
+                        errno.ELOOP,
+                        errno.ENOTDIR,
+                    ):
+                        raise ValueError(
+                            f"Caminho de diretório não é seguro: {part}"
+                        ) from error
+                    raise
 
                 os.close(fd)
                 fd = next_fd

@@ -3717,3 +3717,31 @@ def test_load_manifest_preserves_valid_change_fields(tmp_path):
     assert transaction.changes[0].reason == "teste de persistência"
     assert transaction.metadata == {"source": "test"}
     assert transaction.repair_state == {"attempts": 1}
+
+def test_rollback_rejects_ancestor_directory_symlink(tmp_path):
+    manager, transaction = make_started_transaction(tmp_path)
+
+    backup_root = Path(transaction.metadata["backup"])
+    backup_nested = backup_root / "nested"
+    backup_nested.mkdir()
+    (backup_nested / "arquivo.py").write_text(
+        "ORIGINAL\n",
+        encoding="utf-8",
+    )
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    destination_nested = tmp_path / "nested"
+    destination_nested.symlink_to(
+        outside,
+        target_is_directory=True,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Caminho de diretório não é seguro: nested",
+    ):
+        manager.rollback(transaction)
+
+    assert not (outside / "arquivo.py").exists()
