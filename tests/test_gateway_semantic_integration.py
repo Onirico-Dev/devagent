@@ -2335,3 +2335,43 @@ def test_gateway_approve_crash_after_supervisor_approval_leaves_inconsistent_sta
         match="Solicitação não está pendente",
     ):
         gateway.approve(approval_id)
+def test_gateway_propagates_recovery_reconciliation_failure(
+    tmp_path,
+    monkeypatch,
+):
+    from core.executor.transaction_manager import TransactionManager
+    from core.gateway import DevAgentGateway
+    from core.memory.recovery_reconciler import RecoveryReconciler
+    from core.schemas.models import Transaction, TransactionStatus
+
+    manager = TransactionManager(root=tmp_path)
+    transaction = Transaction(
+        transaction_id="tx-reconciliation-failure",
+        status=TransactionStatus.EXECUTING,
+    )
+    manager.begin(transaction)
+
+    manager.transition(
+        transaction,
+        TransactionStatus.ROLLED_BACK,
+    )
+    manager.persist_manifest(transaction)
+
+    def fail_reconcile(self, transactions):
+        assert len(transactions) == 1
+        assert transactions[0].transaction_id == (
+            "tx-reconciliation-failure"
+        )
+        raise RuntimeError("simulated reconciliation failure")
+
+    monkeypatch.setattr(
+        RecoveryReconciler,
+        "reconcile",
+        fail_reconcile,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="simulated reconciliation failure",
+    ):
+        DevAgentGateway(FakeAgent(), root=tmp_path)
