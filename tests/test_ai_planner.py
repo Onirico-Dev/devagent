@@ -654,3 +654,29 @@ def test_ai_planner_rejects_invalid_feedback_context():
             "apenas analisar",
             feedback_context="contexto-invalido",
         )
+
+def test_ai_planner_extracts_non_python_modify_target():
+    assert (
+        AIPlanner._extract_modify_target("modifique o arquivo config.json;")
+        == "config.json"
+    )
+
+def test_ai_planner_preserves_non_python_target_file_from_large_context():
+    target = "config.json"
+    context = (
+        f"=== ARQUIVO: {target} ===\n"
+        + "B" * AIPlanner.MAX_CONTEXT_CHARS
+        + "\n=== ARQUIVO: outro.py ===\n"
+        + "conteudo do outro arquivo"
+    )
+
+    planner = AIPlanner(None)
+
+    result = planner._preserve_modify_target_context(
+        "modifique o arquivo config.json",
+        context,
+    )
+
+    assert f"=== ARQUIVO ALVO DO MODIFY: {target} ===" in result
+    assert f"=== ARQUIVO: {target} ===" in result
+    assert "=== ARQUIVO: outro.py ===" not in result

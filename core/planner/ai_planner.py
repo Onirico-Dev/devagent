@@ -19,7 +19,7 @@ class AIPlanner:
         match = re.search(
             r"(?:modifique|modificar|altere|alterar|modify)\s+"
             r"(?:o\s+|a\s+)?(?:arquivo\s+)?"
-            r"([A-Za-z0-9_./-]+\.py)\b",
+            r"([A-Za-z0-9_./-]+)",
             instruction,
             flags=re.IGNORECASE,
         )
