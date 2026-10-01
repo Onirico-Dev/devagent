@@ -189,3 +189,16 @@ def test_validate_unsupported_change_type_rejects_invalid_type(tmp_path):
         match="Tipo de alteração inválido",
     ):
         engine.validate_change(change)
+
+def test_validate_create_rejects_broken_symlink(tmp_path):
+    target = tmp_path / "config.json"
+    target.symlink_to(tmp_path / "arquivo_inexistente.json")
+
+    engine = ChangeEngine(tmp_path)
+    change = make_change("config.json", ChangeType.CREATE)
+
+    with pytest.raises(
+        FileExistsError,
+        match="Arquivo já existe",
+    ):
+        engine.validate_change(change)

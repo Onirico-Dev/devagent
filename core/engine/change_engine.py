@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from core.schemas.models import Change, ChangeType, Plan
@@ -8,7 +9,8 @@ class ChangeEngine:
         self.root = Path(root).resolve()
 
     def validate_change(self, change: Change) -> None:
-        target = (self.root / change.path).resolve()
+        raw_target = self.root / change.path
+        target = raw_target.resolve()
 
         if not target.is_relative_to(self.root):
             raise ValueError(
@@ -16,7 +18,7 @@ class ChangeEngine:
             )
 
         if change.change_type == ChangeType.CREATE:
-            if target.exists():
+            if os.path.lexists(raw_target):
                 raise FileExistsError(
                     f"Arquivo já existe: {change.path}"
                 )
