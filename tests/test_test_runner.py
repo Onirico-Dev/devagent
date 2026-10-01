@@ -122,6 +122,16 @@ def test_run_pytest_returns_failure(tmp_path, monkeypatch):
     assert result["stderr"] == "failure"
 
 
+def test_run_rejects_non_list_files(tmp_path):
+    runner = Runner(tmp_path)
+
+    with pytest.raises(
+        ValueError,
+        match="Os testes devem ser fornecidos como uma lista",
+    ):
+        runner.run("tests/test_app.py")
+
+
 def test_run_without_files_runs_full_pytest(tmp_path, monkeypatch):
     runner = Runner(tmp_path)
 

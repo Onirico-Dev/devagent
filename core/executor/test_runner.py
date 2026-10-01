@@ -221,6 +221,11 @@ class TestRunner:
         return self._execute_pytest(safe_files)
 
     def run(self, files=None):
+        if files is not None and not isinstance(files, list):
+            raise ValueError(
+                "Os testes devem ser fornecidos como uma lista."
+            )
+
         if not files:
             result = subprocess.run(
                 [
