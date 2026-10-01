@@ -3295,3 +3295,298 @@ def test_transaction_manager_rejects_invalid_state_transitions(
         manager.transition(transaction, new_status)
 
     assert transaction.status == current_status
+
+@pytest.mark.parametrize(
+    "invalid_path",
+    [None, 123, [], {}],
+)
+def test_deserialize_change_rejects_non_string_path(invalid_path):
+    with pytest.raises(ValueError, match="Change inválido no manifesto"):
+        TransactionManager._deserialize_change(
+            {
+                "change_type": ChangeType.MODIFY.value,
+                "path": invalid_path,
+            }
+        )
+
+
+def test_deserialize_change_rejects_non_string_content():
+    with pytest.raises(ValueError, match="Change inválido no manifesto"):
+        TransactionManager._deserialize_change(
+            {
+                "change_type": ChangeType.MODIFY.value,
+                "path": "app.py",
+                "content": 123,
+            }
+        )
+
+
+@pytest.mark.parametrize("invalid_reason", [None, 123, [], {}])
+def test_deserialize_change_rejects_non_string_reason(invalid_reason):
+    with pytest.raises(ValueError, match="Change inválido no manifesto"):
+        TransactionManager._deserialize_change(
+            {
+                "change_type": ChangeType.MODIFY.value,
+                "path": "app.py",
+                "reason": invalid_reason,
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "invalid_status",
+    [None, 123, [], {}, "status-inexistente"],
+)
+def test_load_manifest_rejects_invalid_status(tmp_path, invalid_status):
+    manager = TransactionManager(root=tmp_path)
+    backup_dir = tmp_path / "transactions"
+    backup_dir.mkdir(parents=True)
+
+    (backup_dir / "tx-invalid-status.json").write_text(
+        __import__("json").dumps(
+            {
+                "transaction_id": "tx-invalid-status",
+                "status": invalid_status,
+                "changes": [],
+                "metadata": {},
+                "repair_state": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError):
+        manager.load_manifest("tx-invalid-status")
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        TransactionStatus.PENDING,
+        TransactionStatus.EXECUTING,
+        TransactionStatus.TESTING,
+        TransactionStatus.COMMITTED,
+        TransactionStatus.ROLLED_BACK,
+        TransactionStatus.FAILED,
+    ],
+)
+def test_load_manifest_preserves_valid_status(tmp_path, status):
+    manager = TransactionManager(root=tmp_path)
+    backup_dir = tmp_path / "transactions"
+    backup_dir.mkdir(parents=True)
+
+    (backup_dir / "tx-valid-status.json").write_text(
+        __import__("json").dumps(
+            {
+                "transaction_id": "tx-valid-status",
+                "status": status.value,
+                "changes": [],
+                "metadata": {},
+                "repair_state": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    restored = manager.load_manifest("tx-valid-status")
+
+    assert restored.status is status
+
+
+@pytest.mark.parametrize(
+    "change_type",
+    [
+        ChangeType.CREATE,
+        ChangeType.MODIFY,
+        ChangeType.DELETE,
+    ],
+)
+def test_deserialize_change_preserves_valid_change_type(change_type):
+    result = TransactionManager._deserialize_change(
+        {
+            "change_type": change_type.value,
+            "path": "app.py",
+        }
+    )
+
+    assert result.change_type is change_type
+
+
+@pytest.mark.parametrize(
+    "invalid_change_type",
+    [None, 123, [], {}, "invalid"],
+)
+def test_deserialize_change_rejects_invalid_change_type(
+    invalid_change_type,
+):
+    with pytest.raises(ValueError, match="Change inválido no manifesto"):
+        TransactionManager._deserialize_change(
+            {
+                "change_type": invalid_change_type,
+                "path": "app.py",
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "invalid_path",
+    [
+        "/absolute/path.py",
+        "../escape.py",
+        "nested/../../escape.py",
+        "./../escape.py",
+    ],
+)
+def test_load_manifest_rejects_unsafe_change_path(tmp_path, invalid_path):
+    manager = TransactionManager(root=tmp_path)
+    backup_dir = tmp_path / "transactions"
+    backup_dir.mkdir(parents=True)
+
+    (backup_dir / "tx-unsafe-path.json").write_text(
+        __import__("json").dumps(
+            {
+                "transaction_id": "tx-unsafe-path",
+                "status": TransactionStatus.EXECUTING.value,
+                "changes": [
+                    {
+                        "change_type": ChangeType.MODIFY.value,
+                        "path": invalid_path,
+                    }
+                ],
+                "metadata": {},
+                "repair_state": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError):
+        manager.load_manifest("tx-unsafe-path")
+
+
+def test_load_manifest_rejects_symlink_change_path(tmp_path):
+    manager = TransactionManager(root=tmp_path)
+    backup_dir = tmp_path / "transactions"
+    backup_dir.mkdir(parents=True)
+
+    outside = tmp_path.parent / "manifest-outside"
+    outside.mkdir(exist_ok=True)
+
+    link = tmp_path / "linked"
+    link.symlink_to(outside, target_is_directory=True)
+
+    (backup_dir / "tx-symlink-path.json").write_text(
+        __import__("json").dumps(
+            {
+                "transaction_id": "tx-symlink-path",
+                "status": TransactionStatus.EXECUTING.value,
+                "changes": [
+                    {
+                        "change_type": ChangeType.MODIFY.value,
+                        "path": "linked/escape.py",
+                    }
+                ],
+                "metadata": {},
+                "repair_state": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Caminho fora do projeto"):
+        manager.load_manifest("tx-symlink-path")
+
+@pytest.mark.parametrize(
+    "invalid_transaction_id",
+    [None, 123, [], {}, ""],
+)
+def test_load_manifest_rejects_invalid_transaction_id_field(
+    tmp_path,
+    invalid_transaction_id,
+):
+    manager = TransactionManager(root=tmp_path)
+    backup_dir = tmp_path / "transactions"
+    backup_dir.mkdir(parents=True)
+
+    (backup_dir / "tx-invalid-id-field.json").write_text(
+        __import__("json").dumps(
+            {
+                "transaction_id": invalid_transaction_id,
+                "status": TransactionStatus.EXECUTING.value,
+                "changes": [],
+                "metadata": {},
+                "repair_state": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="transaction_id inconsistente"):
+        manager.load_manifest("tx-invalid-id-field")
+
+
+@pytest.mark.parametrize(
+    "invalid_changes_item",
+    [None, 123, [], "invalid"],
+)
+def test_load_manifest_rejects_invalid_change_entries(
+    tmp_path,
+    invalid_changes_item,
+):
+    manager = TransactionManager(root=tmp_path)
+    backup_dir = tmp_path / "transactions"
+    backup_dir.mkdir(parents=True)
+
+    (backup_dir / "tx-invalid-change-entry.json").write_text(
+        __import__("json").dumps(
+            {
+                "transaction_id": "tx-invalid-change-entry",
+                "status": TransactionStatus.EXECUTING.value,
+                "changes": [invalid_changes_item],
+                "metadata": {},
+                "repair_state": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Change inválido no manifesto"):
+        manager.load_manifest("tx-invalid-change-entry")
+
+
+def test_load_manifest_preserves_valid_change_fields(tmp_path):
+    manager = TransactionManager(root=tmp_path)
+    backup_dir = tmp_path / "transactions"
+    backup_dir.mkdir(parents=True)
+
+    (backup_dir / "tx-valid-change.json").write_text(
+        __import__("json").dumps(
+            {
+                "transaction_id": "tx-valid-change",
+                "status": TransactionStatus.EXECUTING.value,
+                "changes": [
+                    {
+                        "change_type": ChangeType.MODIFY.value,
+                        "path": "app.py",
+                        "content": "print('ok')\n",
+                        "reason": "teste de persistência",
+                    }
+                ],
+                "metadata": {"source": "test"},
+                "repair_state": {"attempts": 1},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    transaction = manager.load_manifest("tx-valid-change")
+
+    assert transaction.transaction_id == "tx-valid-change"
+    assert transaction.status is TransactionStatus.EXECUTING
+    assert len(transaction.changes) == 1
+    assert transaction.changes[0].change_type is ChangeType.MODIFY
+    assert transaction.changes[0].path == "app.py"
+    assert transaction.changes[0].content == "print('ok')\n"
+    assert transaction.changes[0].reason == "teste de persistência"
+    assert transaction.metadata == {"source": "test"}
+    assert transaction.repair_state == {"attempts": 1}

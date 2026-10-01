@@ -74,11 +74,25 @@ class TransactionManager:
             raise ValueError("Change inválido no manifesto.")
 
         try:
+            change_type = ChangeType(data["change_type"])
+            path = data["path"]
+            content = data.get("content")
+            reason = data.get("reason", "")
+
+            if not isinstance(path, str):
+                raise ValueError("path deve ser uma string.")
+
+            if content is not None and not isinstance(content, str):
+                raise ValueError("content deve ser uma string ou None.")
+
+            if not isinstance(reason, str):
+                raise ValueError("reason deve ser uma string.")
+
             return Change(
-                change_type=ChangeType(data["change_type"]),
-                path=data["path"],
-                content=data.get("content"),
-                reason=data.get("reason", ""),
+                change_type=change_type,
+                path=path,
+                content=content,
+                reason=reason,
             )
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError("Change inválido no manifesto.") from error
@@ -198,13 +212,19 @@ class TransactionManager:
             data,
             transaction_id,
         )
-        return self._build_transaction_from_manifest(
+
+        transaction = self._build_transaction_from_manifest(
             transaction_id,
             data,
             changes,
             metadata,
             repair_state,
         )
+
+        for change in transaction.changes:
+            self._safe_path(change.path)
+
+        return transaction
 
     def list_recoverable_transactions(self):
         transactions = []
