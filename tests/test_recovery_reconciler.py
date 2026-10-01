@@ -183,3 +183,78 @@ def test_reconcile_failed_recovery_updates_history_to_failed():
             },
         )
     ]
+def test_reconcile_preserves_recovery_marker():
+    history = FakeHistory()
+    history.tasks = [
+        {
+            "task_id": "task-recovery",
+            "transaction_id": "tx-recovery",
+        }
+    ]
+
+    transaction = FakeTransaction(
+        "tx-recovery",
+        TaskHistoryStatus.COMMITTED.value,
+        {
+            "recovery": True,
+        },
+    )
+
+    RecoveryReconciler(history).reconcile([transaction])
+
+    assert history.updates == [
+        (
+            "task-recovery",
+            {
+                "status": TaskHistoryStatus.COMMITTED.value,
+                "transaction_id": "tx-recovery",
+                "extra": {
+                    "recovery": True,
+                },
+            },
+        )
+    ]
+def test_reconcile_is_idempotent_across_repeated_calls():
+    history = FakeHistory()
+    history.tasks = [
+        {
+            "task_id": "task-repeat",
+            "transaction_id": "tx-repeat",
+        }
+    ]
+
+    transaction = FakeTransaction(
+        "tx-repeat",
+        TaskHistoryStatus.COMMITTED.value,
+        {
+            "recovery": True,
+        },
+    )
+
+    reconciler = RecoveryReconciler(history)
+
+    reconciler.reconcile([transaction])
+    reconciler.reconcile([transaction])
+
+    assert history.updates == [
+        (
+            "task-repeat",
+            {
+                "status": TaskHistoryStatus.COMMITTED.value,
+                "transaction_id": "tx-repeat",
+                "extra": {
+                    "recovery": True,
+                },
+            },
+        ),
+        (
+            "task-repeat",
+            {
+                "status": TaskHistoryStatus.COMMITTED.value,
+                "transaction_id": "tx-repeat",
+                "extra": {
+                    "recovery": True,
+                },
+            },
+        ),
+    ]
