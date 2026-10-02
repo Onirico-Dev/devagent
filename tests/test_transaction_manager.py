@@ -532,6 +532,7 @@ def test_rollback_removes_created_file(tmp_path):
     created = tmp_path / "novo.py"
     created.write_text("NOVO\n", encoding="utf-8")
     transaction.metadata["created"] = ["novo.py"]
+    manager.record_created_identity(transaction, "novo.py")
 
     manager.rollback(transaction)
 

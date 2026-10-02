@@ -285,9 +285,35 @@ class RepairExecutor:
         )
 
         try:
+            created = transaction.metadata.get("created", [])
+            created_paths = {str(path) for path in created}
+            is_created_path = str(change.path) in created_paths
+
+            if (
+                change.change_type.value == "modify"
+                and is_created_path
+            ):
+                self.transaction_manager.validate_created_identity(
+                    transaction,
+                    change.path,
+                )
+
             self.executor.execute_change(change)
+
+            if (
+                change.change_type.value == "create"
+                or (
+                    change.change_type.value == "modify"
+                    and is_created_path
+                )
+            ):
+                self.transaction_manager.record_created_identity(
+                    transaction,
+                    change.path,
+                )
+
         except Exception as exc:
-                return {
+            return {
                 "success": False,
                 "status": RepairExecutorStatus.FAILED.value,
                 "transaction_id": transaction.transaction_id,
@@ -315,7 +341,7 @@ class RepairExecutor:
                 transaction,
             )
         except Exception as exc:
-                return {
+            return {
                 "success": False,
                 "status": RepairExecutorStatus.FAILED.value,
                 "transaction_id": transaction.transaction_id,

@@ -617,6 +617,7 @@ def test_rollback_restores_multiple_changes_atomically(tmp_path):
     )
 
     executor.execute(transaction)
+    manager.record_created_identity(transaction, "created.py")
 
     assert existing.read_text(
         encoding="utf-8",
@@ -1823,6 +1824,7 @@ def test_full_transaction_create_rollback_removes_created_file(tmp_path):
     )
 
     executor.execute(transaction)
+    manager.record_created_identity(transaction, "novo.py")
 
     target = tmp_path / "novo.py"
 
@@ -1832,6 +1834,57 @@ def test_full_transaction_create_rollback_removes_created_file(tmp_path):
 
     assert not target.exists()
     assert transaction.status == TransactionStatus.ROLLED_BACK
+
+
+
+def test_created_file_modify_refreshes_identity_before_rollback(tmp_path):
+    manager = TransactionManager(tmp_path)
+    executor = SafeExecutor(tmp_path)
+
+    transaction = make_transaction(
+        Change(
+            change_type=ChangeType.CREATE,
+            path="novo.py",
+            content='print("NOVO")\n',
+        ),
+    )
+
+    manager.begin(transaction)
+    manager.register_created(transaction, "novo.py")
+    executor.execute(transaction)
+    manager.record_created_identity(transaction, "novo.py")
+
+    target = tmp_path / "novo.py"
+    original_identity = (
+        target.stat().st_dev,
+        target.stat().st_ino,
+    )
+
+    transaction.changes.append(
+        Change(
+            change_type=ChangeType.MODIFY,
+            path="novo.py",
+            content='print("ALTERADO")\n',
+        )
+    )
+
+    manager.validate_created_identity(transaction, "novo.py")
+    executor.execute_change(transaction.changes[-1])
+    manager.record_created_identity(transaction, "novo.py")
+
+    modified_identity = (
+        target.stat().st_dev,
+        target.stat().st_ino,
+    )
+
+    assert modified_identity != original_identity
+    assert target.read_text(encoding="utf-8") == 'print("ALTERADO")\n'
+
+    manager.rollback(transaction)
+
+    assert not target.exists()
+    assert transaction.status == TransactionStatus.ROLLED_BACK
+
 
 
 def test_failed_tests_trigger_rollback(tmp_path):
@@ -1950,6 +2003,7 @@ def test_failed_create_rollback_leaves_no_created_file(tmp_path):
     )
 
     executor.execute(transaction)
+    manager.record_created_identity(transaction, "generated.py")
 
     target = tmp_path / "generated.py"
 

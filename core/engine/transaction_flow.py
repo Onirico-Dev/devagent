@@ -166,11 +166,31 @@ class TransactionFlow:
         execution["phase"] = "executing"
         self.transactions.persist_manifest(transaction)
 
+        applied_change_index = 0
+
+        def on_change_applied():
+            nonlocal applied_change_index
+
+            change = transaction.changes[applied_change_index]
+
+            if change.change_type.value == "create":
+                record_identity = getattr(
+                    self.transactions,
+                    "record_created_identity",
+                    None,
+                )
+                if record_identity is not None:
+                    record_identity(
+                        transaction,
+                        change.path,
+                    )
+
+            self.transactions.persist_manifest(transaction)
+            applied_change_index += 1
+
         self.executor.execute(
             transaction,
-            on_change_applied=lambda: self.transactions.persist_manifest(
-                transaction
-            ),
+            on_change_applied=on_change_applied,
         )
 
         verification = None

@@ -806,6 +806,39 @@ class TransactionManager:
         return target
 
 
+    def record_created_identity(self, transaction, relative_path):
+        relative = self._validate_created_file_path(relative_path)
+        target = self.root / relative
+
+        if target.is_symlink():
+            raise ValueError(
+                f"Caminho criado é um symlink: {relative}"
+            )
+
+        if not target.exists() or not target.is_file():
+            return
+
+        created_identity = transaction.metadata.setdefault(
+            "created_identity",
+            {},
+        )
+        identity_before = dict(created_identity)
+
+        self._record_created_identity(
+            transaction,
+            relative,
+            target,
+        )
+
+        if relative in created_identity:
+            created_identity[str(relative)] = created_identity.pop(relative)
+
+        try:
+            self.persist_manifest(transaction)
+        except Exception:
+            transaction.metadata["created_identity"] = identity_before
+            raise
+
     def _record_created_path(self, transaction, relative_path):
         transaction.metadata["created"].append(relative_path)
 
@@ -911,12 +944,46 @@ class TransactionManager:
         expected_identity = transaction.metadata.get(
             "created_identity",
             {},
-        ).get(relative_path, {})
+        ).get(str(relative_path), {})
 
         return (
             expected_identity.get("st_dev"),
             expected_identity.get("st_ino"),
         )
+
+    def validate_created_identity(self, transaction, relative_path):
+        relative = self._validate_created_file_path(relative_path)
+        expected_dev, expected_ino = self._get_created_file_identity(
+            transaction,
+            relative,
+        )
+
+        parent_fd = self._open_parent_directory(
+            self.root,
+            relative,
+        )
+        try:
+            file_fd = self._open_created_file(parent_fd, relative)
+            if file_fd is None:
+                raise RuntimeError(
+                    "Arquivo criado não existe durante a transação: "
+                    f"{relative}"
+                )
+            try:
+                file_stat = self._validate_created_file(
+                    file_fd,
+                    relative,
+                )
+                self._validate_created_identity(
+                    file_stat,
+                    relative,
+                    expected_dev,
+                    expected_ino,
+                )
+            finally:
+                os.close(file_fd)
+        finally:
+            os.close(parent_fd)
 
     def _open_created_file(self, parent_fd, relative):
         filename = relative.name
@@ -958,7 +1025,10 @@ class TransactionManager:
         expected_ino,
     ):
         if expected_dev is None or expected_ino is None:
-            return
+            raise RuntimeError(
+                "Identidade do arquivo criado não foi registrada: "
+                f"{relative}"
+            )
 
         if (
             file_stat.st_dev != expected_dev
