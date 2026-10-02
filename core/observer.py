@@ -12,6 +12,9 @@ class Observer:
         observations: Iterable[Observation] | None = None,
         store: ObservationStore | None = None,
     ):
+        if store is not None and not isinstance(store, ObservationStore):
+            raise ValueError("Store de observações inválido.")
+
         self._store = store
 
         if observations is not None:

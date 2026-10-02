@@ -806,3 +806,8 @@ def test_observer_add_if_absent_rejects_non_transaction_result_without_store():
 
     with pytest.raises(ValueError, match="resultado de transação"):
         observer.add_if_absent(observation)
+
+
+def test_observer_rejects_invalid_store():
+    with pytest.raises(ValueError, match="Store de observações inválido"):
+        Observer(store=object())
