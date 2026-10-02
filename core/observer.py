@@ -52,12 +52,22 @@ class Observer:
         ):
             raise ValueError("A instrução da observação não pode ser vazia.")
 
+        transaction_id = observation.metadata.get("transaction_id")
+        source = observation.metadata.get("source")
+
+        if source != "transaction_result":
+            raise ValueError(
+                "append_if_absent exige observação de resultado de transação."
+            )
+
+        if not isinstance(transaction_id, str) or not transaction_id.strip():
+            raise ValueError("Observação de resultado sem transaction_id.")
+
         if self._store is None:
             for existing in self._observations:
                 if (
                     existing.metadata.get("source") == "transaction_result"
-                    and existing.metadata.get("transaction_id")
-                    == observation.metadata.get("transaction_id")
+                    and existing.metadata.get("transaction_id") == transaction_id
                 ):
                     return False
 

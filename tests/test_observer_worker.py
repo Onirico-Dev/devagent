@@ -784,3 +784,25 @@ def test_observer_refreshes_from_store_on_each_observe(tmp_path):
     store.append(second)
 
     assert observer.observe() == [first, second]
+def test_observer_add_if_absent_rejects_missing_transaction_id_without_store():
+    observation = Observation(
+        instruction="resultado",
+        metadata={"source": "transaction_result"},
+    )
+
+    observer = Observer()
+
+    with pytest.raises(ValueError, match="transaction_id"):
+        observer.add_if_absent(observation)
+
+
+def test_observer_add_if_absent_rejects_non_transaction_result_without_store():
+    observation = Observation(
+        instruction="resultado",
+        metadata={"source": "other"},
+    )
+
+    observer = Observer()
+
+    with pytest.raises(ValueError, match="resultado de transação"):
+        observer.add_if_absent(observation)
