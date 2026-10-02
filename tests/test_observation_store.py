@@ -335,3 +335,44 @@ def test_append_if_absent_is_idempotent_across_processes(tmp_path):
     assert observations[0].metadata["transaction_id"] == (
         "tx-concurrent-idempotent"
     )
+
+def test_write_preserves_replaced_state_when_directory_fsync_fails(
+    tmp_path,
+    monkeypatch,
+):
+    import os
+    import pytest
+    from core.observation_store import ObservationStore
+    from core.observation import Observation
+
+    path = tmp_path / "observations.json"
+    store = ObservationStore(path)
+
+    first = Observation(
+        instruction="primeira",
+        metadata={"id": 1},
+    )
+    second = Observation(
+        instruction="segunda",
+        metadata={"id": 2},
+    )
+
+    store.save([first])
+
+    original_fsync = os.fsync
+    calls = 0
+
+    def failing_directory_fsync(fd):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("directory fsync failure")
+        return original_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", failing_directory_fsync)
+
+    with pytest.raises(OSError, match="directory fsync failure"):
+        store.save([second])
+
+    assert store.load() == [second]
+    assert list(tmp_path.glob(".observations.json.*.tmp")) == []
