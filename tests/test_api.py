@@ -5498,3 +5498,66 @@ def test_gateway_reconciles_persisted_terminal_transaction_on_startup(tmp_path):
 
     assert task["status"] == "committed"
     assert task["transaction_id"] == transaction_id
+
+def test_gateway_deduplicates_transaction_present_in_recovery_and_terminal_lists(
+    tmp_path,
+    monkeypatch,
+):
+    import json
+
+    import core.gateway as gateway_module
+    from agent import DevAgent
+    from core.schemas.models import Transaction, TransactionStatus
+
+    transaction_id = "tx-recovery-terminal-duplicate"
+    approval_id = "task-recovery-terminal-duplicate"
+
+    tasks_path = tmp_path / "transactions" / "tasks.json"
+    tasks_path.parent.mkdir(parents=True, exist_ok=True)
+    tasks_path.write_text(
+        json.dumps(
+            {
+                approval_id: {
+                    "task_id": approval_id,
+                    "approval_id": approval_id,
+                    "instruction": "tarefa duplicada na recuperação",
+                    "plan": {},
+                    "status": "pending",
+                    "transaction_id": transaction_id,
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "updated_at": "2026-01-01T00:00:00+00:00",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    transaction = Transaction(
+        transaction_id=transaction_id,
+        status=TransactionStatus.COMMITTED,
+        metadata={"approval_id": approval_id},
+    )
+
+    monkeypatch.setattr(
+        gateway_module.TransactionManager,
+        "recover_incomplete_transactions",
+        lambda self, commit_detector=None, recovery_guard=None: [
+            transaction
+        ],
+    )
+    monkeypatch.setattr(
+        gateway_module.TransactionManager,
+        "list_terminal_transactions",
+        lambda self: [transaction],
+    )
+
+    gateway_module.DevAgentGateway(
+        DevAgent(str(tmp_path)),
+        root=str(tmp_path),
+    )
+
+    data = json.loads(tasks_path.read_text(encoding="utf-8"))
+    task = data[approval_id]
+
+    assert task["status"] == "committed"
+    assert task["transaction_id"] == transaction_id
