@@ -5443,3 +5443,58 @@ def test_gateway_reconciles_recovered_failed_transaction_in_history(
 
     assert task["status"] == "failed"
     assert task["transaction_id"] == "tx-recovered"
+
+def test_gateway_reconciles_persisted_terminal_transaction_on_startup(tmp_path):
+    import json
+
+    from agent import DevAgent
+    from core.gateway import DevAgentGateway
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Transaction, TransactionStatus
+
+    transaction_id = "tx-terminal-startup"
+    approval_id = "task-terminal-startup"
+
+    tasks_path = tmp_path / "transactions" / "tasks.json"
+    tasks_path.parent.mkdir(parents=True, exist_ok=True)
+    tasks_path.write_text(
+        json.dumps(
+            {
+                approval_id: {
+                    "task_id": approval_id,
+                    "approval_id": approval_id,
+                    "instruction": "tarefa terminal persistida",
+                    "plan": {},
+                    "status": "pending",
+                    "transaction_id": transaction_id,
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "updated_at": "2026-01-01T00:00:00+00:00",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manager = TransactionManager(root=tmp_path)
+    transaction = Transaction(
+        transaction_id=transaction_id,
+        metadata={"approval_id": approval_id},
+    )
+
+    manager.begin(transaction)
+    manager.transition(
+        transaction,
+        TransactionStatus.COMMITTED,
+    )
+    manager.persist_manifest(transaction)
+
+    DevAgentGateway(
+        DevAgent(str(tmp_path)),
+        root=str(tmp_path),
+    )
+
+    data = json.loads(tasks_path.read_text(encoding="utf-8"))
+    task = data[approval_id]
+
+    assert task["status"] == "committed"
+    assert task["transaction_id"] == transaction_id
