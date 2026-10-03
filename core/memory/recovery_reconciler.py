@@ -50,14 +50,28 @@ class RecoveryReconciler:
             if task is None:
                 continue
 
+            recovery = transaction.metadata.get("recovery") is True
+
+            already_reconciled = (
+                task.get("status") == status
+                and task.get("transaction_id") == transaction_id
+                and (not recovery or task.get("recovery") is True)
+            )
+
+            if already_reconciled:
+                reconciled.add(transaction_id)
+                continue
+
             extra = {}
-            if transaction.metadata.get("recovery") is True:
+
+            if recovery:
                 extra["recovery"] = True
 
             update_kwargs = {
                 "status": status,
                 "transaction_id": transaction_id,
             }
+
             if extra:
                 update_kwargs["extra"] = extra
 
@@ -65,4 +79,5 @@ class RecoveryReconciler:
                 task["task_id"],
                 **update_kwargs,
             )
+
             reconciled.add(transaction_id)

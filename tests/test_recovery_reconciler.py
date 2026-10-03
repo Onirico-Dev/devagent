@@ -214,6 +214,32 @@ def test_reconcile_preserves_recovery_marker():
             },
         )
     ]
+def test_reconcile_does_not_rewrite_already_reconciled_task(tmp_path):
+    from core.memory.task_history import TaskHistory
+
+    history = TaskHistory(tmp_path / "tasks.json")
+    history.create(
+        approval_id="approval-idempotent",
+        instruction="teste",
+        plan={},
+    )
+
+    transaction = FakeTransaction(
+        "tx-idempotent",
+        TaskHistoryStatus.COMMITTED.value,
+        {"approval_id": "approval-idempotent", "recovery": True},
+    )
+
+    reconciler = RecoveryReconciler(history)
+
+    reconciler.reconcile([transaction])
+    first = history.get("approval-idempotent")
+
+    reconciler.reconcile([transaction])
+    second = history.get("approval-idempotent")
+
+    assert second == first
+
 def test_reconcile_is_idempotent_across_repeated_calls():
     history = FakeHistory()
     history.tasks = [
