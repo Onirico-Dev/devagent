@@ -636,6 +636,55 @@ def test_rollback_rejects_created_symlink(tmp_path):
         manager.rollback(transaction)
 
 
+def test_rollback_recovers_after_partial_created_file_removal(
+    tmp_path,
+    monkeypatch,
+):
+    manager, transaction = make_started_transaction(tmp_path)
+
+    first = tmp_path / "first.py"
+    second = tmp_path / "second.py"
+    first.write_text("FIRST\n", encoding="utf-8")
+    second.write_text("SECOND\n", encoding="utf-8")
+
+    manager.register_created(transaction, "first.py")
+    manager.register_created(transaction, "second.py")
+
+    original_unlink = manager._unlink_created_file
+    calls = {"count": 0}
+
+    def fail_on_second_unlink(parent_fd, relative):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            raise OSError("simulated partial rollback failure")
+        return original_unlink(parent_fd, relative)
+
+    monkeypatch.setattr(
+        manager,
+        "_unlink_created_file",
+        fail_on_second_unlink,
+    )
+
+    with pytest.raises(
+        OSError,
+        match="simulated partial rollback failure",
+    ):
+        manager.rollback(transaction)
+
+    assert not first.exists()
+    assert second.exists()
+    assert transaction.status != TransactionStatus.ROLLED_BACK
+
+    monkeypatch.undo()
+
+    manager.rollback(transaction)
+
+    assert not first.exists()
+    assert not second.exists()
+    assert transaction.status == TransactionStatus.ROLLED_BACK
+
+
+
 def test_rollback_restores_backed_up_file(tmp_path):
     manager, transaction = make_started_transaction(tmp_path)
 
@@ -666,6 +715,70 @@ def test_rollback_restores_nested_backed_up_file(tmp_path):
     manager.rollback(transaction)
 
     assert source.read_text(encoding="utf-8") == "ORIGINAL\n"
+
+
+def test_rollback_recovers_after_partial_backup_restoration(
+    tmp_path,
+    monkeypatch,
+):
+    manager, transaction = make_started_transaction(tmp_path)
+
+    first = tmp_path / "first.py"
+    second = tmp_path / "second.py"
+    first.write_text("FIRST\n", encoding="utf-8")
+    second.write_text("SECOND\n", encoding="utf-8")
+
+    manager.backup_file(transaction, "first.py")
+    manager.backup_file(transaction, "second.py")
+
+    first.write_text("CHANGED FIRST\n", encoding="utf-8")
+    second.write_text("CHANGED SECOND\n", encoding="utf-8")
+
+    original_copy = manager._copy_file_no_follow
+    calls = {"count": 0}
+
+    def fail_on_second_restore(
+        source_root,
+        source_relative,
+        destination_root,
+        destination_relative,
+        overwrite=False,
+    ):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            raise OSError("simulated partial backup restoration failure")
+        return original_copy(
+            source_root,
+            source_relative,
+            destination_root,
+            destination_relative,
+            overwrite=overwrite,
+        )
+
+    monkeypatch.setattr(
+        manager,
+        "_copy_file_no_follow",
+        fail_on_second_restore,
+    )
+
+    with pytest.raises(
+        OSError,
+        match="simulated partial backup restoration failure",
+    ):
+        manager.rollback(transaction)
+
+    assert first.read_text(encoding="utf-8") == "FIRST\n"
+    assert second.read_text(encoding="utf-8") == "CHANGED SECOND\n"
+    assert transaction.status != TransactionStatus.ROLLED_BACK
+
+    monkeypatch.undo()
+
+    manager.rollback(transaction)
+
+    assert first.read_text(encoding="utf-8") == "FIRST\n"
+    assert second.read_text(encoding="utf-8") == "SECOND\n"
+    assert transaction.status == TransactionStatus.ROLLED_BACK
+
 
 
 def test_rollback_rejects_backup_symlink(tmp_path):
