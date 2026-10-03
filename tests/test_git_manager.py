@@ -135,3 +135,106 @@ def test_find_transaction_commit_returns_none_when_missing(tmp_path):
     )
 
     assert result is None
+
+def test_find_transaction_commit_does_not_match_another_transaction(tmp_path):
+    import subprocess
+    from core.executor.git_manager import GitManager
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    target = tmp_path / "example.py"
+    target.write_text("value = 1\n")
+    subprocess.run(
+        ["git", "add", "example.py"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    other_transaction_id = "transaction-other"
+    subprocess.run(
+        [
+            "git",
+            "commit",
+            "-m",
+            f"DevAgent: transação {other_transaction_id} — alterar example.py",
+        ],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    result = GitManager(tmp_path).find_transaction_commit("transaction-target")
+
+    assert result is None
+
+
+def test_find_transaction_commit_propagates_git_log_failure(tmp_path, monkeypatch):
+    import subprocess
+    from core.executor.git_manager import GitManager
+
+    manager = GitManager(tmp_path)
+
+    monkeypatch.setattr(
+        manager,
+        "_ensure_git_repository",
+        lambda: None,
+    )
+
+    error = subprocess.CalledProcessError(
+        128,
+        [
+            "git",
+            "log",
+            "--all",
+            "--fixed-strings",
+            "--grep",
+            "DevAgent: transação transaction-test —",
+            "--format=%H%x00%s",
+        ],
+        stderr="fatal: git log failed",
+    )
+
+    def fake_run(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(
+        "core.executor.git_manager.subprocess.run",
+        fake_run,
+    )
+
+    with pytest.raises(subprocess.CalledProcessError) as exc_info:
+        manager.find_transaction_commit("transaction-test")
+
+    assert exc_info.value.returncode == 128
+    assert exc_info.value.stderr == "fatal: git log failed"
+
+def test_unstage_paths_ignores_empty_paths(tmp_path, monkeypatch):
+    from core.executor.git_manager import GitManager
+
+    manager = GitManager(tmp_path)
+    calls = []
+
+    monkeypatch.setattr(
+        "core.executor.git_manager.subprocess.run",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    assert manager._unstage_paths([]) is None
+    assert calls == []

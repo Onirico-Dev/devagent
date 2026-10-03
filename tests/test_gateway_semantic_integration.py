@@ -1315,6 +1315,115 @@ def test_gateway_serializes_concurrent_approve_for_same_task(tmp_path):
     final_task = gateway.get_task(approval_id)
     assert final_task["status"] == "committed"
 
+
+def test_gateway_recovers_existing_git_commit_after_restart(tmp_path):
+    import subprocess
+
+    from core.gateway import DevAgentGateway
+    from core.schemas.models import Change, ChangeType, Transaction, TransactionStatus
+
+    target = tmp_path / "commit-existing.py"
+    target.write_text(
+        'VALUE = "original"\n',
+        encoding="utf-8",
+    )
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "add", "."],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "test: initial fixture"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    gateway = DevAgentGateway(None, root=tmp_path)
+
+    transaction = Transaction(
+        transaction_id="commit-existing-recovery",
+        changes=[
+            Change(
+                change_type=ChangeType.MODIFY,
+                path="commit-existing.py",
+                content='VALUE = "changed"\n',
+                reason="Teste de recovery após commit Git confirmado",
+            )
+        ],
+    )
+
+    transaction = gateway.transactions.begin(transaction)
+
+    for change in transaction.changes:
+        gateway.security.validate_path(change.path)
+        gateway.transactions.backup_file(transaction, change.path)
+
+    gateway.executor.execute(transaction)
+
+    assert target.read_text(encoding="utf-8") == 'VALUE = "changed"\n'
+    assert transaction.status == TransactionStatus.EXECUTING
+
+    git_result = gateway.git.commit_transaction(
+        transaction.transaction_id,
+        "alterar commit-existing.py",
+        paths=["commit-existing.py"],
+    )
+
+    assert git_result["status"] == "committed"
+    assert git_result["transaction_id"] == transaction.transaction_id
+    assert git_result["commit_hash"]
+
+    persisted_before_restart = gateway.transactions.load_manifest(
+        transaction.transaction_id
+    )
+    assert persisted_before_restart.status == TransactionStatus.EXECUTING
+
+    restarted_gateway = DevAgentGateway(None, root=tmp_path)
+
+    recovered = restarted_gateway.transactions.load_manifest(
+        transaction.transaction_id
+    )
+
+    assert recovered.status == TransactionStatus.COMMITTED
+    assert recovered.metadata["recovery"] is True
+    assert recovered.metadata["recovery_git"]["status"] == "committed"
+    assert recovered.metadata["recovery_git"]["transaction_id"] == (
+        transaction.transaction_id
+    )
+    assert recovered.metadata["recovery_git"]["commit_hash"] == (
+        git_result["commit_hash"]
+    )
+    assert (
+        restarted_gateway.transactions.list_recoverable_transactions()
+        == []
+    )
+
 def test_gateway_recovers_commit_failure_after_restart(tmp_path, monkeypatch):
     import pytest
     import subprocess
@@ -2523,3 +2632,87 @@ def test_gateway_propagates_recovery_reconciliation_failure(
         match="simulated reconciliation failure",
     ):
         DevAgentGateway(FakeAgent(), root=tmp_path)
+
+def test_gateway_startup_reconciliation_is_idempotent_for_terminal_transaction(
+    tmp_path,
+):
+    import json
+    import subprocess
+
+    from agent import DevAgent
+    from core.gateway import DevAgentGateway
+    from core.memory.task_history import TaskHistoryStatus
+
+    target = tmp_path / "version.py"
+    target.write_text("old\n", encoding="utf-8")
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "add", "."],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "initial"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    gateway = DevAgentGateway(
+        DevAgent(str(tmp_path)),
+        root=tmp_path,
+    )
+
+    task = gateway.create_task("alterar version.py")
+    approval_id = task["approval_id"]
+
+    gateway.history.update(
+        approval_id,
+        status=TaskHistoryStatus.COMMITTED.value,
+        transaction_id="tx-terminal-idempotent",
+        extra={"recovery": True},
+    )
+
+    first = gateway.history.get(approval_id)
+    assert first is not None
+    assert first["status"] == TaskHistoryStatus.COMMITTED.value
+
+    restarted_gateway = DevAgentGateway(
+        DevAgent(str(tmp_path)),
+        root=tmp_path,
+    )
+
+    second = restarted_gateway.history.get(approval_id)
+
+    assert second == first
+
+    persisted = json.loads(
+        (tmp_path / "transactions" / "tasks.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert persisted[approval_id] == first
