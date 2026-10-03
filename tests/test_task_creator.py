@@ -431,3 +431,34 @@ def test_create_or_reuse_does_not_reuse_ambiguous_orphan_approval(creator):
         instruction="crie app.py",
         plan=plan,
     )
+
+def test_find_orphan_approval_skips_invalid_and_non_matching_requests(creator):
+    result = {
+        "objective": "teste",
+        "tests": [],
+        "risks": [],
+        "changes": [],
+    }
+
+    creator.supervisor.list_pending.return_value = {
+        "approval-invalid": "registro inválido",
+        "approval-different": {
+            "status": "pending",
+            "plan": {
+                "objective": "outro",
+                "tests": [],
+                "risks": [],
+                "changes": [],
+            },
+        },
+        "approval-valid": {
+            "status": "pending",
+            "plan": result,
+        },
+    }
+
+    assert creator._find_orphan_approval(result) == {
+        "approval_id": "approval-valid",
+        "status": "pending",
+        "plan": result,
+    }

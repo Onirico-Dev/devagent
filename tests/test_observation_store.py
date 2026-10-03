@@ -376,3 +376,43 @@ def test_write_preserves_replaced_state_when_directory_fsync_fails(
 
     assert store.load() == [second]
     assert list(tmp_path.glob(".observations.json.*.tmp")) == []
+
+def test_append_if_absent_rejects_non_observation(tmp_path):
+    from core.observation_store import ObservationStore
+
+    store = ObservationStore(tmp_path / "observations.json")
+
+    with pytest.raises(
+        ValueError,
+        match="Observação inválida",
+    ):
+        store.append_if_absent({"metadata": {}})
+
+def test_append_if_absent_ignores_invalid_persisted_records(tmp_path, monkeypatch):
+    from core.observation import Observation
+    from core.observation_store import ObservationStore
+
+    store = ObservationStore(tmp_path / "observations.json")
+
+    observation = Observation(
+        "resultado da transação",
+        {
+            "source": "transaction_result",
+            "transaction_id": "tx-valid",
+            "status": "committed",
+        },
+    )
+
+    monkeypatch.setattr(
+        store,
+        "_read",
+        lambda: [
+            "registro inválido",
+            {
+                "instruction": "registro com metadata inválido",
+                "metadata": "inválido",
+            },
+        ],
+    )
+
+    assert store.append_if_absent(observation) is True
