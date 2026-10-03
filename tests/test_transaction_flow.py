@@ -110,7 +110,12 @@ class FakeTransactions:
         self.rollback_calls.append(transaction)
 
     def persist_manifest(self, transaction):
-        self.persisted.append(transaction)
+        self.persisted.append(
+            SimpleNamespace(
+                status=transaction.status,
+                repair_state=dict(transaction.repair_state),
+            )
+        )
 
 
 class FakeSecurity:
@@ -353,6 +358,23 @@ def test_commit_transaction_commits_only_after_git_success():
     assert ctx.git.calls == [
         ("tx-1", "criar app.py", ["app.py"])
     ]
+
+
+def test_commit_transaction_persists_committed_repair_state_with_transaction():
+    ctx = make_flow()
+
+    ctx.flow.commit_transaction(
+        approval_id="approval-1",
+        instruction="criar app.py",
+        transaction=ctx.transaction,
+        test_result={"success": True},
+        repair_state=ctx.repair_state,
+    )
+
+    persisted = ctx.transactions.persisted[-1]
+
+    assert persisted.status == TransactionStatus.COMMITTED
+    assert persisted.repair_state["status"] == "committed"
 
 
 def test_commit_transaction_rejects_invalid_git_result():

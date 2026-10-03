@@ -336,8 +336,8 @@ class TransactionFlow:
 
         self.transactions.transition(transaction, TransactionStatus.COMMITTED)
         repair_state.mark_committed()
-        self.transactions.persist_manifest(transaction)
         repair_state.persist(transaction)
+        self.transactions.persist_manifest(transaction)
 
         attempts = repair_state.attempts
 
