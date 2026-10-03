@@ -363,6 +363,65 @@ def test_supervisor_reject_preserves_in_memory_state_on_save_failure(
 
 
 
+def test_supervisor_approve_rolls_back_loaded_state_on_save_failure(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "approvals.json"
+    supervisor = Supervisor(path)
+
+    approval_id = supervisor.request_approval({"name": "approval"})
+
+    persisted = Supervisor(path)
+    persisted.pending[approval_id]["plan"] = {"source": "disk"}
+    persisted._save()
+
+    supervisor.pending[approval_id]["plan"] = {"source": "stale-memory"}
+
+    def failing_save():
+        raise OSError("simulated save failure")
+
+    monkeypatch.setattr(supervisor, "_save", failing_save)
+
+    with pytest.raises(OSError, match="simulated save failure"):
+        supervisor.approve(approval_id)
+
+    assert supervisor.pending[approval_id]["plan"] == {"source": "disk"}
+    assert supervisor.pending[approval_id]["status"] == (
+        ApprovalStatus.PENDING.value
+    )
+
+
+def test_supervisor_reject_rolls_back_loaded_state_on_save_failure(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "approvals.json"
+    supervisor = Supervisor(path)
+
+    approval_id = supervisor.request_approval({"name": "approval"})
+
+    persisted = Supervisor(path)
+    persisted.pending[approval_id]["plan"] = {"source": "disk"}
+    persisted._save()
+
+    supervisor.pending[approval_id]["plan"] = {"source": "stale-memory"}
+
+    def failing_save():
+        raise OSError("simulated save failure")
+
+    monkeypatch.setattr(supervisor, "_save", failing_save)
+
+    with pytest.raises(OSError, match="simulated save failure"):
+        supervisor.reject(approval_id)
+
+    assert supervisor.pending[approval_id]["plan"] == {"source": "disk"}
+    assert supervisor.pending[approval_id]["status"] == (
+        ApprovalStatus.PENDING.value
+    )
+
+
+
 def test_supervisor_serializes_concurrent_request_approval(tmp_path):
     path = tmp_path / "approvals.json"
     supervisor = Supervisor(path)

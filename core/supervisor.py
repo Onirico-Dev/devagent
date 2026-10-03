@@ -260,8 +260,8 @@ class Supervisor:
         process_lock = self._process_lock()
         try:
                     with self._lock:
-                        previous_pending = self.pending
                         self._load()
+                        previous_pending = copy.deepcopy(self.pending)
 
                         request = self.pending.get(
                             approval_id
@@ -308,8 +308,8 @@ class Supervisor:
         process_lock = self._process_lock()
         try:
                     with self._lock:
-                        previous_pending = self.pending
                         self._load()
+                        previous_pending = copy.deepcopy(self.pending)
 
                         request = self.pending.get(
                             approval_id
