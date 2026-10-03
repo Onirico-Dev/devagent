@@ -907,3 +907,61 @@ def test_approve_locked_uses_repair_flow_run_fallback():
     assert calls
     assert calls[0]["instruction"] == "criar app.py"
     assert calls[0]["transaction"].transaction_id == "tx-1"
+
+
+def test_approve_locked_commit_failure_after_git_commit_does_not_rollback():
+    ctx = make_flow(test_result={"success": True})
+
+    git_calls = []
+    rollback_calls = []
+    git_committed = False
+
+    original_git_commit = ctx.flow.git.commit_transaction
+    original_persist_manifest = ctx.flow.transactions.persist_manifest
+
+    def git_commit(*args, **kwargs):
+        nonlocal git_committed
+        result = original_git_commit(*args, **kwargs)
+        git_calls.append((args, kwargs))
+        git_committed = True
+        return result
+
+    def conditional_persist_manifest(*args, **kwargs):
+        if git_committed:
+            raise RuntimeError("POST_COMMIT_MANIFEST_PERSIST_FAILURE")
+        return original_persist_manifest(*args, **kwargs)
+
+    ctx.flow.git.commit_transaction = git_commit
+    ctx.flow.transactions.persist_manifest = conditional_persist_manifest
+
+    def commit_fn(**kwargs):
+        return ctx.flow.commit_transaction(
+            approval_id=kwargs["approval_id"],
+            transaction=kwargs["transaction"],
+            repair_state=kwargs["repair_state"],
+            test_result=kwargs["test_result"],
+            instruction=kwargs["instruction"],
+            repair=kwargs.get("repair"),
+        )
+
+    def rollback_fn(**kwargs):
+        rollback_calls.append(kwargs)
+        return {
+            "status": "rolled_back",
+            "rollback_error": None,
+        }
+
+    with pytest.raises(
+        RuntimeError,
+        match="POST_COMMIT_MANIFEST_PERSIST_FAILURE",
+    ):
+        ctx.flow.approve_locked(
+            "approval-1",
+            commit_fn=commit_fn,
+            rollback_fn=rollback_fn,
+        )
+
+    assert len(git_calls) == 1
+    assert ctx.transaction.status == TransactionStatus.COMMITTED
+    assert ctx.repair_state.status == "committed"
+    assert rollback_calls == []

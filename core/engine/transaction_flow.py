@@ -591,6 +591,9 @@ class TransactionFlow:
         rollback_fn,
     ):
 
+        if transaction.status == TransactionStatus.COMMITTED:
+            raise error
+
         if isinstance(error, self.commit_error_type):
             rollback_result = rollback_fn(
                 approval_id=approval_id,
@@ -605,12 +608,9 @@ class TransactionFlow:
                     rollback_result["rollback_error"]
                 ) from error
 
+            existing_result = getattr(error, "result", None)
             error.result = {
-                **(
-                    error.result
-                    if isinstance(error.result, dict)
-                    else {}
-                ),
+                **(existing_result if isinstance(existing_result, dict) else {}),
                 "rollback": rollback_result,
             }
 
