@@ -811,3 +811,85 @@ def test_observer_add_if_absent_rejects_non_transaction_result_without_store():
 def test_observer_rejects_invalid_store():
     with pytest.raises(ValueError, match="Store de observações inválido"):
         Observer(store=object())
+
+
+def test_observer_add_if_absent_rejects_invalid_observation():
+    from core.observer import Observer
+
+    observer = Observer()
+
+    with pytest.raises(ValueError, match="Observação inválida"):
+        observer.add_if_absent(None)
+
+
+def test_observer_add_if_absent_rejects_empty_instruction():
+    from core.observation import Observation
+    from core.observer import Observer
+
+    observer = Observer()
+
+    with pytest.raises(ValueError, match="instrução.*vazia"):
+        observer.add_if_absent(
+            Observation(
+                instruction="   ",
+                metadata={
+                    "source": "transaction_result",
+                    "transaction_id": "tx-1",
+                },
+            )
+        )
+
+
+def test_observer_add_if_absent_rejects_duplicate_without_store():
+    from core.observation import Observation
+    from core.observer import Observer
+
+    existing = Observation(
+        instruction="resultado anterior",
+        metadata={
+            "source": "transaction_result",
+            "transaction_id": "tx-1",
+        },
+    )
+    duplicate = Observation(
+        instruction="resultado duplicado",
+        metadata={
+            "source": "transaction_result",
+            "transaction_id": "tx-1",
+        },
+    )
+
+    observer = Observer([existing])
+
+    assert observer.add_if_absent(duplicate) is False
+    assert observer.observe() == [existing]
+
+def test_observer_add_if_absent_adds_new_observation_without_store():
+    from core.observation import Observation
+    from core.observer import Observer
+
+    observer = Observer()
+    observation = Observation(
+        instruction="novo resultado",
+        metadata={"source": "transaction_result", "transaction_id": "tx-new"},
+    )
+
+    assert observer.add_if_absent(observation) is True
+    assert observer.observe() == [observation]
+
+
+def test_observer_add_if_absent_delegates_to_store(tmp_path):
+    from core.observation import Observation
+    from core.observation_store import ObservationStore
+    from core.observer import Observer
+
+    store = ObservationStore(tmp_path / "observations.json")
+    observer = Observer(store=store)
+    observation = Observation(
+        instruction="resultado persistido",
+        metadata={"source": "transaction_result", "transaction_id": "tx-store"},
+    )
+
+    assert observer.add_if_absent(observation) is True
+    assert observer.observe() == [observation]
+    assert store.load() == [observation]

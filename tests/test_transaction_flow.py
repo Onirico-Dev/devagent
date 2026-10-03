@@ -217,6 +217,7 @@ def make_flow(
     semantic_result=None,
     git_result=_UNSET,
     repair_result=None,
+    post_execution_verifier=None,
 ):
     transaction = transaction or make_transaction()
 
@@ -279,6 +280,7 @@ def make_flow(
         history_update_fn=history_update,
         restore_repair_state_fn=restore_state,
         repair_cycle_fn=repair_cycle,
+        post_execution_verifier=post_execution_verifier,
     )
 
     return SimpleNamespace(
@@ -965,3 +967,109 @@ def test_approve_locked_commit_failure_after_git_commit_does_not_rollback():
     assert ctx.transaction.status == TransactionStatus.COMMITTED
     assert ctx.repair_state.status == "committed"
     assert rollback_calls == []
+
+
+def test_execute_and_test_transaction_fails_when_post_execution_verification_fails():
+    ctx = make_flow(
+        test_result={"success": True},
+        post_execution_verifier=SimpleNamespace(
+            verify_transaction=lambda transaction: {
+                "success": False,
+                "status": "content_mismatch",
+                "path": "app.py",
+            }
+        ),
+    )
+
+    result = ctx.flow._execute_and_test_transaction(
+        ctx.transaction,
+        ctx.repair_state,
+        "approval-1",
+    )
+
+    assert result["success"] is False
+    assert result["verification"] == {
+        "success": False,
+        "status": "content_mismatch",
+        "path": "app.py",
+    }
+
+
+def test_execute_and_test_transaction_persists_each_applied_create():
+    ctx = make_flow()
+
+    recorded = []
+
+    def record_identity(transaction, path):
+        recorded.append((transaction.transaction_id, path))
+
+    ctx.transactions.record_created_identity = record_identity
+
+    def execute(transaction, on_change_applied=None):
+        ctx.executor.calls.append(transaction)
+        on_change_applied()
+
+    ctx.executor.execute = execute
+
+    result = ctx.flow._execute_and_test_transaction(
+        ctx.transaction,
+        ctx.repair_state,
+        "approval-1",
+    )
+
+    assert result["success"] is True
+    assert recorded == [("tx-1", "app.py")]
+    assert len(ctx.transactions.persisted) >= 4
+
+
+def test_handle_transaction_exception_rolls_back_legacy_executing_transaction():
+    ctx = make_flow()
+
+    rollback_calls = []
+    original_error = RuntimeError("legacy execution failure")
+
+    def rollback_fn(**kwargs):
+        rollback_calls.append(kwargs)
+        return {
+            "status": TaskHistoryStatus.ROLLED_BACK.value,
+            "success": False,
+        }
+
+    try:
+        raise original_error
+    except RuntimeError as caught_error:
+        try:
+            ctx.flow._handle_transaction_exception(
+                error=caught_error,
+                approval_id="approval-1",
+                transaction=ctx.transaction,
+                repair_state=ctx.repair_state,
+                rollback_fn=rollback_fn,
+            )
+        except RuntimeError as raised:
+            assert raised is original_error
+
+    assert rollback_calls[0]["status"] == TaskHistoryStatus.ROLLED_BACK.value
+    assert rollback_calls[0]["error"] == "legacy execution failure"
+
+def test_handle_transaction_exception_raises_when_commit_rollback_fails():
+    ctx = make_flow()
+    original_error = RuntimeError("commit failure")
+
+    def rollback_fn(**kwargs):
+        return {
+            "status": TaskHistoryStatus.ROLLED_BACK.value,
+            "success": False,
+            "rollback_error": "rollback failure",
+        }
+
+    with pytest.raises(RuntimeError, match="rollback failure") as exc_info:
+        ctx.flow._handle_transaction_exception(
+            error=original_error,
+            approval_id="approval-1",
+            transaction=ctx.transaction,
+            repair_state=ctx.repair_state,
+            rollback_fn=rollback_fn,
+        )
+
+    assert exc_info.value.__cause__ is original_error

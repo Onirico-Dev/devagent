@@ -3859,3 +3859,113 @@ def test_rollback_rejects_ancestor_directory_symlink(tmp_path):
         manager.rollback(transaction)
 
     assert not (outside / "arquivo.py").exists()
+
+
+def test_record_created_identity_restores_metadata_when_manifest_persist_fails(
+    tmp_path,
+    monkeypatch,
+):
+    manager, transaction = make_started_transaction(tmp_path)
+    target = tmp_path / "novo.py"
+    target.write_text("NOVO\n", encoding="utf-8")
+
+    transaction.metadata["created_identity"] = {
+        "existing.py": {
+            "st_dev": 1,
+            "st_ino": 2,
+        }
+    }
+    identity_before = dict(transaction.metadata["created_identity"])
+
+    def fail_persist(_transaction):
+        raise OSError("simulated identity manifest persist failure")
+
+    monkeypatch.setattr(manager, "persist_manifest", fail_persist)
+
+    with pytest.raises(
+        OSError,
+        match="simulated identity manifest persist failure",
+    ):
+        manager.record_created_identity(transaction, "novo.py")
+
+    assert transaction.metadata["created_identity"] == identity_before
+
+
+def test_record_created_identity_rejects_symlink(tmp_path):
+    manager, transaction = make_started_transaction(tmp_path)
+
+    target = tmp_path / "real.py"
+    target.write_text("REAL\n", encoding="utf-8")
+
+    link = tmp_path / "link.py"
+    link.symlink_to(target)
+
+    with pytest.raises(
+        ValueError,
+        match="Caminho criado é um symlink",
+    ):
+        manager.record_created_identity(transaction, "link.py")
+
+
+def test_validate_created_identity_rejects_missing_created_file(tmp_path):
+    manager, transaction = make_started_transaction(tmp_path)
+
+    transaction.metadata["created_identity"] = {
+        "novo.py": {
+            "st_dev": 1,
+            "st_ino": 2,
+        }
+    }
+
+    with pytest.raises(
+        RuntimeError,
+        match="Arquivo criado não existe durante a transação",
+    ):
+        manager.validate_created_identity(transaction, "novo.py")
+
+
+def test_validate_created_identity_rejects_missing_registered_identity(tmp_path):
+    manager, transaction = make_started_transaction(tmp_path)
+
+    target = tmp_path / "novo.py"
+    target.write_text("NOVO\n", encoding="utf-8")
+
+    with pytest.raises(
+        RuntimeError,
+        match="Identidade do arquivo criado não foi registrada",
+    ):
+        manager.validate_created_identity(transaction, "novo.py")
+
+def test_validate_manifest_rejects_non_string_created_identity_key(tmp_path):
+    manager, transaction = make_started_transaction(tmp_path)
+
+    data = {
+        "transaction_id": transaction.transaction_id,
+        "changes": [],
+        "metadata": {
+            "created_identity": {
+                123: {
+                    "st_dev": 1,
+                    "st_ino": 2,
+                }
+            }
+        },
+        "repair_state": {},
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="metadata.created_identity",
+    ):
+        manager._validate_manifest_data(data, transaction.transaction_id)
+
+def test_list_terminal_transactions_ignores_empty_transaction_id_manifest(
+    tmp_path,
+):
+    from core.executor.transaction_manager import TransactionManager
+
+    manager = TransactionManager(root=str(tmp_path))
+    manager.backup_dir.mkdir(parents=True, exist_ok=True)
+    (manager.backup_dir / ".json").write_text("{}", encoding="utf-8")
+
+    assert manager.list_terminal_transactions() == []

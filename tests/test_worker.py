@@ -1954,3 +1954,112 @@ def test_worker_reconcile_terminal_feedback_filters_invalid_tasks():
         observation.metadata["source"] == "transaction_result"
         for observation in observations
     )
+
+def test_persist_processed_state_restores_state_when_persistence_fails(monkeypatch):
+    from core.observer import Observer
+    from core.worker import Worker
+
+    class Gateway:
+        pass
+
+    worker = Worker(Gateway(), Observer([]))
+
+    worker._processed = {"original"}
+    worker._processed_ids = {"id-original"}
+    worker._processed_observations = {
+        "key-original": {"value": 1},
+    }
+
+    def operation():
+        worker._processed.add("novo")
+        worker._processed_ids.add("id-novo")
+        worker._processed_observations["key-novo"] = {"value": 2}
+
+    def fail_persist():
+        raise OSError("falha de persistência")
+
+    monkeypatch.setattr(worker, "_persist_state", fail_persist)
+
+    with pytest.raises(OSError, match="falha de persistência"):
+        worker._persist_processed_state(operation)
+
+    assert worker._processed == {"original"}
+    assert worker._processed_ids == {"id-original"}
+    assert worker._processed_observations == {
+        "key-original": {"value": 1},
+    }
+
+
+def test_worker_reconcile_terminal_feedback_returns_when_tasks_is_not_list():
+    from core.observer import Observer
+    from core.worker import Worker
+
+    class Gateway:
+        def list_tasks(self):
+            return {"invalid": True}
+
+    observer = Observer([])
+    worker = Worker(Gateway(), observer)
+
+    worker._reconcile_terminal_feedback()
+
+    assert observer.observe() == []
+
+
+def test_worker_reconcile_terminal_feedback_skips_non_dict_task():
+    from core.observer import Observer
+    from core.worker import Worker
+
+    class Gateway:
+        def list_tasks(self):
+            return [
+                "registro inválido",
+                {
+                    "task_id": "task-valid",
+                    "approval_id": "approval-valid",
+                    "transaction_id": "tx-valid",
+                    "status": "committed",
+                },
+            ]
+
+    observer = Observer([])
+    worker = Worker(Gateway(), observer)
+
+    worker._reconcile_terminal_feedback()
+
+    observations = observer.observe()
+
+    assert len(observations) == 1
+    assert observations[0].metadata["transaction_id"] == "tx-valid"
+
+
+def test_worker_reconcile_terminal_feedback_skips_when_feedback_builder_returns_none(
+    monkeypatch,
+):
+    from core.execution_feedback import ExecutionFeedback
+    from core.observer import Observer
+    from core.worker import Worker
+
+    class Gateway:
+        def list_tasks(self):
+            return [
+                {
+                    "task_id": "task-valid",
+                    "approval_id": "approval-valid",
+                    "transaction_id": "tx-valid",
+                    "status": "committed",
+                },
+            ]
+
+    observer = Observer([])
+    worker = Worker(Gateway(), observer)
+
+    monkeypatch.setattr(
+        ExecutionFeedback,
+        "build",
+        lambda self, result: None,
+    )
+
+    worker._reconcile_terminal_feedback()
+
+    assert observer.observe() == []

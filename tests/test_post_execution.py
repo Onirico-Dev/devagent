@@ -1,3 +1,4 @@
+import pytest
 from core.engine.post_execution import PostExecutionVerifier
 
 
@@ -118,3 +119,123 @@ def test_post_execution_detects_content_mismatch(tmp_path):
     assert result["success"] is False
     assert result["status"] == "content_mismatch"
     assert result["path"] == "app.py"
+
+
+def test_post_execution_detects_deleted_file_still_existing(tmp_path):
+    from core.schemas.models import Change, ChangeType
+
+    target = tmp_path / "arquivo.py"
+    target.write_text("deveria ter sido removido\n", encoding="utf-8")
+
+    verifier = PostExecutionVerifier(tmp_path)
+    change = Change(
+        change_type=ChangeType.DELETE,
+        path="arquivo.py",
+    )
+
+    result = verifier.verify_change(change)
+
+    assert result == {
+        "success": False,
+        "status": "content_mismatch",
+        "path": "arquivo.py",
+    }
+
+
+def test_post_execution_verifies_deleted_file(tmp_path):
+    from core.schemas.models import Change, ChangeType
+
+    verifier = PostExecutionVerifier(tmp_path)
+    change = Change(
+        change_type=ChangeType.DELETE,
+        path="arquivo.py",
+    )
+
+    result = verifier.verify_change(change)
+
+    assert result == {
+        "success": True,
+        "status": "verified",
+        "path": "arquivo.py",
+    }
+
+
+def test_post_execution_verify_transaction_returns_failed_change(tmp_path):
+    from core.schemas.models import Change, ChangeType, Transaction
+
+    target = tmp_path / "arquivo.py"
+    target.write_text("conteudo errado\n", encoding="utf-8")
+
+    verifier = PostExecutionVerifier(tmp_path)
+
+    transaction = Transaction(
+        transaction_id="tx-verification-failure",
+        changes=[
+            Change(
+                change_type=ChangeType.MODIFY,
+                path="arquivo.py",
+                content="conteudo esperado\n",
+            )
+        ],
+        metadata={},
+    )
+
+    result = verifier.verify_transaction(transaction)
+
+    assert result["success"] is False
+    assert result["status"] == "content_mismatch"
+    assert result["path"] == "arquivo.py"
+    assert len(result["changes"]) == 1
+    assert result["changes"][0]["success"] is False
+
+
+def test_post_execution_verify_transaction_returns_verified(tmp_path):
+    from core.schemas.models import Change, ChangeType, Transaction
+
+    target = tmp_path / "arquivo.py"
+    target.write_text("conteudo esperado\n", encoding="utf-8")
+
+    verifier = PostExecutionVerifier(tmp_path)
+
+    transaction = Transaction(
+        transaction_id="tx-verification-success",
+        changes=[
+            Change(
+                change_type=ChangeType.MODIFY,
+                path="arquivo.py",
+                content="conteudo esperado\n",
+            )
+        ],
+        metadata={},
+    )
+
+    result = verifier.verify_transaction(transaction)
+
+    assert result == {
+        "success": True,
+        "status": "verified",
+        "changes": [
+            {
+                "success": True,
+                "status": "verified",
+                "path": "arquivo.py",
+            }
+        ],
+    }
+
+
+def test_post_execution_delete_rejects_path_outside_project(tmp_path):
+    from core.schemas.models import Change, ChangeType
+
+    verifier = PostExecutionVerifier(tmp_path)
+
+    change = Change(
+        change_type=ChangeType.DELETE,
+        path="../outside.py",
+    )
+
+    with pytest.raises(
+        PermissionError,
+        match="Caminho inválido: fora do projeto.",
+    ):
+        verifier.verify_change(change)
