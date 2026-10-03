@@ -793,6 +793,39 @@ def test_mock_build_compound_semantic_sum_preserves_parameter_names():
     )
 
 
+@pytest.mark.parametrize(
+    "separator",
+    [
+        " e ",
+        " e e ",
+        " e e e ",
+    ],
+)
+def test_mock_build_compound_changes_tolerates_repeated_and_separator(separator):
+    adapter = MockAdapter()
+    instruction = (
+        f"crie arquivo_a.py{separator}"
+        "crie arquivo_b.py"
+    )
+
+    result = adapter._build_compound_create_changes(instruction)
+
+    assert len(result) == 2
+    assert result[0]["type"] == "create"
+    assert result[0]["path"] == "arquivo_a.py"
+    assert result[1]["type"] == "create"
+    assert result[1]["path"] == "arquivo_b.py"
+
+
+def test_mock_build_compound_changes_rejects_trailing_incomplete_operation():
+    adapter = MockAdapter()
+    instruction = "crie arquivo_a.py e crie arquivo_b.py e crie"
+
+    result = adapter._build_compound_create_changes(instruction)
+
+    assert result == []
+
+
 def test_mock_build_compound_changes_supports_multiple_operations():
     adapter = MockAdapter()
 

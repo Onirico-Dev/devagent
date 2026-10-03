@@ -908,7 +908,7 @@ class MockAdapter(AIAdapter):
         # Caso geral: separa operações independentes e reutiliza
         # os construtores existentes de CREATE/MODIFY/DELETE.
         action_pattern = re.compile(
-            r"\s+e\s+"
+            r"\s+(?:e\s+)+"
             r"(?=(?:crie|criar|create|modifique|modificar|"
             r"altere|alterar|modify|delete|apague|remova|remover)\b)",
             flags=re.IGNORECASE,
