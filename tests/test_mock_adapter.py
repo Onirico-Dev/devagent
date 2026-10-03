@@ -1356,3 +1356,741 @@ def test_mock_binary_operation_without_explicit_operands_does_not_use_bruteforce
         result = adapter._generate_repair_response(prompt)
 
         assert result == ""
+
+def test_mock_repair_semantic_operation_rejects_invalid_shape():
+    from core.adapters.mock import MockAdapter
+
+    prompt = (
+        "corrija reparo.py "
+        "def somar(a, b): return a + c "
+        "Erro: assert 4 == 5 "
+        "e crie um teste para somar(2, 3) == 5"
+    )
+
+    assert MockAdapter()._generate_repair_response(prompt) == ""
+
+
+def test_mock_repair_semantic_operation_rejects_invalid_numeric_error():
+    from core.adapters.mock import MockAdapter
+
+    prompt = (
+        "corrija reparo.py "
+        "def somar(a, b): return a + b "
+        "Erro: assert x == 5 "
+        "e crie um teste para somar(2, 3) == 5"
+    )
+
+    assert MockAdapter()._generate_repair_response(prompt) == ""
+
+
+def test_mock_repair_constant_numeric_conversion_failure(monkeypatch):
+    import builtins
+    from core.adapters.mock import MockAdapter
+
+    original_float = builtins.float
+
+    def fail_returned_value(value):
+        if value == "4":
+            raise ValueError("valor inválido")
+        return original_float(value)
+
+    monkeypatch.setattr(builtins, "float", fail_returned_value)
+
+    prompt = (
+        "corrija reparo.py "
+        "def somar(a, b): return 4 "
+        "Erro: assert 4 == 5"
+    )
+
+    result = MockAdapter()._generate_repair_response(prompt)
+
+    assert result == ""
+
+
+def test_mock_repair_constant_explicit_numeric_conversion_failure(monkeypatch):
+    import builtins
+    from core.adapters.mock import MockAdapter
+
+    original_float = builtins.float
+
+    def fail_explicit_value(value):
+        if value == "2":
+            raise ValueError("valor inválido")
+        return original_float(value)
+
+    monkeypatch.setattr(builtins, "float", fail_explicit_value)
+
+    prompt = (
+        "corrija reparo.py "
+        "def somar(a, b): return 4 "
+        "Erro: assert 4 == 5 "
+        "e crie um teste para somar(2, 3) == 5"
+    )
+
+    assert MockAdapter()._generate_repair_response(prompt) == ""
+
+
+def test_mock_repair_operation_numeric_conversion_failure(monkeypatch):
+    import builtins
+    from core.adapters.mock import MockAdapter
+
+    original_float = builtins.float
+
+    def fail_actual_value(value):
+        if value == "4":
+            raise ValueError("valor inválido")
+        return original_float(value)
+
+    monkeypatch.setattr(builtins, "float", fail_actual_value)
+
+    prompt = (
+        "corrija reparo.py "
+        "def somar(a, b): return a + b "
+        "Erro: assert 4 == 5 "
+        "e crie um teste para somar(2, 3) == 5"
+    )
+
+    assert MockAdapter()._generate_repair_response(prompt) == ""
+
+
+def test_mock_repair_operation_explicit_numeric_conversion_failure(monkeypatch):
+    import builtins
+    from core.adapters.mock import MockAdapter
+
+    original_float = builtins.float
+
+    def fail_explicit_value(value):
+        if value == "2":
+            raise ValueError("valor inválido")
+        return original_float(value)
+
+    monkeypatch.setattr(builtins, "float", fail_explicit_value)
+
+    prompt = (
+        "corrija reparo.py "
+        "def somar(a, b): return a + b "
+        "Erro: assert 4 == 5 "
+        "e crie um teste para somar(2, 3) == 5"
+    )
+
+    assert MockAdapter()._generate_repair_response(prompt) == ""
+
+
+def test_mock_repair_rejects_unknown_semantic_operation():
+    from core.adapters.mock import MockAdapter
+
+    prompt = (
+        "corrija reparo.py "
+        "def desconhecida(a, b): return 4 "
+        "Erro: assert 4 == 5"
+    )
+
+    assert MockAdapter()._generate_repair_response(prompt) == ""
+
+
+def test_mock_repair_operation_division_by_zero_returns_none():
+    from core.adapters.mock import MockAdapter
+
+    prompt = (
+        "corrija reparo.py "
+        "def dividir(a, b): return a / b "
+        "Erro: assert 1 == 2 "
+        "e crie um teste para dividir(1, 0) == 1"
+    )
+
+    assert MockAdapter()._generate_repair_response(prompt) == ""
+
+
+def test_mock_repair_extracts_natural_pytest_content():
+    from core.adapters.mock import MockAdapter
+
+    prompt = (
+        "corrija reparo.py contendo "
+        "um teste pytest chamado test_smoke que faça a asserção "
+        "de que 2 + 2 é igual a 4"
+    )
+
+    result = MockAdapter()._generate_repair_response(prompt)
+
+    assert '"action": "modify"' in result
+    assert '"path": "reparo.py"' in result
+    assert "def test_smoke():" in result
+    assert "assert 2 + 2 == 4" in result
+
+
+def test_mock_planner_accepts_direct_instruction():
+    from core.adapters.mock import MockAdapter
+
+    result = MockAdapter().generate(
+        "crie o arquivo teste.py contendo def teste(): return 1"
+    )
+
+    assert result
+
+
+def test_mock_planner_processes_valid_feedback_context():
+    import json
+    from core.adapters.mock import MockAdapter
+
+    feedback = {
+        "transaction_id": "tx-feedback",
+        "status": "failed",
+        "failure_type": "execution_error",
+        "evidence": {
+            "error": "falha de execução",
+        },
+        "transaction_metadata": {
+            "changes": [
+                {
+                    "path": "teste.py",
+                    "content": "def teste():\n    return 1",
+                    "change_type": "modify",
+                }
+            ]
+        },
+    }
+
+    prompt = (
+        "INSTRUÇÃO DO USUÁRIO:\n"
+        "corrija a falha\n"
+        "CONTEXTO DE FEEDBACK DA TRANSAÇÃO:\n"
+        + json.dumps(feedback, ensure_ascii=False)
+    )
+
+    result = MockAdapter().generate(prompt)
+
+    parsed = json.loads(result)
+
+    assert parsed["changes"]
+    assert parsed["changes"][0]["path"] == "teste.py"
+
+
+def test_mock_planner_strips_feedback_json_instruction():
+    import json
+    from core.adapters.mock import MockAdapter
+
+    feedback = {
+        "transaction_id": "tx-feedback-marker",
+        "status": "failed",
+        "failure_type": "execution_error",
+        "evidence": {
+            "error": "falha",
+        },
+        "transaction_metadata": {
+            "changes": [],
+        },
+    }
+
+    prompt = (
+        "INSTRUÇÃO DO USUÁRIO:\n"
+        "corrija a falha\n"
+        "CONTEXTO DE FEEDBACK DA TRANSAÇÃO:\n"
+        "Retorne SOMENTE JSON válido.\n"
+        + json.dumps(feedback, ensure_ascii=False)
+    )
+
+    result = MockAdapter().generate(prompt)
+
+    assert result
+    assert json.loads(result)["changes"] == []
+
+
+def test_mock_planner_ignores_invalid_feedback_json():
+    from core.adapters.mock import MockAdapter
+
+    prompt = (
+        "INSTRUÇÃO DO USUÁRIO:\n"
+        "corrija a falha\n"
+        "CONTEXTO DE FEEDBACK DA TRANSAÇÃO:\n"
+        "{json inválido"
+    )
+
+    result = MockAdapter().generate(prompt)
+
+    assert result
+
+
+def test_mock_feedback_normalizes_non_dict_evidence():
+    import json
+    from core.adapters.mock import MockAdapter
+
+    feedback = {
+        "transaction_id": "tx-evidence",
+        "status": "failed",
+        "failure_type": "execution_error",
+        "evidence": "inválido",
+        "transaction_metadata": {"changes": []},
+    }
+
+    prompt = (
+        "INSTRUÇÃO DO USUÁRIO:\n"
+        "corrija\n"
+        "CONTEXTO DE FEEDBACK DA TRANSAÇÃO:\n"
+        + json.dumps(feedback)
+    )
+
+    result = json.loads(MockAdapter().generate(prompt))
+
+    assert result["changes"] == []
+
+
+def test_mock_feedback_normalizes_non_dict_transaction_metadata():
+    import json
+    from core.adapters.mock import MockAdapter
+
+    feedback = {
+        "transaction_id": "tx-metadata",
+        "status": "failed",
+        "failure_type": "execution_error",
+        "evidence": {},
+        "transaction_metadata": "inválido",
+    }
+
+    prompt = (
+        "INSTRUÇÃO DO USUÁRIO:\n"
+        "corrija\n"
+        "CONTEXTO DE FEEDBACK DA TRANSAÇÃO:\n"
+        + json.dumps(feedback)
+    )
+
+    result = json.loads(MockAdapter().generate(prompt))
+
+    assert result["changes"] == []
+
+
+def test_mock_feedback_normalizes_non_list_changes():
+    import json
+    from core.adapters.mock import MockAdapter
+
+    feedback = {
+        "transaction_id": "tx-changes",
+        "status": "failed",
+        "failure_type": "execution_error",
+        "evidence": {},
+        "transaction_metadata": {"changes": "inválido"},
+    }
+
+    prompt = (
+        "INSTRUÇÃO DO USUÁRIO:\n"
+        "corrija\n"
+        "CONTEXTO DE FEEDBACK DA TRANSAÇÃO:\n"
+        + json.dumps(feedback)
+    )
+
+    result = json.loads(MockAdapter().generate(prompt))
+
+    assert result["changes"] == []
+
+
+def test_mock_feedback_skips_non_dict_change():
+    import json
+    from core.adapters.mock import MockAdapter
+
+    feedback = {
+        "transaction_id": "tx-invalid-change",
+        "status": "failed",
+        "failure_type": "execution_error",
+        "evidence": {},
+        "transaction_metadata": {
+            "changes": [
+                "registro inválido",
+                {
+                    "path": "teste.py",
+                    "content": "x = 1",
+                    "change_type": "modify",
+                },
+            ]
+        },
+    }
+
+    prompt = (
+        "INSTRUÇÃO DO USUÁRIO:\n"
+        "corrija\n"
+        "CONTEXTO DE FEEDBACK DA TRANSAÇÃO:\n"
+        + json.dumps(feedback)
+    )
+
+    result = json.loads(MockAdapter().generate(prompt))
+
+    assert len(result["changes"]) == 1
+    assert result["changes"][0]["path"] == "teste.py"
+
+
+def test_mock_feedback_skips_empty_change_path():
+    import json
+    from core.adapters.mock import MockAdapter
+
+    feedback = {
+        "transaction_id": "tx-empty-path",
+        "status": "failed",
+        "failure_type": "execution_error",
+        "evidence": {},
+        "transaction_metadata": {
+            "changes": [
+                {
+                    "path": "",
+                    "content": "x = 1",
+                    "change_type": "modify",
+                },
+                {
+                    "path": "teste.py",
+                    "content": "x = 1",
+                    "change_type": "modify",
+                },
+            ]
+        },
+    }
+
+    prompt = (
+        "INSTRUÇÃO DO USUÁRIO:\n"
+        "corrija\n"
+        "CONTEXTO DE FEEDBACK DA TRANSAÇÃO:\n"
+        + json.dumps(feedback)
+    )
+
+    result = json.loads(MockAdapter().generate(prompt))
+
+    assert len(result["changes"]) == 1
+    assert result["changes"][0]["path"] == "teste.py"
+
+
+def test_mock_feedback_normalizes_invalid_change_type():
+    import json
+    from core.adapters.mock import MockAdapter
+
+    feedback = {
+        "transaction_id": "tx-type",
+        "status": "failed",
+        "failure_type": "execution_error",
+        "evidence": {},
+        "transaction_metadata": {
+            "changes": [
+                {
+                    "path": "teste.py",
+                    "content": "x = 1",
+                    "change_type": "unsupported",
+                }
+            ]
+        },
+    }
+
+    prompt = (
+        "INSTRUÇÃO DO USUÁRIO:\n"
+        "corrija\n"
+        "CONTEXTO DE FEEDBACK DA TRANSAÇÃO:\n"
+        + json.dumps(feedback)
+    )
+
+    result = json.loads(MockAdapter().generate(prompt))
+
+    assert result["changes"][0]["type"] == "modify"
+
+
+def test_mock_feedback_strips_content_prefix():
+    import json
+    from core.adapters.mock import MockAdapter
+
+    feedback = {
+        "transaction_id": "tx-content-prefix",
+        "status": "failed",
+        "failure_type": "execution_error",
+        "evidence": {},
+        "transaction_metadata": {
+            "changes": [
+                {
+                    "path": "teste.py",
+                    "content": "com o conteúdo def teste():\n    return 1",
+                    "change_type": "modify",
+                }
+            ]
+        },
+    }
+
+    prompt = (
+        "INSTRUÇÃO DO USUÁRIO:\n"
+        "corrija\n"
+        "CONTEXTO DE FEEDBACK DA TRANSAÇÃO:\n"
+        + json.dumps(feedback)
+    )
+
+    result = json.loads(MockAdapter().generate(prompt))
+
+    assert result["changes"][0]["content"].startswith("def teste():")
+
+
+def test_mock_repair_semantic_division_by_zero_is_ambiguous():
+    from core.adapters.mock import MockAdapter
+
+    prompt = (
+        "corrija reparo.py contendo "
+        "def dividir(a, b): return 1 "
+        "Erro: assert 1 == 2 "
+        "e crie um teste para dividir(1, 0) == 1"
+    )
+
+    assert MockAdapter()._generate_repair_response(prompt) == ""
+
+
+def test_mock_repair_semantic_multiple_candidate_operations_are_rejected():
+    from core.adapters.mock import MockAdapter
+
+    prompt = (
+        "corrija reparo.py contendo "
+        "def somar(a, b): return 1 "
+        "Erro: assert 1 == 2 "
+        "e crie um teste para somar(1, 0) == 1"
+    )
+
+    assert MockAdapter()._generate_repair_response(prompt) == ""
+
+def test_mock_feedback_syntax_error_without_valid_line_stops_repair(monkeypatch):
+    import ast
+    import json
+    from core.adapters.mock import MockAdapter
+
+    original_parse = ast.parse
+
+    def parse_without_line(*args, **kwargs):
+        error = SyntaxError("erro sintático")
+        error.lineno = None
+        raise error
+
+    monkeypatch.setattr(ast, "parse", parse_without_line)
+
+    feedback = {
+        "transaction_id": "tx-no-line",
+        "status": "failed",
+        "failure_type": "syntax_error",
+        "evidence": {},
+        "transaction_metadata": {
+            "changes": [
+                {
+                    "path": "arquivo.py",
+                    "content": "linha inválida",
+                    "change_type": "modify",
+                }
+            ]
+        },
+    }
+
+    prompt = (
+        "INSTRUÇÃO DO USUÁRIO:\n"
+        "corrija a falha\n"
+        "CONTEXTO DE FEEDBACK DA TRANSAÇÃO:\n"
+        + json.dumps(feedback)
+    )
+
+    result = json.loads(MockAdapter().generate(prompt))
+
+    assert result["changes"][0]["content"] == "linha inválida"
+
+
+def test_mock_feedback_syntax_error_exhausts_all_lines(monkeypatch):
+    import ast
+    import json
+    from core.adapters.mock import MockAdapter
+
+    def parse_always_fails(*args, **kwargs):
+        error = SyntaxError("erro sintático")
+        error.lineno = 1
+        raise error
+
+    monkeypatch.setattr(ast, "parse", parse_always_fails)
+
+    feedback = {
+        "transaction_id": "tx-exhausted",
+        "status": "failed",
+        "failure_type": "syntax_error",
+        "evidence": {},
+        "transaction_metadata": {
+            "changes": [
+                {
+                    "path": "arquivo.py",
+                    "content": "linha um\nlinha dois\nlinha três",
+                    "change_type": "modify",
+                }
+            ]
+        },
+    }
+
+    prompt = (
+        "INSTRUÇÃO DO USUÁRIO:\n"
+        "corrija a falha\n"
+        "CONTEXTO DE FEEDBACK DA TRANSAÇÃO:\n"
+        + json.dumps(feedback)
+    )
+
+    result = json.loads(MockAdapter().generate(prompt))
+
+    assert result["changes"][0]["content"] == "\n"
+
+def test_mock_compound_create_preserves_numeric_return():
+    import json
+    from core.adapters.mock import MockAdapter
+
+    prompt = (
+        "INSTRUÇÃO DO USUÁRIO: "
+        "adicione uma função calcular(x) em um novo arquivo calculo.py "
+        "retorne 42, e crie um teste pytest correspondente"
+    )
+
+    result = json.loads(MockAdapter().generate(prompt))
+
+    change = next(
+        item for item in result["changes"]
+        if item["path"] == "calculo.py"
+    )
+
+    assert "return 42" in change["content"]
+
+
+def test_mock_compound_create_repr_non_literal_return():
+    import json
+    from core.adapters.mock import MockAdapter
+
+    prompt = (
+        "INSTRUÇÃO DO USUÁRIO: "
+        "adicione uma função calcular(x) em um novo arquivo calculo.py "
+        "retorne resultado, e crie um teste pytest correspondente"
+    )
+
+    result = json.loads(MockAdapter().generate(prompt))
+
+    change = next(
+        item for item in result["changes"]
+        if item["path"] == "calculo.py"
+    )
+
+    assert "return 'resultado'" in change["content"]
+
+def test_mock_compound_create_returns_multiple_valid_changes():
+    import json
+    from core.adapters.mock import MockAdapter
+
+    prompt = (
+        "INSTRUÇÃO DO USUÁRIO: "
+        "crie arquivo_a.py e arquivo_b.py"
+    )
+
+    result = json.loads(MockAdapter().generate(prompt))
+
+    assert [change["path"] for change in result["changes"]] == [
+        "arquivo_a.py",
+        "arquivo_b.py",
+    ]
+
+def test_mock_compound_create_clears_changes_when_planner_change_fails(monkeypatch):
+    from core.adapters.mock import MockAdapter
+
+    adapter = MockAdapter()
+    calls = []
+
+    def build_change(instruction, context=""):
+        calls.append(instruction)
+        if instruction == "crie arquivo_b.py":
+            return None
+        return {
+            "type": "create",
+            "path": instruction,
+            "content": "",
+            "reason": instruction,
+        }
+
+    monkeypatch.setattr(adapter, "_build_planner_change", build_change)
+
+    result = adapter._build_compound_create_changes(
+        "crie arquivo_a.py e arquivo_b.py"
+    )
+
+    assert result == []
+    assert calls == ["crie arquivo_a.py", "crie arquivo_b.py"]
+
+
+def test_mock_modify_uses_regression_addition():
+    from core.adapters.mock import MockAdapter
+
+    adapter = MockAdapter()
+
+    request = (
+        "novo teste chamado test_exhausted. "
+        "O teste deve criar uma transação com metadata contendo "
+        "repair_cycle com remaining igual a 0, executar o Worker e "
+        "verificar que a instrução não aparece em retry_instructions."
+    )
+
+    context = "=== ARQUIVO: worker.py ===\nconteudo existente\n"
+
+    result = adapter._build_modify_change(
+        "modifique worker.py " + request,
+        context,
+    )
+
+    assert result is not None
+    assert "def test_exhausted():" in result["content"]
+
+
+def test_mock_modify_returns_none_for_unrecognized_para_transformation():
+    from core.adapters.mock import MockAdapter
+
+    result = MockAdapter()._build_modify_change(
+        "modifique arquivo.py para transformar alguma coisa",
+        "=== ARQUIVO: arquivo.py ===\nconteudo existente\n",
+    )
+
+    assert result is None
+
+
+def test_mock_extract_repair_path_matches_explicit_arquivo_pattern():
+    from core.adapters.mock import MockAdapter
+
+    result = MockAdapter._extract_repair_path(
+        "corrija o arquivo nested/modulo.py"
+    )
+
+    assert result == "nested/modulo.py"
+
+
+def test_mock_extract_invalid_content_returns_marked_content():
+    from core.adapters.mock import MockAdapter
+
+    result = MockAdapter._extract_invalid_content(
+        "corrija arquivo.py contendo def broken(:"
+    )
+
+    assert result == "def broken(:"
+
+def test_mock_module_create_rejects_invalid_parameter_names():
+    from core.adapters.mock import MockAdapter
+
+    instruction = (
+        "crie módulo calculo.py contendo "
+        "função somar(x, 1) retorna a soma dos dois valores e "
+        "crie arquivo test_calculo.py contendo "
+        "teste que verifica somar(2, 3) retorna 5"
+    )
+
+    result = MockAdapter()._build_compound_create_changes(instruction)
+
+    assert result == []
+
+def test_mock_compound_create_skips_empty_action_part():
+    from core.adapters.mock import MockAdapter
+
+    adapter = MockAdapter()
+
+    result = adapter._build_compound_create_changes(
+        "crie arquivo_a.py e e crie arquivo_b.py"
+    )
+
+    assert len(result) == 2
+
+def test_mock_compound_create_returns_empty_when_part_cannot_be_planned():
+    from core.adapters.mock import MockAdapter
+
+    adapter = MockAdapter()
+
+    result = adapter._build_compound_create_changes(
+        "crie arquivo_a.py e modifique"
+    )
+
+    assert result == []
