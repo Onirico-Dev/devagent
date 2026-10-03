@@ -222,8 +222,8 @@ class Supervisor:
                     self._validate_approval_plan(plan)
 
                     with self._lock:
-                        previous_pending = self.pending
                         self._load()
+                        previous_pending = copy.deepcopy(self.pending)
 
                         approval_id = self._next_approval_id()
                         request = self._build_approval_request(plan)
