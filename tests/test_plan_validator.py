@@ -417,3 +417,129 @@ def test_plan_validator_project_coherence_rejects_outside_path(
         match="Caminho fora do projeto",
     ):
         validator.validate_project_coherence(plan)
+
+def test_validate_command_coherence_rejects_non_command(tmp_path):
+    from core.parser.command_parser import Command
+
+    validator = make_validator(tmp_path)
+    plan = make_plan([])
+
+    with pytest.raises(TypeError, match="O comando deve ser uma instância de Command."):
+        validator.validate_command_coherence(object(), plan)
+
+
+def test_validate_command_coherence_accepts_command_without_target(tmp_path):
+    from core.parser.command_parser import Command
+
+    validator = make_validator(tmp_path)
+    plan = make_plan([])
+
+    command = Command(
+        raw="criar",
+        instruction="criar",
+        action="create",
+        target="",
+    )
+
+    assert validator.validate_command_coherence(command, plan) is True
+
+
+def test_validate_command_coherence_rejects_incoherent_target(tmp_path):
+    from core.parser.command_parser import Command
+
+    validator = make_validator(tmp_path)
+    plan = make_plan([
+        make_change(ChangeType.CREATE, "outro.py"),
+    ])
+
+    command = Command(
+        raw="alterar arquivo.py",
+        instruction="alterar arquivo.py",
+        action="modify",
+        target="arquivo.py",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Plano incoerente com o comando.*MODIFY.*arquivo.py",
+    ):
+        validator.validate_command_coherence(command, plan)
+
+def test_validate_command_coherence_accepts_non_file_action(tmp_path):
+    from core.parser.command_parser import Command
+
+    validator = make_validator(tmp_path)
+    plan = make_plan([])
+
+    command = Command(
+        raw="consultar",
+        instruction="consultar",
+        action="inspect",
+        target="arquivo.py",
+    )
+
+    assert validator.validate_command_coherence(command, plan) is True
+
+
+def test_validate_command_coherence_accepts_matching_change(tmp_path):
+    from core.parser.command_parser import Command
+
+    validator = make_validator(tmp_path)
+    plan = make_plan([
+        make_change(ChangeType.MODIFY, "arquivo.py"),
+    ])
+
+    command = Command(
+        raw="alterar arquivo.py",
+        instruction="alterar arquivo.py",
+        action="modify",
+        target="arquivo.py",
+    )
+
+    assert validator.validate_command_coherence(command, plan) is True
+
+
+@pytest.mark.parametrize(
+    ("change_type", "path", "content"),
+    [
+        (ChangeType.MODIFY, "inexistente.py", "VALUE = 1\\n"),
+        (ChangeType.DELETE, "tambem_inexistente.py", None),
+    ],
+)
+def test_validate_project_coherence_rejects_missing_file(
+    tmp_path,
+    change_type,
+    path,
+    content,
+):
+    validator = make_validator(tmp_path)
+    plan = make_plan([
+        make_change(change_type, path, content),
+    ])
+
+    with pytest.raises(
+        ValueError,
+        match="Arquivo inexistente para (MODIFY|DELETE)",
+    ):
+        validator.validate_project_coherence(plan)
+
+
+def test_validate_project_coherence_skips_create(tmp_path):
+    validator = make_validator(tmp_path)
+    plan = make_plan([
+        make_change(ChangeType.CREATE, "novo.py"),
+    ])
+
+    assert validator.validate_project_coherence(plan) is True
+
+
+def test_validate_project_coherence_accepts_existing_file(tmp_path):
+    validator = make_validator(tmp_path)
+    target = tmp_path / "arquivo.py"
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+
+    plan = make_plan([
+        make_change(ChangeType.MODIFY, "arquivo.py"),
+    ])
+
+    assert validator.validate_project_coherence(plan) is True

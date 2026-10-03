@@ -537,3 +537,45 @@ def test_core_main_version_fallback(monkeypatch):
     monkeypatch.setattr(core_main, "version", missing_package)
 
     assert core_main._version() == "0.6.8"
+
+def test_extract_fallback_target_returns_empty_for_empty_remainder():
+    from core.parser.command_parser import CommandParser
+
+    assert CommandParser._extract_fallback_target("", "create") == ("", "")
+
+
+def test_extract_fallback_target_reserved_target_without_instruction():
+    from core.parser.command_parser import CommandParser
+
+    reserved = next(iter(CommandParser.RESERVED_TARGET_WORDS))
+
+    target, instruction = CommandParser._extract_fallback_target(
+        reserved,
+        "create",
+    )
+
+    assert target == reserved
+    assert instruction == ""
+
+def test_extract_fallback_target_returns_instruction_without_target():
+    from core.parser.command_parser import CommandParser
+
+    target, instruction = CommandParser._extract_fallback_target(
+        "calcular resultado",
+        "create",
+    )
+
+    assert target == ""
+    assert instruction == "calcular resultado"
+
+
+def test_extract_fallback_target_file_without_instruction():
+    from core.parser.command_parser import CommandParser
+
+    target, instruction = CommandParser._extract_fallback_target(
+        "arquivo.py",
+        "create",
+    )
+
+    assert target == "arquivo.py"
+    assert instruction == ""

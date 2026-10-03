@@ -1,3 +1,5 @@
+import pytest
+
 from core.engine.repair_cycle_state import RepairCycleState, RepairCycleStatus
 
 
@@ -585,3 +587,14 @@ def test_repair_controller_reset_unknown_transaction_is_safe():
 
     assert controller.get_attempts("tx-unknown") == 0
     assert controller.can_repair("tx-unknown") is True
+
+def test_record_rejects_non_repair_cycle_status():
+    from core.engine.repair_cycle_state import RepairCycleState
+
+    state = RepairCycleState(transaction_id="tx-test")
+
+    with pytest.raises(
+        TypeError,
+        match="record\\(\\) exige um RepairCycleStatus",
+    ):
+        state.record("teste", "invalid")

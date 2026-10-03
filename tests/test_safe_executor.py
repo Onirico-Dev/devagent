@@ -1107,3 +1107,82 @@ def test_cleanup_temporary_file_closes_fd(tmp_path):
         os.close(parent_fd)
 
     assert not temporary.exists()
+
+def test_execute_rejects_non_callable_progress_callback(tmp_path):
+    from core.executor.safe_executor import SafeExecutor
+    from types import SimpleNamespace
+
+    executor = SafeExecutor(root=tmp_path)
+
+    transaction = SimpleNamespace(
+        changes=[],
+        status=None,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Callback de progresso inválido",
+    ):
+        executor.execute(
+            transaction,
+            on_change_applied="não sou um callback",
+        )
+
+
+
+def test_execute_change_rejects_directory_for_modify(tmp_path):
+    from core.executor.safe_executor import SafeExecutor
+    from core.schemas.models import Change, ChangeType
+
+    (tmp_path / "target").mkdir()
+
+    executor = SafeExecutor(root=tmp_path)
+
+    change = Change(
+        change_type=ChangeType.MODIFY,
+        path="target",
+        content="content",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Caminho não é um arquivo",
+    ):
+        executor.execute_change(change)
+
+def test_execute_updates_progress_and_calls_callback(tmp_path):
+    from core.executor.safe_executor import SafeExecutor
+    from core.schemas.models import Change, ChangeType, Transaction
+
+    executor = SafeExecutor(root=tmp_path)
+
+    transaction = Transaction(
+        transaction_id="tx-progress",
+        changes=[
+            Change(
+                change_type=ChangeType.CREATE,
+                path="one.txt",
+                content="one",
+            ),
+            Change(
+                change_type=ChangeType.CREATE,
+                path="two.txt",
+                content="two",
+            ),
+        ],
+    )
+
+    progress = []
+
+    def on_change_applied():
+        progress.append(transaction.metadata["execution"]["changes_applied"])
+
+    result = executor.execute(
+        transaction,
+        on_change_applied=on_change_applied,
+    )
+
+    assert result is transaction
+    assert progress == [1, 2]
+    assert transaction.metadata["execution"]["phase"] == "completed"
+    assert transaction.metadata["execution"]["changes_applied"] == 2
