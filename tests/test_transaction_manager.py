@@ -3969,3 +3969,91 @@ def test_list_terminal_transactions_ignores_empty_transaction_id_manifest(
     (manager.backup_dir / ".json").write_text("{}", encoding="utf-8")
 
     assert manager.list_terminal_transactions() == []
+
+def test_create_backup_directory_continues_after_unrelated_mkdir_oserror(
+    tmp_path,
+    monkeypatch,
+):
+    manager = TransactionManager(root=tmp_path)
+    backup_name = "transactions"
+
+    (tmp_path / backup_name).mkdir()
+
+    parent_fd = os.open(
+        tmp_path,
+        os.O_RDONLY | os.O_DIRECTORY,
+    )
+
+    original_mkdir = os.mkdir
+
+    def fail_backup_mkdir(path, *args, **kwargs):
+        if path == backup_name:
+            error = OSError()
+            error.errno = errno.EACCES
+            raise error
+        return original_mkdir(path, *args, **kwargs)
+
+    import core.executor.transaction_manager as module
+
+    monkeypatch.setattr(
+        module.os,
+        "mkdir",
+        fail_backup_mkdir,
+    )
+
+    try:
+        backup_parent_fd = manager._create_backup_directory(
+            parent_fd,
+            backup_name,
+        )
+        os.close(backup_parent_fd)
+    finally:
+        os.close(parent_fd)
+
+
+def test_record_created_identity_normalizes_path_key_to_string(
+    tmp_path,
+):
+    manager, transaction = make_started_transaction(tmp_path)
+
+    target = tmp_path / "novo.py"
+    target.write_text("NOVO\n", encoding="utf-8")
+
+    transaction.metadata["created_identity"] = {
+        "novo.py": {
+            "st_dev": 1,
+            "st_ino": 2,
+        },
+    }
+
+    manager.record_created_identity(transaction, "novo.py")
+
+    assert "novo.py" in transaction.metadata["created_identity"]
+    assert all(
+        isinstance(key, str)
+        for key in transaction.metadata["created_identity"]
+    )
+    assert len(transaction.metadata["created_identity"]) == 1
+    assert transaction.metadata["created_identity"]["novo.py"]["st_ino"] > 0
+
+
+def test_transition_returns_same_transaction_when_status_is_unchanged(
+    tmp_path,
+):
+    manager, transaction = make_started_transaction(tmp_path)
+
+    result = manager.transition(
+        transaction,
+        TransactionStatus.EXECUTING,
+    )
+
+    assert result is transaction
+    assert transaction.status is TransactionStatus.EXECUTING
+
+
+def test_record_created_identity_ignores_missing_file(tmp_path):
+    manager, transaction = make_started_transaction(tmp_path)
+
+    manager.record_created_identity(transaction, "nao-existe.py")
+
+    assert transaction.metadata.get("created_identity", {}) == {}
