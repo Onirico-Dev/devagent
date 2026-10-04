@@ -2266,3 +2266,59 @@ def test_mock_extract_create_content_converts_natural_function():
         MockAdapter._extract_create_content(instruction)
         == 'def saudacao():\n    return "Olá, mundo!"'
     )
+
+
+def test_mock_compound_create_function_pytest_supports_binary_expression():
+    adapter = MockAdapter()
+    instruction = (
+        "adicione uma função dividir(a, b) em um novo arquivo "
+        "divide_expression_smoke.py que retorne a / b, "
+        "e crie um teste pytest correspondente"
+    )
+
+    changes = adapter._build_compound_create_changes(instruction)
+
+    assert len(changes) == 2
+
+    module_change = next(
+        item for item in changes
+        if item["path"] == "divide_expression_smoke.py"
+    )
+    test_change = next(
+        item for item in changes
+        if item["path"] == "test_divide_expression_smoke.py"
+    )
+
+    assert module_change["content"] == (
+        "def dividir(a, b):\n"
+        "    return a / b\n"
+    )
+    assert "assert dividir(2, 3) == 0.6666666666666666" in test_change["content"]
+
+
+def test_mock_compound_create_function_pytest_supports_binary_expression():
+    adapter = MockAdapter()
+    instruction = (
+        "adicione uma função dividir(a, b) em um novo arquivo "
+        "divide_expression_smoke.py que retorne a / b, "
+        "e crie um teste pytest correspondente"
+    )
+
+    changes = adapter._build_compound_create_changes(instruction)
+
+    assert len(changes) == 2
+
+    module_change = next(
+        item for item in changes
+        if item["path"] == "divide_expression_smoke.py"
+    )
+    test_change = next(
+        item for item in changes
+        if item["path"] == "test_divide_expression_smoke.py"
+    )
+
+    assert module_change["content"] == (
+        "def dividir(a, b):\n"
+        "    return a / b\n"
+    )
+    assert "assert dividir(2, 3) == 0.6666666666666666" in test_change["content"]

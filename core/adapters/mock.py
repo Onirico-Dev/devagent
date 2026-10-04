@@ -662,8 +662,57 @@ class MockAdapter(AIAdapter):
         # Remove pontuação residual introduzida antes da cláusula "e crie".
         return_expression = return_expression.rstrip(" ,.")
 
-        # O valor pode ser numérico, identificador ou string entre aspas.
+        # O valor pode ser uma expressão binária entre os próprios parâmetros,
+        # um número, um identificador ou uma string entre aspas.
+        parameter_names = [
+            item.strip()
+            for item in parameters.split(",")
+            if item.strip()
+        ]
+
+        binary_match = re.fullmatch(
+            r"([A-Za-z_][A-Za-z0-9_]*)\s*([+\-*/])\s*"
+            r"([A-Za-z_][A-Za-z0-9_]*)",
+            return_expression,
+        )
+
+        test_left = "2"
+        test_right = "3"
+        test_expected = None
+
         if (
+            len(parameter_names) == 2
+            and binary_match
+            and binary_match.group(1) == parameter_names[0]
+            and binary_match.group(3) == parameter_names[1]
+        ):
+            operator = binary_match.group(2)
+
+            def apply_operation(first, second, operation):
+                if operation == "+":
+                    return first + second
+                if operation == "-":
+                    return first - second
+                if operation == "*":
+                    return first * second
+                if operation == "/":
+                    return first / second
+                return None
+
+            test_expected = apply_operation(
+                float(test_left),
+                float(test_right),
+                operator,
+            )
+
+            if test_expected.is_integer():
+                test_expected = str(int(test_expected))
+            else:
+                test_expected = repr(test_expected)
+
+            normalized_return = return_expression
+
+        elif (
             len(return_expression) >= 2
             and return_expression[0] in {"'", '"'}
             and return_expression[-1] == return_expression[0]
@@ -676,6 +725,12 @@ class MockAdapter(AIAdapter):
 
         module_name = module_path.rsplit(".", 1)[0].replace("/", ".")
         test_path = f"test_{module_path}"
+
+        if test_expected is None:
+            test_call = f"{function_name}()"
+            test_expected = normalized_return
+        else:
+            test_call = f"{function_name}({test_left}, {test_right})"
 
         return [
             {
@@ -693,7 +748,7 @@ class MockAdapter(AIAdapter):
                 "content": (
                     f"from {module_name} import {function_name}\n\n"
                     f"def test_{function_name}():\n"
-                    f"    assert {function_name}() == {normalized_return}\n"
+                    f"    assert {test_call} == {test_expected}\n"
                 ),
                 "reason": instruction,
             },
