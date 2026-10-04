@@ -742,3 +742,47 @@ def test_build_changes_allows_delete_without_content():
     assert result[0].change_type.value == "delete"
     assert result[0].path == "arquivo.py"
     assert result[0].content is None
+
+
+def test_preserve_modify_target_context_keeps_existing_corresponding_test():
+    planner = AIPlanner(None)
+
+    context = (
+        "=== CONTEXTO DO PROJETO ===\n"
+        "=== ARQUIVO: modify_smoke.py ===\n"
+        "def somar(a, b):\n"
+        "    return a + b\n"
+        "=== ARQUIVO: test_modify_smoke.py ===\n"
+        "def test_somar():\n"
+        "    assert somar(2, 3) == 5\n"
+    )
+
+    preserved = planner._preserve_modify_target_context(
+        "modifique modify_smoke.py adicionando uma função modulo(a, b)",
+        context,
+    )
+
+    assert "=== ARQUIVO: modify_smoke.py ===" in preserved
+    assert "=== ARQUIVO: test_modify_smoke.py ===" in preserved
+    assert "def test_somar():" in preserved
+    assert preserved.count("=== ARQUIVO:") == 2
+
+
+def test_preserve_modify_target_context_does_not_invent_missing_test():
+    planner = AIPlanner(None)
+
+    context = (
+        "=== CONTEXTO DO PROJETO ===\n"
+        "=== ARQUIVO: modify_smoke.py ===\n"
+        "def somar(a, b):\n"
+        "    return a + b\n"
+    )
+
+    preserved = planner._preserve_modify_target_context(
+        "modifique modify_smoke.py adicionando uma função modulo(a, b)",
+        context,
+    )
+
+    assert "=== ARQUIVO: modify_smoke.py ===" in preserved
+    assert "=== ARQUIVO: test_modify_smoke.py ===" not in preserved
+    assert preserved.count("=== ARQUIVO:") == 1

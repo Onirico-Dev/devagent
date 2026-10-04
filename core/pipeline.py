@@ -4,6 +4,8 @@ from core.planner.ai_planner import AIPlanner
 from core.planner.plan_validator import PlanValidator
 from core.engine.change_engine import ChangeEngine
 from core.context.project_context import ProjectContext
+from pathlib import Path
+
 from core.memory.memory import Memory
 
 
@@ -42,6 +44,32 @@ class DevAgentPipeline:
 
         if command.action == "modify" and command.target:
             relevant_paths.append(command.target)
+
+            target = Path(command.target)
+            if (
+                target.suffix.lower() == ".py"
+                and not target.name.startswith("test_")
+            ):
+                test_path = target.with_name(
+                    f"test_{target.name}"
+                ).as_posix()
+                test_absolute = (
+                    Path(self.root) / test_path
+                ).resolve()
+
+                try:
+                    test_absolute.relative_to(
+                        Path(self.root).resolve()
+                    )
+                except ValueError:
+                    test_absolute = None
+
+                if (
+                    test_absolute is not None
+                    and test_absolute.is_file()
+                    and test_path not in relevant_paths
+                ):
+                    relevant_paths.append(test_path)
 
         transaction_metadata = feedback_context.get(
             "transaction_metadata",

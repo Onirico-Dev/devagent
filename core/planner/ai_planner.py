@@ -1,5 +1,6 @@
 import json
 import re
+from pathlib import Path
 
 from core.schemas.models import (
     Change,
@@ -40,23 +41,61 @@ class AIPlanner:
             marker = f"=== ARQUIVO: {target} ==="
 
             if marker in context:
-                section = context.split(marker, 1)[1]
+                newline = chr(10)
+                sections = []
 
-                next_marker = section.find("\n=== ARQUIVO:")
+                target_section = context.split(marker, 1)[1]
+                next_marker = target_section.find(
+                    newline + "=== ARQUIVO:"
+                )
                 if next_marker >= 0:
-                    section = section[:next_marker]
+                    target_section = target_section[:next_marker]
+
+                sections.append(
+                    f"=== ARQUIVO: {target} ==="
+                    + target_section
+                )
+
+                target_path = Path(target)
+                if (
+                    target_path.suffix.lower() == ".py"
+                    and not target_path.name.startswith("test_")
+                ):
+                    test_path = target_path.with_name(
+                        f"test_{target_path.name}"
+                    ).as_posix()
+                    test_marker = f"=== ARQUIVO: {test_path} ==="
+
+                    if test_marker in context:
+                        test_section = context.split(
+                            test_marker,
+                            1,
+                        )[1]
+                        next_marker = test_section.find(
+                            newline + "=== ARQUIVO:"
+                        )
+                        if next_marker >= 0:
+                            test_section = test_section[:next_marker]
+
+                        sections.append(
+                            f"=== ARQUIVO: {test_path} ==="
+                            + test_section
+                        )
 
                 return (
-                    "=== CONTEXTO DO PROJETO ===\n"
-                    f"=== ARQUIVO ALVO DO MODIFY: {target} ===\n"
-                    f"=== ARQUIVO: {target} ==="
-                    + section
+                    "=== CONTEXTO DO PROJETO ==="
+                    + newline
+                    + f"=== ARQUIVO ALVO DO MODIFY: {target} ==="
+                    + newline
+                    + newline.join(sections)
                 )
 
         if len(context) > self.MAX_CONTEXT_CHARS:
             return (
-                context[:self.MAX_CONTEXT_CHARS]
-                + "\n\n=== CONTEXTO TRUNCADO ==="
+                context[: self.MAX_CONTEXT_CHARS]
+                + chr(10)
+                + chr(10)
+                + "=== CONTEXTO TRUNCADO ==="
             )
 
         return context

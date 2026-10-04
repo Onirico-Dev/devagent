@@ -2322,3 +2322,54 @@ def test_mock_compound_create_function_pytest_supports_binary_expression():
         "    return a / b\n"
     )
     assert "assert dividir(2, 3) == 0.6666666666666666" in test_change["content"]
+
+
+def test_mock_generate_modify_discovers_existing_corresponding_test():
+    adapter = MockAdapter()
+    result = json.loads(
+        adapter.generate(
+            "INSTRUÇÃO DO USUÁRIO:\n"
+            "modifique modify_smoke.py adicionando "
+            "uma função multiplicar(a, b) que retorne a * b\n"
+            "CONTEXTO DO PROJETO:\n"
+            "=== CONTEXTO DO PROJETO ===\n"
+            "ARQUIVOS DISPONÍVEIS: 2\n"
+            "\n"
+            "=== ARQUIVO: modify_smoke.py ===\n"
+            "def somar(a, b):\n"
+            "    return a + b\n"
+            "\n"
+            "=== ANÁLISE PYTHON ===\n"
+            "=== ARQUIVO: test_modify_smoke.py ===\n"
+            "from modify_smoke import somar\n"
+            "\n"
+            "def test_somar():\n"
+            "    assert somar(2, 3) == 5\n"
+            "\n"
+            "=== ANÁLISE PYTHON ===\n"
+        )
+    )
+
+    assert result["tests"] == ["test_modify_smoke.py"]
+
+
+def test_mock_generate_modify_does_not_invent_missing_corresponding_test():
+    adapter = MockAdapter()
+    result = json.loads(
+        adapter.generate(
+            "INSTRUÇÃO DO USUÁRIO:\n"
+            "modifique modify_without_test.py adicionando "
+            "uma função multiplicar(a, b) que retorne a * b\n"
+            "CONTEXTO DO PROJETO:\n"
+            "=== CONTEXTO DO PROJETO ===\n"
+            "ARQUIVOS DISPONÍVEIS: 1\n"
+            "\n"
+            "=== ARQUIVO: modify_without_test.py ===\n"
+            "def existente():\n"
+            "    return 1\n"
+            "\n"
+            "=== ANÁLISE PYTHON ===\n"
+        )
+    )
+
+    assert result["tests"] == []

@@ -519,6 +519,35 @@ class MockAdapter(AIAdapter):
             ):
                 tests.append(change["path"])
 
+        # MODIFY deve executar o teste correspondente quando ele já existe
+        # no contexto do projeto. Não criar nem inferir testes inexistentes.
+        if re.match(
+            r"^\s*(?:modifique|modificar|altere|alterar|modify)\s+",
+            instruction,
+            flags=re.IGNORECASE,
+        ):
+            for change in changes:
+                if not isinstance(change, dict):
+                    continue
+
+                change_path = change.get("path")
+                if (
+                    not isinstance(change_path, str)
+                    or not change_path.endswith(".py")
+                    or change_path.startswith("test_")
+                    or Path(change_path).name.startswith("test_")
+                ):
+                    continue
+
+                source_path = Path(change_path)
+                test_path = source_path.with_name(
+                    f"test_{source_path.name}"
+                ).as_posix()
+                test_marker = f"=== ARQUIVO: {test_path} ===\n"
+
+                if test_marker in context and test_path not in tests:
+                    tests.append(test_path)
+
         return json.dumps(
             {
                 "objective": objective,
