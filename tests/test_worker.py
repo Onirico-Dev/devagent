@@ -2063,3 +2063,61 @@ def test_worker_reconcile_terminal_feedback_skips_when_feedback_builder_returns_
     worker._reconcile_terminal_feedback()
 
     assert observer.observe() == []
+
+
+@pytest.mark.parametrize(
+    "analysis",
+    [
+        [],
+        {
+            "status": "failed",
+            "evidence": {
+                "transaction_metadata": [],
+            },
+        },
+        {
+            "status": "failed",
+            "evidence": {
+                "transaction_metadata": {
+                    "instruction": "corrigir falha",
+                    "repair_cycle": [],
+                },
+            },
+        },
+    ],
+)
+def test_worker_ignores_invalid_transaction_feedback_nested_types(analysis):
+    from core.observation import Observation
+    from core.observer import Observer
+    from core.worker import Worker
+
+    class Gateway:
+        def create_task(self, instruction):
+            raise AssertionError(
+                "Não deve criar tarefa para feedback sem estrutura válida."
+            )
+
+    class FeedbackHandler:
+        def handle(self, observation):
+            return {
+                "handled": True,
+                "analysis": analysis,
+            }
+
+    observation = Observation(
+        instruction="Avaliar resultado da transação.",
+        metadata={
+            "source": "transaction_result",
+            "transaction_id": "tx-invalid-nested",
+            "status": "failed",
+        },
+    )
+
+    worker = Worker(
+        Gateway(),
+        Observer(observations=[observation]),
+        feedback_handler=FeedbackHandler(),
+    )
+
+    assert worker.run_once() == []
+    assert worker.errors == []

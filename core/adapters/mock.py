@@ -1350,6 +1350,28 @@ class MockAdapter(AIAdapter):
                 ].strip()
 
                 if content:
+                    natural_function_pattern = re.fullmatch(
+                        r"uma\s+função\s+([A-Za-z_]\w*)"
+                        r"\s*\(([^)]*)\)"
+                        r"\s+que\s+retorne\s+(.+?)\s*",
+                        content,
+                        flags=re.IGNORECASE | re.DOTALL,
+                    )
+
+                    if natural_function_pattern:
+                        function_name = natural_function_pattern.group(1)
+                        arguments = (
+                            natural_function_pattern.group(2).strip()
+                        )
+                        expression = (
+                            natural_function_pattern.group(3).strip()
+                        )
+
+                        return (
+                            f"def {function_name}({arguments}):\n"
+                            f"    return {expression}"
+                        )
+
                     return content
 
         return ""

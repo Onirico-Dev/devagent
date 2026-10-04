@@ -680,3 +680,65 @@ def test_ai_planner_preserves_non_python_target_file_from_large_context():
     assert f"=== ARQUIVO ALVO DO MODIFY: {target} ===" in result
     assert f"=== ARQUIVO: {target} ===" in result
     assert "=== ARQUIVO: outro.py ===" not in result
+
+
+def test_preserve_modify_target_context_falls_back_when_modify_target_is_absent():
+    from core.planner.ai_planner import AIPlanner
+
+    planner = AIPlanner(FixedAdapter(""))
+
+    context = "=== ARQUIVO: outro.py ===\nconteudo"
+
+    result = planner._preserve_modify_target_context(
+        "modifique o arquivo alvo.py",
+        context,
+    )
+
+    assert result == context
+
+
+def test_preserve_modify_target_context_keeps_entire_section_when_no_next_file_marker():
+    from core.planner.ai_planner import AIPlanner
+
+    planner = AIPlanner(FixedAdapter(""))
+
+    context = (
+        "=== ARQUIVO: alvo.py ===\n"
+        "linha 1\n"
+        "linha 2\n"
+    )
+
+    result = planner._preserve_modify_target_context(
+        "modifique o arquivo alvo.py",
+        context,
+    )
+
+    assert result == (
+        "=== CONTEXTO DO PROJETO ===\n"
+        "=== ARQUIVO ALVO DO MODIFY: alvo.py ===\n"
+        "=== ARQUIVO: alvo.py ===\n"
+        "linha 1\n"
+        "linha 2\n"
+    )
+
+
+def test_build_changes_allows_delete_without_content():
+    from core.planner.ai_planner import AIPlanner
+
+    planner = AIPlanner(FixedAdapter(""))
+
+    result = planner._build_changes(
+        [
+            {
+                "type": "delete",
+                "path": "arquivo.py",
+                "content": None,
+                "reason": "Arquivo obsoleto.",
+            }
+        ]
+    )
+
+    assert len(result) == 1
+    assert result[0].change_type.value == "delete"
+    assert result[0].path == "arquivo.py"
+    assert result[0].content is None

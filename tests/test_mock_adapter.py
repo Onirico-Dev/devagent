@@ -2094,3 +2094,175 @@ def test_mock_compound_create_returns_empty_when_part_cannot_be_planned():
     )
 
     assert result == []
+
+def test_mock_repair_constant_return_falls_through_when_arguments_are_not_two_identifiers():
+    adapter = MockAdapter()
+
+    prompt = (
+        "INSTRUÇÃO DO USUÁRIO:\n"
+        "corrija o erro em soma(a, b, c) que deve retornar 5 "
+        "quando chamada com 2 e 3\n"
+        "ERRO:\n"
+        "AssertionError: esperado 5, obtido 6"
+    )
+
+    result = adapter._generate_repair_response(prompt)
+
+    assert isinstance(result, str)
+
+
+def test_mock_generate_ignores_valid_feedback_json_that_is_not_a_dict():
+    adapter = MockAdapter()
+
+    prompt = (
+        "INSTRUÇÃO DO USUÁRIO:\n"
+        "crie app.py contendo print('ok')\n"
+        "CONTEXTO DE FEEDBACK DA TRANSAÇÃO:\n"
+        "[1, 2, 3]\n"
+    )
+
+    result = json.loads(adapter.generate(prompt))
+
+    assert result["objective"].startswith("crie app.py contendo print('ok')")
+    assert "[1, 2, 3]" in result["objective"]
+    assert result["changes"]
+
+
+def test_mock_feedback_change_without_string_content_is_still_appended():
+    adapter = MockAdapter()
+
+    feedback_context = {
+        "transaction_id": "tx-non-string-content",
+        "status": "rolled_back",
+        "failure_type": "runtime_error",
+        "repair_attempts": 1,
+        "evidence": {"error": "erro de execução"},
+        "transaction_metadata": {
+            "changes": [
+                {
+                    "change_type": "modify",
+                    "path": "runtime_probe.py",
+                    "content": None,
+                    "reason": "falha",
+                }
+            ]
+        },
+    }
+
+    result = json.loads(
+        adapter._generate_feedback_response(
+            "Analise a transação tx-non-string-content",
+            "",
+            feedback_context,
+        )
+    )
+
+    assert result["changes"][0]["path"] == "runtime_probe.py"
+    assert "content" not in result["changes"][0]
+
+
+def test_mock_compound_create_falls_back_to_general_case_when_function_test_pair_is_incomplete():
+    adapter = MockAdapter()
+
+    instruction = (
+        "crie arquivo calculator.py contendo uma função add(a, b) "
+        "que retorna a soma dos dois valores e crie arquivo test_calculator.py "
+        "contendo um teste pytest sem especificar o resultado"
+    )
+
+    result = adapter._build_compound_create_changes(instruction)
+
+    assert len(result) == 2
+    assert result[0]["path"] == "calculator.py"
+    assert result[1]["path"] == "test_calculator.py"
+
+def test_mock_compound_create_ignores_empty_action_parts():
+    adapter = MockAdapter()
+
+    instruction = (
+        "crie first.py contendo print('a') "
+        "e e "
+        "crie second.py contendo print('b')"
+    )
+
+    result = adapter._build_compound_create_changes(instruction)
+
+    assert len(result) == 2
+    assert result[0]["path"] == "first.py"
+    assert result[1]["path"] == "second.py"
+
+def test_mock_extract_create_content_skips_empty_marker_and_uses_next_marker():
+    instruction = "crie app.py com conteúdo contendo print('ok')"
+
+    result = MockAdapter._extract_create_content(instruction)
+
+    assert result == "print('ok')"
+
+
+def test_mock_extract_create_content_returns_empty_for_empty_marker():
+    result = MockAdapter._extract_create_content(
+        "crie app.py contendo "
+    )
+
+    assert result == ""
+
+def test_mock_repair_constant_return_with_three_arguments_falls_through_to_operation_repair():
+    adapter = MockAdapter()
+
+    prompt = (
+        "corrija o erro em soma(a, b, c) "
+        "que retorna 6 quando deveria retornar 5. "
+        "A chamada soma(2, 3) == 5 falhou. "
+        "AssertionError: esperado 5, obtido 6"
+    )
+
+    result = adapter._generate_repair_response(prompt)
+
+    assert isinstance(result, str)
+
+def test_mock_repair_constant_return_with_three_parameters_falls_through():
+    adapter = MockAdapter()
+    prompt = (
+        "corrija soma.py contendo "
+        "def soma(a, b, c):\n"
+        "    return 6\n"
+        "assert 6 == 5\n"
+        "Erro: AssertionError"
+    )
+
+    result = adapter._generate_repair_response(prompt)
+
+    assert isinstance(result, str)
+
+def test_mock_extract_invalid_content_empty_marker_falls_through_to_default():
+    result = MockAdapter._extract_invalid_content(
+        "crie arquivo.py contendo "
+    )
+
+    assert result == "isto não é Python válido"
+
+def test_mock_compound_create_rejects_invalid_function_parameters():
+    adapter = MockAdapter()
+
+    instruction = (
+        "crie arquivo calculator.py contendo "
+        "função add(a, 1) que retorna a soma dos dois valores "
+        "e crie arquivo test_calculator.py contendo "
+        "teste que verifica add(2, 3) retorna 5"
+    )
+
+    result = adapter._build_compound_create_changes(instruction)
+
+    assert result == []
+
+
+def test_mock_extract_create_content_converts_natural_function():
+    instruction = (
+        'criar um arquivo hello.py contendo '
+        'uma função saudacao() que retorne "Olá, mundo!"'
+    )
+
+    assert (
+        MockAdapter._extract_create_content(instruction)
+        == 'def saudacao():\n    return "Olá, mundo!"'
+    )

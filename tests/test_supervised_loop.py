@@ -169,8 +169,6 @@ def test_export_state_contains_loop_state():
     assert isinstance(state, dict)
     assert state["stopped"] is False
     assert state["iterations"] == 0
-
-
 def test_restore_state_validates_mapping():
     loop = SupervisedLoop(
         worker=FakeWorker(),
@@ -179,8 +177,6 @@ def test_restore_state_validates_mapping():
 
     with pytest.raises(ValueError, match="Estado inválido"):
         loop.restore_state([])
-
-
 def test_restore_state_restores_iterations_and_stop():
     loop = SupervisedLoop(
         worker=FakeWorker(),
@@ -196,8 +192,6 @@ def test_restore_state_restores_iterations_and_stop():
 
     assert loop.stopped is True
     assert loop.iterations == 4
-
-
 def test_supervised_loop_preserves_external_approval_barrier():
     class WorkerWithProposal:
         def __init__(self):
@@ -1275,3 +1269,21 @@ def test_supervised_loop_rejects_invalid_approval_id(approval_id):
         match="ID de aprovação inválido.",
     ):
         loop.approve(approval_id)
+
+def test_supervised_loop_ignores_non_final_execution_feedback():
+    from core.observer import Observer
+
+    loop = SupervisedLoop(
+        worker=FakeWorker(),
+        gateway=FakeGateway(),
+        observer=Observer(),
+    )
+
+    loop._record_execution_feedback(
+        {
+            "status": "pending",
+            "transaction_id": "tx-pending",
+        }
+    )
+
+    assert loop.observer.observe() == []

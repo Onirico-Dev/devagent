@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -144,3 +145,12 @@ def test_project_scanner_uses_relative_paths(tmp_path):
 
     assert "src" in paths
     assert "src/app.py" in paths
+
+
+def test_project_scanner_ignores_special_files(tmp_path):
+    fifo = tmp_path / "pipe"
+    os.mkfifo(fifo)
+
+    results = ProjectScanner(str(tmp_path)).scan()
+
+    assert all(item.path != "pipe" for item in results)

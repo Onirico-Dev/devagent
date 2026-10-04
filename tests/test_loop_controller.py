@@ -192,3 +192,12 @@ def test_run_continuous_rejects_invalid_sleep_function():
             max_iterations=1,
             sleep_fn=None,
         )
+
+def test_run_continuous_returns_empty_when_already_stopped():
+    loop = LoopController()
+    loop.stop()
+
+    results = loop.run_continuous(sleep_fn=lambda _: None)
+
+    assert results == []
+    assert loop.stopped is True

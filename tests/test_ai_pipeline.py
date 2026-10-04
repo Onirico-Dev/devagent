@@ -461,3 +461,71 @@ def test_pipeline_prioritizes_modify_target_in_ai_context(tmp_path):
 
     assert target_pos < other_pos
     assert "return 'old'" in adapter.prompt
+
+
+def test_pipeline_ignores_invalid_transaction_metadata_type(tmp_path):
+    class Adapter:
+        def generate(self, prompt):
+            return json.dumps({
+                "objective": "Criar new.py",
+                "changes": [
+                    {
+                        "type": "create",
+                        "path": "new.py",
+                        "content": "print('new')",
+                        "reason": "Novo arquivo",
+                    }
+                ],
+                "tests": [],
+                "risks": [],
+            })
+
+    pipeline = DevAgentPipeline(
+        root=str(tmp_path),
+        ai_adapter=Adapter(),
+    )
+
+    plan = pipeline.process(
+        "Crie new.py",
+        feedback_context={
+            "transaction_metadata": [],
+        },
+    )
+
+    assert len(plan.changes) == 1
+    assert plan.changes[0].path == "new.py"
+
+
+def test_pipeline_ignores_invalid_transaction_changes_type(tmp_path):
+    class Adapter:
+        def generate(self, prompt):
+            return json.dumps({
+                "objective": "Criar new.py",
+                "changes": [
+                    {
+                        "type": "create",
+                        "path": "new.py",
+                        "content": "print('new')",
+                        "reason": "Novo arquivo",
+                    }
+                ],
+                "tests": [],
+                "risks": [],
+            })
+
+    pipeline = DevAgentPipeline(
+        root=str(tmp_path),
+        ai_adapter=Adapter(),
+    )
+
+    plan = pipeline.process(
+        "Crie new.py",
+        feedback_context={
+            "transaction_metadata": {
+                "changes": {},
+            },
+        },
+    )
+
+    assert len(plan.changes) == 1
+    assert plan.changes[0].path == "new.py"

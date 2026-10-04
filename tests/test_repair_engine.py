@@ -468,3 +468,21 @@ def test_mock_adapter_extracts_content_from_natural_language_create_request():
 
     assert response["changes"][0]["path"] == "cli_content_smoke.py"
     assert response["changes"][0]["content"] == "print('CLI CONTENT OK')"
+
+
+def test_build_prompt_without_diagnostic_omits_diagnostic_context():
+    from core.engine.repair_engine import RepairEngine
+
+    engine = RepairEngine(ai_adapter=None)
+
+    prompt = engine._build_prompt(
+        instruction="corrigir arquivo.py",
+        error="erro de sintaxe",
+        test_output="pytest failed",
+        diagnostic=None,
+    )
+
+    assert "Diagnóstico estruturado da falha:" not in prompt
+    assert "Objetivo original:" in prompt
+    assert "Erro:" in prompt
+    assert "Saída dos testes:" in prompt
