@@ -17,6 +17,7 @@ class RepairEngine:
         test_output,
         diagnostic=None,
         failure_type=None,
+        current_files=None,
     ):
         diagnostic_context = ""
 
@@ -33,6 +34,21 @@ Tipo de falha classificado:
 {failure_type}
 """
 
+        current_files_context = ""
+        if current_files:
+            sections = []
+            for path, content in current_files.items():
+                sections.append(
+                    f"--- {path} ---\n"
+                    f"{content}\n"
+                    f"--- fim de {path} ---"
+                )
+            current_files_context = (
+                "Arquivos atuais afetados:\n"
+                + "\n".join(sections)
+                + "\n"
+            )
+
         return f"""Você é o módulo de reparo automático do DevAgent.
 
 Objetivo original:
@@ -45,7 +61,7 @@ Saída dos testes:
 {test_output}
 {diagnostic_context}
 {failure_context}
-Analise a falha e proponha uma correção.
+{current_files_context}Analise a falha e proponha uma correção.
 
 Retorne SOMENTE JSON válido com exatamente estes campos:
 {{
@@ -150,6 +166,7 @@ Regras:
         error,
         test_output,
         failure_type=None,
+        current_files=None,
     ):
         diagnostic = self.diagnostic_engine.diagnose(
             {
@@ -165,6 +182,7 @@ Regras:
             test_output,
             diagnostic=diagnostic,
             failure_type=failure_type,
+            current_files=current_files,
         )
 
         response = self.ai.generate(prompt)

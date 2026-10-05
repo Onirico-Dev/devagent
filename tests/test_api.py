@@ -5561,3 +5561,65 @@ def test_gateway_deduplicates_transaction_present_in_recovery_and_terminal_lists
 
     assert task["status"] == "committed"
     assert task["transaction_id"] == transaction_id
+
+
+def test_gateway_repairs_natural_modify_semantic_failure_and_commits(
+    isolated_project,
+):
+    from agent import DevAgent
+    from core.gateway import DevAgentGateway
+
+    (isolated_project / "modify_smoke.py").write_text(
+        "def somar(a, b):\n"
+        "    return a + b\n"
+        "\n"
+        "def multiplicar(a, b):\n"
+        "    return a * b\n"
+        "\n"
+        "def subtrair(a, b):\n"
+        "    return a - b\n"
+        "\n"
+        "def potencia(a, b):\n"
+        "    return a ** b\n"
+        "\n"
+        "def modulo(a, b):\n"
+        "    return a % b\n",
+        encoding="utf-8",
+    )
+
+    (isolated_project / "test_modify_smoke.py").write_text(
+        "from modify_smoke import somar\n\n"
+        "def test_somar():\n"
+        "    assert somar(2, 3) == 5\n",
+        encoding="utf-8",
+    )
+
+    agent = DevAgent(str(isolated_project))
+    gateway = DevAgentGateway(
+        agent,
+        str(isolated_project),
+    )
+
+    approval_id = gateway.supervisor.request_approval(
+        gateway.create_task(
+            "modifique modify_smoke.py adicionando uma função "
+            "somar(a, b) que retorne a - b"
+        )["plan"]
+    )
+
+    result = gateway.approve(approval_id)
+
+    assert result["status"] == "committed"
+    assert result["repair_attempts"] == 1
+    assert result["tests"]["success"] is True
+
+    content = (isolated_project / "modify_smoke.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "def multiplicar(a, b):\n    return a * b" in content
+    assert "def subtrair(a, b):\n    return a - b" in content
+    assert "def potencia(a, b):\n    return a ** b" in content
+    assert "def modulo(a, b):\n    return a % b" in content
+    assert content.count("def somar(a, b):") == 2
+    assert content.count("return a + b") == 2

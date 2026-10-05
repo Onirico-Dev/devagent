@@ -237,6 +237,16 @@ class MockAdapter(AIAdapter):
             objective,
         )
 
+        if operation_match is None:
+            operation_match = re.search(
+                r"(?:uma\s+)?função\s+([A-Za-z_]\w*)\s*"
+                r"\(([^)]*)\)\s+que\s+retorne\s+"
+                r"([A-Za-z_]\w*)\s*([+\-*/])\s*"
+                r"([A-Za-z_]\w*)",
+                objective,
+                re.IGNORECASE,
+            )
+
         if error_match and operation_match:
             name, args, left, operator, right = operation_match.groups()
             actual_text, expected_text = error_match.groups()
@@ -269,19 +279,34 @@ class MockAdapter(AIAdapter):
                 instruction,
             )
 
-            if not explicit_case:
-                return ""
+            if explicit_case:
+                first_text, second_text, explicit_expected_text = (
+                    explicit_case.groups()
+                )
+                try:
+                    first = float(first_text)
+                    second = float(second_text)
+                    explicit_expected = float(explicit_expected_text)
+                except ValueError:
+                    return ""
+            else:
+                observed_call = re.search(
+                    rf"{re.escape(name)}\s*"
+                    rf"\(\s*(-?\d+(?:\.\d+)?)\s*,\s*"
+                    rf"(-?\d+(?:\.\d+)?)\s*\)",
+                    instruction,
+                )
+                if not observed_call:
+                    return ""
 
-            first_text, second_text, explicit_expected_text = (
-                explicit_case.groups()
-            )
+                first_text, second_text = observed_call.groups()
+                try:
+                    first = float(first_text)
+                    second = float(second_text)
+                except ValueError:
+                    return ""
 
-            try:
-                first = float(first_text)
-                second = float(second_text)
-                explicit_expected = float(explicit_expected_text)
-            except ValueError:
-                return ""
+                explicit_expected = expected
 
             def apply_operation(first, second, operation):
                 if operation == "+":
@@ -327,10 +352,66 @@ class MockAdapter(AIAdapter):
 
             replacement = next(iter(candidate_operators))
 
-            content = (
-                f"def {name}({args}):\n"
-                f"    return {left} {replacement} {right}"
+            file_start_marker = (
+                f"--- {repair_path} ---"
             )
+            file_end_marker = (
+                f"--- fim de {repair_path} ---"
+            )
+
+            file_start = instruction.find(file_start_marker)
+            file_end = instruction.find(
+                file_end_marker,
+                file_start + len(file_start_marker),
+            )
+
+            current_file_match = None
+
+            if file_start != -1 and file_end != -1:
+                current_file = instruction[
+                    file_start + len(file_start_marker):file_end
+                ].lstrip("\n")
+
+                current_file_match = current_file
+
+            if current_file_match:
+                current_content = current_file_match
+
+                function_pattern = re.compile(
+                    rf"(?m)^def\s+{re.escape(name)}\s*"
+                    rf"\([^)]*\)\s*:\n"
+                    rf"(?:^[ \t]+.*(?:\n|$))*"
+                )
+
+                replacement_function = (
+                    f"def {name}({args}):\n"
+                    f"    return {left} {replacement} {right}"
+                )
+
+                matches = list(
+                    function_pattern.finditer(current_content)
+                )
+
+                if not matches:
+                    return ""
+
+                target_match = matches[-1]
+                matched_text = target_match.group(0)
+                replacement_suffix = (
+                    "\n" if matched_text.endswith("\n") else ""
+                )
+
+                content = (
+                    current_content[:target_match.start()]
+                    + replacement_function
+                    + replacement_suffix
+                    + current_content[target_match.end():]
+                ).rstrip()
+            else:
+                content = (
+                    f"def {name}({args}):\n"
+                    f"    return {left} {replacement} {right}"
+                )
 
             return json.dumps(
                 {

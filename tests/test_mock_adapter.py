@@ -2373,3 +2373,89 @@ def test_mock_generate_modify_does_not_invent_missing_corresponding_test():
     )
 
     assert result["tests"] == []
+
+def test_mock_repair_semantic_operation_accepts_natural_modify_instruction():
+    from core.adapters.mock import MockAdapter
+
+    prompt = (
+        "Você é o módulo de reparo automático do DevAgent.\n"
+        "Objetivo original:\n"
+        "modifique modify_smoke.py adicionando uma função somar(a, b) "
+        "que retorne a - b\n"
+        "Erro:\n"
+        "E       assert -1 == 5\n"
+        "E        +  where -1 = somar(2, 3)\n"
+    )
+
+    result = json.loads(
+        MockAdapter()._generate_repair_response(prompt)
+    )
+
+    assert result["action"] == "modify"
+    assert result["path"] == "modify_smoke.py"
+    assert result["content"] == (
+        "def somar(a, b):\n"
+        "    return a + b"
+    )
+
+
+def test_mock_repair_semantic_operation_preserves_current_file():
+    import json
+
+    from core.adapters.mock import MockAdapter
+
+    current_file = (
+        "def somar(a, b):\n"
+        "    return a - b\n"
+        "\n"
+        "def multiplicar(a, b):\n"
+        "    return a * b\n"
+        "\n"
+        "def subtrair(a, b):\n"
+        "    return a - b\n"
+        "\n"
+        "def potencia(a, b):\n"
+        "    return a ** b\n"
+        "\n"
+        "def modulo(a, b):\n"
+        "    return a % b\n"
+    )
+
+    prompt = (
+        "Você é o módulo de reparo automático do DevAgent.\n"
+        "Objetivo original:\n"
+        "modifique modify_smoke.py adicionando uma função somar(a, b) "
+        "que retorne a - b\n"
+        "Erro:\n"
+        "E       assert -1 == 5\n"
+        "E        +  where -1 = somar(2, 3)\n"
+        "Arquivos atuais afetados:\n"
+        "--- modify_smoke.py ---\n"
+        f"{current_file}"
+        "--- fim de modify_smoke.py ---\n"
+    )
+
+    result = json.loads(
+        MockAdapter()._generate_repair_response(prompt)
+    )
+
+    expected = (
+        "def somar(a, b):\n"
+        "    return a + b\n"
+        "\n"
+        "def multiplicar(a, b):\n"
+        "    return a * b\n"
+        "\n"
+        "def subtrair(a, b):\n"
+        "    return a - b\n"
+        "\n"
+        "def potencia(a, b):\n"
+        "    return a ** b\n"
+        "\n"
+        "def modulo(a, b):\n"
+        "    return a % b"
+    )
+
+    assert result["action"] == "modify"
+    assert result["path"] == "modify_smoke.py"
+    assert result["content"] == expected

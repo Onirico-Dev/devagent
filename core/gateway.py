@@ -115,6 +115,7 @@ class DevAgentGateway:
             repair_executor=self.repair_executor,
             repair_controller=self.repair_controller,
             max_attempts=self.MAX_REPAIR_ATTEMPTS,
+            root=self.root,
         )
 
         self.transaction_flow = TransactionFlow(

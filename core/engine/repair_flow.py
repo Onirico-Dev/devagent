@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from core.engine.repair_controller import RepairController
 from core.engine.repair_cycle_state import (
     RepairCycleState,
@@ -22,12 +24,44 @@ class RepairFlow:
         repair_executor: RepairExecutor,
         repair_controller: RepairController,
         max_attempts: int = 2,
+        root=".",
     ):
         self.repair_engine = repair_engine
         self.repair_executor = repair_executor
         self.repair_controller = repair_controller
         self.max_attempts = max_attempts
+        self.root = Path(root).resolve()
         self.feedback_analyzer = FeedbackAnalyzer()
+
+    def _current_modify_files(self, transaction):
+        files = {}
+
+        for change in getattr(transaction, "changes", []):
+            change_type = getattr(change, "change_type", None)
+
+            if getattr(change_type, "value", change_type) != "modify":
+                continue
+
+            path = str(getattr(change, "path", "")).strip()
+            if not path:
+                continue
+
+            candidate = (self.root / path).resolve()
+
+            try:
+                candidate.relative_to(self.root)
+            except ValueError:
+                continue
+
+            if not candidate.is_file():
+                continue
+
+            try:
+                files[path] = candidate.read_text(encoding="utf-8")
+            except (OSError, UnicodeError):
+                continue
+
+        return files
 
     def restore_state(self, transaction):
         state = RepairCycleState.restore(transaction)
@@ -87,6 +121,11 @@ class RepairFlow:
             "error": error,
             "test_output": test_output,
         }
+
+        current_files = self._current_modify_files(transaction)
+
+        if "current_files" in parameters:
+            kwargs["current_files"] = current_files
 
         if "failure_type" in parameters:
             kwargs["failure_type"] = failure_type
