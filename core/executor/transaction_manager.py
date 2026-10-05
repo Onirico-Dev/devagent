@@ -807,7 +807,7 @@ class TransactionManager:
 
 
     def record_created_identity(self, transaction, relative_path):
-        relative = self._validate_created_file_path(relative_path)
+        relative = str(self._validate_created_file_path(relative_path))
         target = self.root / relative
 
         if target.is_symlink():
@@ -829,9 +829,6 @@ class TransactionManager:
             relative,
             target,
         )
-
-        if relative in created_identity:
-            created_identity[str(relative)] = created_identity.pop(relative)
 
         try:
             self.persist_manifest(transaction)
