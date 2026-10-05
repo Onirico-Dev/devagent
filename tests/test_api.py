@@ -5621,5 +5621,5 @@ def test_gateway_repairs_natural_modify_semantic_failure_and_commits(
     assert "def subtrair(a, b):\n    return a - b" in content
     assert "def potencia(a, b):\n    return a ** b" in content
     assert "def modulo(a, b):\n    return a % b" in content
-    assert content.count("def somar(a, b):") == 2
-    assert content.count("return a + b") == 2
+    assert content.count("def somar(a, b):") == 1
+    assert content.count("return a + b") == 1

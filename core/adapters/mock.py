@@ -1331,7 +1331,44 @@ class MockAdapter(AIAdapter):
             )
 
             if generated_addition is not None:
-                content = f"{existing}\n\n{addition}\n"
+                function_match = re.match(
+                    r"def\s+([A-Za-z_]\w*)\s*\(",
+                    addition,
+                )
+
+                if function_match:
+                    function_name = function_match.group(1)
+
+                    try:
+                        existing_tree = ast.parse(existing)
+                    except SyntaxError:
+                        existing_tree = None
+
+                    target_node = None
+                    if existing_tree is not None:
+                        for node in existing_tree.body:
+                            if (
+                                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                                and node.name == function_name
+                            ):
+                                target_node = node
+                                break
+
+                    if target_node is not None:
+                        lines = existing.splitlines(keepends=True)
+                        start = target_node.lineno - 1
+                        end = target_node.end_lineno
+
+                        replacement = addition.rstrip() + "\n"
+                        content = (
+                            "".join(lines[:start])
+                            + replacement
+                            + "".join(lines[end:])
+                        ).rstrip() + "\n"
+                    else:
+                        content = f"{existing}\n\n{addition}\n"
+                else:
+                    content = f"{existing}\n\n{addition}\n"
             else:
                 content = f"{existing}\n{addition}\n"
 

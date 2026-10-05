@@ -2459,3 +2459,34 @@ def test_mock_repair_semantic_operation_preserves_current_file():
     assert result["action"] == "modify"
     assert result["path"] == "modify_smoke.py"
     assert result["content"] == expected
+
+
+def test_mock_generate_modify_existing_function_does_not_duplicate_definition():
+    adapter = MockAdapter()
+
+    result = json.loads(
+        adapter.generate(
+            "INSTRUÇÃO DO USUÁRIO:\n"
+            "modifique modify_smoke.py adicionando uma função somar(a, b) "
+            "que retorne a - b\n"
+            "CONTEXTO DO PROJETO:\n"
+            "=== CONTEXTO DO PROJETO ===\n"
+            "ARQUIVOS DISPONÍVEIS: 1\n"
+            "\n"
+            "=== ARQUIVO: modify_smoke.py ===\n"
+            "def somar(a, b):\n"
+            "    return a + b\n"
+            "\n"
+            "def multiplicar(a, b):\n"
+            "    return a * b\n"
+            "\n"
+            "=== ANÁLISE PYTHON ===\n"
+        )
+    )
+
+    change = result["changes"][0]
+
+    assert change["type"] == "modify"
+    assert change["path"] == "modify_smoke.py"
+    assert change["content"].count("def somar(a, b):") == 1
+    assert "def multiplicar(a, b):" in change["content"]
