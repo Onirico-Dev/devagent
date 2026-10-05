@@ -33,9 +33,10 @@ class FakeState:
     def mark_repair_failed(self, error=""):
         self.calls.append(("repair_failed", error))
 
-    def record(self, action, status):
+    def record(self, action, status, error=""):
         self.attempts += 1
         self.calls.append(("record", action, status))
+        self.last_error = error
 
     def persist(self, transaction):
         self.persist_calls += 1
@@ -1013,3 +1014,157 @@ def test_prepare_repair_attempt_passes_failure_type_when_supported():
     assert captured["failure_type"] == "syntax_error"
     assert diagnosis["action"] == "none"
     assert result["status"] == RepairCycleStatus.NO_REPAIR.value
+
+
+def test_current_modify_files_ignores_empty_path(tmp_path):
+    flow = RepairFlow(
+        repair_engine=object(),
+        repair_executor=object(),
+        repair_controller=object(),
+        root=tmp_path,
+    )
+    transaction = SimpleNamespace(
+        changes=[
+            SimpleNamespace(
+                change_type="modify",
+                path="",
+            )
+        ]
+    )
+
+    assert flow._current_modify_files(transaction) == {}
+
+
+def test_current_modify_files_ignores_path_outside_root(tmp_path):
+    flow = RepairFlow(
+        repair_engine=object(),
+        repair_executor=object(),
+        repair_controller=object(),
+        root=tmp_path,
+    )
+    transaction = SimpleNamespace(
+        changes=[
+            SimpleNamespace(
+                change_type="modify",
+                path="../outside.py",
+            )
+        ]
+    )
+
+    assert flow._current_modify_files(transaction) == {}
+
+
+def test_current_modify_files_ignores_missing_file(tmp_path):
+    flow = RepairFlow(
+        repair_engine=object(),
+        repair_executor=object(),
+        repair_controller=object(),
+        root=tmp_path,
+    )
+    transaction = SimpleNamespace(
+        changes=[
+            SimpleNamespace(
+                change_type="modify",
+                path="missing.py",
+            )
+        ]
+    )
+
+    assert flow._current_modify_files(transaction) == {}
+
+
+def test_current_modify_files_ignores_unreadable_file(tmp_path, monkeypatch):
+    path = tmp_path / "unreadable.py"
+    path.write_text("x = 1", encoding="utf-8")
+
+    def fail_read_text(self, *args, **kwargs):
+        raise OSError("falha de leitura")
+
+    monkeypatch.setattr(type(path), "read_text", fail_read_text)
+
+    flow = RepairFlow(
+        repair_engine=object(),
+        repair_executor=object(),
+        repair_controller=object(),
+        root=tmp_path,
+    )
+    transaction = SimpleNamespace(
+        changes=[
+            SimpleNamespace(
+                change_type="modify",
+                path="unreadable.py",
+            )
+        ]
+    )
+
+    assert flow._current_modify_files(transaction) == {}
+
+
+def test_current_modify_files_skips_non_modify_changes(tmp_path):
+    target = tmp_path / "target.py"
+    target.write_text("x = 1\n", encoding="utf-8")
+
+    flow = RepairFlow(
+        repair_engine=object(),
+        repair_executor=object(),
+        repair_controller=object(),
+        root=tmp_path,
+    )
+    transaction = SimpleNamespace(
+        changes=[
+            SimpleNamespace(
+                change_type="create",
+                path="ignored.py",
+            ),
+            SimpleNamespace(
+                change_type="modify",
+                path="target.py",
+            ),
+        ]
+    )
+
+    assert flow._current_modify_files(transaction) == {
+        "target.py": "x = 1\n"
+    }
+
+
+def test_attempt_none_records_repair_after_changes_applied():
+    diagnosis = {
+        "action": "none",
+        "risk": "baixo",
+        "path": "",
+        "content": "",
+    }
+    flow, _ = make_flow(diagnosis=diagnosis)
+    transaction = make_transaction()
+    transaction.metadata = {
+        "execution": {
+            "changes_applied": 1,
+        }
+    }
+    state = FakeState()
+
+    result = flow.attempt(
+        instruction="corrigir",
+        transaction=transaction,
+        test_result={
+            "stderr": "falha",
+            "stdout": "",
+        },
+        repair_state=state,
+    )
+
+    assert result["status"] == RepairCycleStatus.NO_REPAIR.value
+    assert result["success"] is False
+    assert result["repair"] == diagnosis
+    assert state.attempts == 1
+    assert state.calls == [
+        ("analyzing",),
+        (
+            "record",
+            "none",
+            RepairCycleStatus.REPAIRING,
+        ),
+    ]
+    assert state.last_error == "falha"
+    assert state.persist_calls == 2

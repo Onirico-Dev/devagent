@@ -2490,3 +2490,145 @@ def test_mock_generate_modify_existing_function_does_not_duplicate_definition():
     assert change["path"] == "modify_smoke.py"
     assert change["content"].count("def somar(a, b):") == 1
     assert "def multiplicar(a, b):" in change["content"]
+
+
+@pytest.mark.parametrize(
+    ("operator", "expected"),
+    [
+        ("+", "5"),
+        ("-", "-1"),
+        ("*", "6"),
+        ("/", "0.6666666666666666"),
+    ],
+)
+def test_mock_build_function_pytest_changes_supports_binary_operators(
+    operator,
+    expected,
+):
+    adapter = MockAdapter()
+
+    changes = adapter._build_function_pytest_changes(
+        f"adicione uma função calcular(a, b) em um novo arquivo "
+        f"operacao.py que retorne a {operator} b, "
+        f"e crie um teste pytest correspondente"
+    )
+
+    assert len(changes) == 2
+    assert changes[0]["path"] == "operacao.py"
+    assert f"return a {operator} b" in changes[0]["content"]
+    assert changes[1]["path"] == "test_operacao.py"
+    assert expected in changes[1]["content"]
+
+
+def test_mock_planner_response_discovers_nested_test_path():
+    adapter = MockAdapter()
+
+    original = adapter._build_compound_create_changes
+    adapter._build_compound_create_changes = lambda instruction: [
+        {"type": "create", "path": "test_core/modulo.py", "content": ""},
+    ]
+
+    try:
+        result = json.loads(
+            adapter._generate_planner_response(
+                "crie modulo.py",
+            )
+        )
+    finally:
+        adapter._build_compound_create_changes = original
+
+    assert result["tests"] == ["test_core/modulo.py"]
+
+
+def test_mock_planner_response_skips_non_dict_change():
+    adapter = MockAdapter()
+
+    original = adapter._build_compound_create_changes
+    adapter._build_compound_create_changes = lambda instruction: [
+        "invalid",
+        {"type": "modify", "path": "modulo.py", "content": ""},
+    ]
+
+    try:
+        result = json.loads(
+            adapter._generate_planner_response(
+                "modifique modulo.py",
+            )
+        )
+    finally:
+        adapter._build_compound_create_changes = original
+
+    assert result["tests"] == []
+
+
+def test_mock_planner_response_skips_non_python_and_test_paths():
+    adapter = MockAdapter()
+
+    original = adapter._build_compound_create_changes
+    adapter._build_compound_create_changes = lambda instruction: [
+        {"type": "modify", "path": "README.md", "content": ""},
+        {"type": "modify", "path": "test_modulo.py", "content": ""},
+        {"type": "modify", "path": "src/test_modulo.py", "content": ""},
+    ]
+
+    try:
+        result = json.loads(
+            adapter._generate_planner_response(
+                "modifique modulo.py",
+            )
+        )
+    finally:
+        adapter._build_compound_create_changes = original
+
+    assert result["tests"] == ["test_modulo.py", "src/test_modulo.py"]
+
+
+def test_mock_modify_existing_file_appends_generated_function_when_missing():
+    adapter = MockAdapter()
+
+    context = (
+        "=== ARQUIVO: modulo.py ===\n"
+        "def existente():\n"
+        "    return 1\n\n"
+        "=== ANÁLISE PYTHON ===\n"
+    )
+
+    change = adapter._build_modify_change(
+        "modifique modulo.py adicionando uma função nova() que retorne 2",
+        context,
+    )
+
+    assert change is not None
+    assert "def existente():" in change["content"]
+    assert "def nova():" in change["content"]
+    assert change["content"].count("def nova(") == 1
+
+def test_mock_binary_operation_repair_returns_empty_when_current_file_has_no_matching_function():
+    adapter = MockAdapter()
+    prompt = (
+        "Você é o módulo de reparo automático do DevAgent.\n"
+        "Objetivo original:\n"
+        "crie o arquivo core/adapters/missing_function_probe.py "
+        "contendo def calcular(a, b): return a - b "
+        "e crie um teste pytest correspondente que exija "
+        "que calcular(6, 2) == 8\n"
+        "Erro:\n"
+        "E       assert 4 == 8\n"
+        "Saída dos testes:\n"
+        "FAILED test_core/adapters/missing_function_probe.py::test_calcular - assert 4 == 8\n"
+        "--- core/adapters/missing_function_probe.py ---\n"
+        "class Existente:\n"
+        "    pass\n"
+        "--- fim de core/adapters/missing_function_probe.py ---"
+    )
+
+    result = adapter._generate_repair_response(prompt)
+
+    assert result == ""
+
+def test_mock_legacy_create_content_continues_after_empty_marker():
+    adapter = MockAdapter()
+
+    instruction = "crie arquivo exemplo.py com base contendo "
+
+    assert adapter._extract_legacy_create_content(instruction) == "base contendo"

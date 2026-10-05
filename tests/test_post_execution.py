@@ -239,3 +239,17 @@ def test_post_execution_delete_rejects_path_outside_project(tmp_path):
         match="Caminho inválido: fora do projeto.",
     ):
         verifier.verify_change(change)
+
+def test_post_execution_verifies_existing_file_without_expected_content(tmp_path):
+    target = tmp_path / "app.py"
+    target.write_text("print('ok')\n", encoding="utf-8")
+
+    verifier = PostExecutionVerifier(tmp_path)
+
+    result = verifier.verify_path("app.py")
+
+    assert result == {
+        "success": True,
+        "status": "verified",
+        "path": "app.py",
+    }
