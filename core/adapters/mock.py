@@ -1541,6 +1541,8 @@ class MockAdapter(AIAdapter):
             " com o conteúdo ",
             " com conteudo ",
             " com o conteudo ",
+            " com a função ",
+            " com a funcao ",
         )
 
         for marker in markers:
@@ -1553,7 +1555,8 @@ class MockAdapter(AIAdapter):
 
                 if content:
                     natural_function_pattern = re.fullmatch(
-                        r"uma\s+função\s+([A-Za-z_]\w*)"
+                        r"(?:uma\s+)?(?:função\s+|funcao\s+)?"
+                        r"([A-Za-z_]\w*)"
                         r"\s*\(([^)]*)\)"
                         r"\s+que\s+retorne\s+(.+?)\s*",
                         content,

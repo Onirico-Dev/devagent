@@ -693,6 +693,18 @@ def test_extract_create_content_natural_test_smoke():
     )
 
 
+def test_extract_create_content_natural_function_with_com_a_funcao():
+    instruction = (
+        "crie o arquivo api_smoke.py com a função "
+        "somar(a, b) que retorne a + b"
+    )
+
+    assert MockAdapter._extract_create_content(instruction) == (
+        "def somar(a, b):\n"
+        "    return a + b"
+    )
+
+
 def test_mock_modify_content_marker_is_extracted():
     from core.adapters.mock import MockAdapter
 
