@@ -2121,3 +2121,227 @@ def test_worker_ignores_invalid_transaction_feedback_nested_types(analysis):
 
     assert worker.run_once() == []
     assert worker.errors == []
+
+def test_worker_does_not_reprocess_failed_observation_on_second_round(tmp_path):
+    from core.observation_store import ObservationStore
+    from core.worker_state_store import WorkerStateStore
+
+    class Gateway:
+        def __init__(self):
+            self.instructions = []
+
+        def create_task(self, instruction):
+            self.instructions.append(instruction)
+            return {
+                "approval_id": f"approval-{len(self.instructions)}",
+                "status": "pending",
+                "plan": {
+                    "objective": instruction,
+                    "changes": [],
+                    "tests": [],
+                    "risks": [],
+                },
+            }
+
+        def list_pending(self):
+            return []
+
+    instruction = (
+        "crie smoke_retry_regression.py "
+        "com uma função que tenha um erro de sintaxe"
+    )
+
+    original = Observation(
+        instruction=instruction,
+        metadata={"source": "cli"},
+    )
+
+    feedback = Observation(
+        instruction="resultado da transação tx-regression",
+        metadata={
+            "source": "transaction_result",
+            "transaction_id": "tx-regression",
+            "status": "rolled_back",
+            "transaction_metadata": {
+                "instruction": instruction,
+            },
+        },
+    )
+
+    retry = Observation(
+        instruction=instruction,
+        metadata={"source": "cli"},
+    )
+
+    observer_store = ObservationStore(
+        tmp_path / "observations.json"
+    )
+    worker_store = WorkerStateStore(
+        tmp_path / "worker.json"
+    )
+
+    observer = Observer(store=observer_store)
+    observer.add(original)
+    observer.add(feedback)
+    observer.add(retry)
+
+    class FeedbackHandler:
+        def handle(self, observation):
+            return {
+                "handled": True,
+                "analysis": {
+                    "transaction_id": "tx-regression",
+                    "status": "rolled_back",
+                    "action_required": True,
+                    "failure_type": "syntax_error",
+                    "repair_attempts": 1,
+                    "evidence": {
+                        "transaction_metadata": {
+                            "instruction": instruction,
+                        }
+                    },
+                },
+                "proposal": {
+                    "instruction": (
+                        "Analise a transação tx-regression, que terminou "
+                        "com status 'rolled_back'."
+                    ),
+                },
+            }
+
+    gateway = Gateway()
+
+    worker = Worker(
+        gateway,
+        observer,
+        feedback_handler=FeedbackHandler(),
+        store=worker_store,
+    )
+
+    first = worker.run_once()
+
+    assert len(first) == 3
+    assert gateway.instructions == [
+        instruction,
+        "Analise a transação tx-regression, que terminou "
+        "com status 'rolled_back'.",
+        instruction,
+    ]
+
+    second = worker.run_once()
+
+    assert second == []
+    assert gateway.instructions == [
+        instruction,
+        "Analise a transação tx-regression, que terminou "
+        "com status 'rolled_back'.",
+        instruction,
+    ]
+
+def test_worker_retry_does_not_leave_metadata_variant_reprocessable(tmp_path):
+    from core.observation_store import ObservationStore
+    from core.worker_state_store import WorkerStateStore
+
+    class Gateway:
+        def __init__(self):
+            self.instructions = []
+
+        def create_task(self, instruction):
+            self.instructions.append(instruction)
+            return {
+                "approval_id": f"approval-{len(self.instructions)}",
+                "status": "pending",
+                "plan": {
+                    "objective": instruction,
+                    "changes": [],
+                    "tests": [],
+                    "risks": [],
+                },
+            }
+
+        def list_pending(self):
+            return []
+
+    instruction = "crie arquivo_retry.py com erro de sintaxe"
+
+    original = Observation(
+        instruction=instruction,
+        metadata={"source": "cli", "origin": "original"},
+    )
+
+    feedback = Observation(
+        instruction="resultado da transação tx-metadata",
+        metadata={
+            "source": "transaction_result",
+            "transaction_id": "tx-metadata",
+            "status": "rolled_back",
+            "transaction_metadata": {
+                "instruction": instruction,
+            },
+        },
+    )
+
+    retry = Observation(
+        instruction=instruction,
+        metadata={"source": "cli", "origin": "retry"},
+    )
+
+    observer_store = ObservationStore(
+        tmp_path / "observations.json"
+    )
+    worker_store = WorkerStateStore(
+        tmp_path / "worker.json"
+    )
+
+    observer = Observer(store=observer_store)
+    observer.add(original)
+    observer.add(feedback)
+    observer.add(retry)
+
+    class FeedbackHandler:
+        def handle(self, observation):
+            return {
+                "handled": True,
+                "analysis": {
+                    "transaction_id": "tx-metadata",
+                    "status": "rolled_back",
+                    "action_required": True,
+                    "failure_type": "syntax_error",
+                    "repair_attempts": 1,
+                    "evidence": {
+                        "transaction_metadata": {
+                            "instruction": instruction,
+                        }
+                    },
+                },
+                "proposal": {
+                    "instruction": "Analise a transação tx-metadata.",
+                },
+            }
+
+    gateway = Gateway()
+
+    worker = Worker(
+        gateway,
+        observer,
+        feedback_handler=FeedbackHandler(),
+        store=worker_store,
+    )
+
+    first = worker.run_once()
+
+    assert len(first) == 3
+    assert gateway.instructions == [
+        instruction,
+        "Analise a transação tx-metadata.",
+        instruction,
+    ]
+
+    second = worker.run_once()
+
+    assert second == []
+    assert gateway.instructions == [
+        instruction,
+        "Analise a transação tx-metadata.",
+        instruction,
+    ]
