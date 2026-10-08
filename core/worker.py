@@ -515,6 +515,7 @@ class Worker:
 
         proposals = []
         self._errors = []
+        feedback_rate_limited = False
 
         for observation in self.observer.observe():
             key = self._observation_key(observation)
@@ -522,6 +523,12 @@ class Worker:
             retry_allowed = instruction in self._retry_instructions
 
             if key in self._processed and not retry_allowed:
+                continue
+
+            if (
+                observation.metadata.get("source") == "transaction_result"
+                and feedback_rate_limited
+            ):
                 continue
 
             try:
@@ -671,7 +678,27 @@ class Worker:
                     }
                 )
 
+                if (
+                    observation.metadata.get("source") == "transaction_result"
+                    and self._is_rate_limit_error(exc)
+                ):
+                    feedback_rate_limited = True
+
         return proposals
+
+    @staticmethod
+    def _is_rate_limit_error(exc: Exception) -> bool:
+        status_code = getattr(exc, "status_code", None)
+        response = getattr(exc, "response", None)
+
+        if status_code == 429:
+            return True
+
+        if getattr(response, "status_code", None) == 429:
+            return True
+
+        message = str(exc).lower()
+        return "429" in message or "too many requests" in message
 
     @property
     def processed_ids(self) -> set[str]:

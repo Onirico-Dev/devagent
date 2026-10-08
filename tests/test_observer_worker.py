@@ -722,7 +722,7 @@ def test_worker_processes_new_observation_after_restart(tmp_path):
     observer.add(
         Observation(
             instruction=(
-                "crie first.py contendo "
+                "crie test_first.py contendo "
                 "def test_first(): assert 1 == 1"
             ),
             metadata={"source": "restart"},
@@ -746,7 +746,7 @@ def test_worker_processes_new_observation_after_restart(tmp_path):
     restarted_observer.add(
         Observation(
             instruction=(
-                "crie second.py contendo "
+                "crie test_second.py contendo "
                 "def test_second(): assert 2 == 2"
             ),
             metadata={"source": "restart-new"},

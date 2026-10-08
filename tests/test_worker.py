@@ -1202,6 +1202,60 @@ def test_worker_keeps_feedback_unprocessed_when_handler_fails():
     assert len(worker.errors) == 1
     assert worker.errors[0]["error"] == "falha no feedback"
 
+
+def test_worker_defers_remaining_feedback_after_rate_limit():
+    class Gateway:
+        def create_task(self, instruction):
+            raise AssertionError("Feedback não deve criar tarefa normal.")
+
+    class FeedbackHandler:
+        def __init__(self):
+            self.received = []
+
+        def handle(self, observation):
+            self.received.append(observation)
+            raise RuntimeError("429 Client Error: Too Many Requests")
+
+    first = Observation(
+        instruction="Avaliar resultado da transação.",
+        metadata={
+            "source": "transaction_result",
+            "transaction_id": "tx-rate-1",
+            "status": "failed",
+        },
+    )
+    second = Observation(
+        instruction="Avaliar resultado da transação.",
+        metadata={
+            "source": "transaction_result",
+            "transaction_id": "tx-rate-2",
+            "status": "failed",
+        },
+    )
+
+    observer = Observer(observations=[first, second])
+    handler = FeedbackHandler()
+
+    worker = Worker(
+        Gateway(),
+        observer,
+        feedback_handler=handler,
+    )
+
+    worker.run_once()
+
+    assert len(handler.received) == 1
+    assert worker.errors == [
+        {
+            "instruction": "Avaliar resultado da transação.",
+            "error": "429 Client Error: Too Many Requests",
+        }
+    ]
+    assert worker._observation_key(first) not in worker._processed
+    assert worker._observation_key(second) not in worker._processed
+
+
+
 def test_transaction_feedback_persists_across_worker_restart(tmp_path):
     from core.feedback_handler import FeedbackHandler
     from core.observation import Observation

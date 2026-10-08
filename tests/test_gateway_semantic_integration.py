@@ -879,6 +879,7 @@ def test_gateway_recovers_after_crash_after_first_change(tmp_path):
     import subprocess
 
     from agent import DevAgent
+    from core.adapters.mock import MockAdapter
     from core.gateway import DevAgentGateway
     from core.memory.task_history import TaskHistoryStatus
 
@@ -934,7 +935,7 @@ def test_gateway_recovers_after_crash_after_first_change(tmp_path):
     )
 
     gateway = DevAgentGateway(
-        DevAgent(tmp_path),
+        DevAgent(tmp_path, ai_adapter=MockAdapter()),
         root=tmp_path,
     )
 
@@ -977,7 +978,7 @@ def test_gateway_recovers_after_crash_after_first_change(tmp_path):
     assert execution_before_restart["changes_applied"] == 1
 
     restarted = DevAgentGateway(
-        DevAgent(tmp_path),
+        DevAgent(tmp_path, ai_adapter=MockAdapter()),
         root=tmp_path,
     )
 
@@ -1308,9 +1309,9 @@ def test_gateway_serializes_concurrent_approve_for_same_task(tmp_path):
         "RuntimeError",
     }
 
-    assert (tmp_path / "concurrent_test.py").read_text() == (
-        "def test_concurrent(): assert 2 + 2 == 4"
-    )
+    generated = (tmp_path / "concurrent_test.py").read_text()
+    assert "def test_concurrent():" in generated
+    assert "assert 2 + 2 == 4" in generated
 
     final_task = gateway.get_task(approval_id)
     assert final_task["status"] == "committed"

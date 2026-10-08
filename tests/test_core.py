@@ -916,8 +916,11 @@ def test_repair_engine_rejects_oversized_content():
     assert result["path"] == ""
     assert result["content"] == ""
 
-def test_agent_module_main_executes(capsys):
+def test_agent_module_main_executes(capsys, monkeypatch):
     import runpy
+
+    monkeypatch.setenv("DEVAGENT_AI", "mock")
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
 
     runpy.run_module("agent", run_name="__main__")
 

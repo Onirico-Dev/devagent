@@ -5367,10 +5367,26 @@ def test_gateway_create_task_skips_pending_task_with_non_string_instruction(
     monkeypatch,
 ):
     from core.gateway import DevAgentGateway
-    from agent import DevAgent
+
+    class FakeAgent:
+        def process(self, instruction):
+            return {
+                "instruction": instruction,
+                "objective": "Criar arquivo teste.py",
+                "changes": [
+                    {
+                        "change_type": "create",
+                        "path": "teste.py",
+                        "content": "VALUE = 1\n",
+                        "reason": "Teste",
+                    }
+                ],
+                "tests": [],
+                "risks": [],
+            }
 
     gateway = DevAgentGateway(
-        DevAgent(str(isolated_project)),
+        agent=FakeAgent(),
         root=str(isolated_project),
     )
 
@@ -5387,7 +5403,7 @@ def test_gateway_create_task_skips_pending_task_with_non_string_instruction(
         ],
     )
 
-    created = gateway.create_task("criar arquivo.py")
+    created = gateway.create_task("teste")
 
     assert created["status"] == "pending"
     assert created["approval_id"] != "invalid-instruction"
@@ -5567,6 +5583,7 @@ def test_gateway_repairs_natural_modify_semantic_failure_and_commits(
     isolated_project,
 ):
     from agent import DevAgent
+    from core.adapters.mock import MockAdapter
     from core.gateway import DevAgentGateway
 
     (isolated_project / "modify_smoke.py").write_text(
@@ -5594,7 +5611,10 @@ def test_gateway_repairs_natural_modify_semantic_failure_and_commits(
         encoding="utf-8",
     )
 
-    agent = DevAgent(str(isolated_project))
+    agent = DevAgent(
+        str(isolated_project),
+        ai_adapter=MockAdapter(),
+    )
     gateway = DevAgentGateway(
         agent,
         str(isolated_project),
