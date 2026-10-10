@@ -515,8 +515,8 @@ class TransactionFlow:
             rollback_error=rollback_error,
         )
 
-        self.transactions.persist_manifest(transaction)
         repair_state.persist(transaction)
+        self.transactions.persist_manifest(transaction)
 
         extra, attempts = self._build_rollback_extra(
             transaction=transaction,

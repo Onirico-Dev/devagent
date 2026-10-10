@@ -1210,3 +1210,20 @@ def test_restore_failure_propagates_original_error_without_rollback():
         )
 
     assert rollback_calls == []
+
+
+def test_rollback_manifest_contains_final_repair_state():
+    ctx = make_flow()
+
+    ctx.flow.rollback_transaction(
+        approval_id="approval-1",
+        transaction=ctx.transaction,
+        repair_state=ctx.repair_state,
+        error="original failure",
+    )
+
+    assert ctx.transactions.persisted
+    assert (
+        ctx.transactions.persisted[-1].repair_state["status"]
+        == "rolled_back"
+    )
