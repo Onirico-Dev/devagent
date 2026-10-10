@@ -683,6 +683,31 @@ def test_approve_locked_begin_failure_happens_before_supervisor_approval():
     assert ctx.supervisor.approved == []
 
 
+
+def test_approve_locked_propagates_supervisor_approval_failure():
+    ctx = make_flow()
+
+    def fail_approval(approval_id):
+        raise RuntimeError("APPROVAL_FAILURE")
+
+    ctx.supervisor.approve = fail_approval
+    rollback_calls = []
+
+    def rollback_fn(**kwargs):
+        rollback_calls.append(kwargs)
+        return {"status": kwargs["status"], "success": False}
+
+    with pytest.raises(RuntimeError, match="APPROVAL_FAILURE"):
+        ctx.flow.approve_locked(
+            "approval-1",
+            commit_fn=lambda **kwargs: None,
+            rollback_fn=rollback_fn,
+        )
+
+    assert rollback_calls == []
+
+
+
 def test_approve_locked_rolls_back_unexpected_exception():
     ctx = make_flow()
 
@@ -1073,3 +1098,91 @@ def test_handle_transaction_exception_raises_when_commit_rollback_fails():
         )
 
     assert exc_info.value.__cause__ is original_error
+
+def test_approve_locked_rolls_back_when_repair_state_persist_fails():
+    ctx = make_flow()
+    rollback_calls = []
+
+    class BrokenRepairState:
+        def persist(self, transaction):
+            raise RuntimeError("REPAIR_STATE_PERSIST_FAILURE")
+
+    ctx.flow._restore_repair_state = (
+        lambda transaction: BrokenRepairState()
+    )
+
+    def rollback_fn(**kwargs):
+        rollback_calls.append(kwargs)
+        return {
+            "status": kwargs["status"],
+            "success": False,
+            "transaction_id": kwargs["transaction"].transaction_id,
+        }
+
+    with pytest.raises(
+        RuntimeError,
+        match="REPAIR_STATE_PERSIST_FAILURE",
+    ):
+        ctx.flow.approve_locked(
+            "approval-1",
+            commit_fn=lambda **kwargs: None,
+            rollback_fn=rollback_fn,
+        )
+
+    assert len(rollback_calls) == 1
+    assert rollback_calls[0]["approval_id"] == "approval-1"
+    assert rollback_calls[0]["transaction"] is ctx.transaction
+    assert (
+        rollback_calls[0]["status"]
+        == TaskHistoryStatus.ROLLED_BACK.value
+    )
+
+
+
+def test_approve_locked_propagates_repair_state_restore_failure():
+    ctx = make_flow()
+
+    def fail_restore(transaction):
+        raise RuntimeError("REPAIR_STATE_RESTORE_FAILURE")
+
+    ctx.flow._restore_repair_state = fail_restore
+    rollback_calls = []
+
+    def rollback_fn(**kwargs):
+        rollback_calls.append(kwargs)
+        return {"status": kwargs["status"], "success": False}
+
+    with pytest.raises(RuntimeError, match="REPAIR_STATE_RESTORE_FAILURE"):
+        ctx.flow.approve_locked(
+            "approval-1",
+            commit_fn=lambda **kwargs: None,
+            rollback_fn=rollback_fn,
+        )
+
+    assert rollback_calls == []
+
+def test_restore_failure_propagates_original_error_without_rollback():
+    ctx = make_flow()
+
+    def fail_restore(transaction):
+        raise RuntimeError("REPAIR_STATE_RESTORE_FAILURE")
+
+    ctx.flow._restore_repair_state = fail_restore
+    rollback_calls = []
+
+    def fail_rollback(**kwargs):
+        rollback_calls.append(kwargs)
+        return {
+            "status": "failed",
+            "success": False,
+            "rollback_error": "ROLLBACK_SECONDARY_FAILURE",
+        }
+
+    with pytest.raises(RuntimeError, match="REPAIR_STATE_RESTORE_FAILURE"):
+        ctx.flow.approve_locked(
+            "approval-1",
+            commit_fn=lambda **kwargs: None,
+            rollback_fn=fail_rollback,
+        )
+
+    assert rollback_calls == []

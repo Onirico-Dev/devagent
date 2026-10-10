@@ -100,16 +100,28 @@ class TransactionFlow:
             transaction
         )
 
+        repair_state = RepairCycleState(
+            transaction_id=transaction.transaction_id,
+        )
+
         if self._restore_repair_state is not None:
             repair_state = self._restore_repair_state(transaction)
         else:
             repair_state = self.repair_flow.restore_state(transaction)
 
-        repair_state.persist(transaction)
-
-        self.repair_controller.start(
-            transaction.transaction_id
-        )
+        try:
+            repair_state.persist(transaction)
+            self.repair_controller.start(
+                transaction.transaction_id
+            )
+        except Exception as error:
+            return self._handle_transaction_exception(
+                error=error,
+                approval_id=approval_id,
+                transaction=transaction,
+                repair_state=repair_state,
+                rollback_fn=rollback_fn,
+            )
 
         self.supervisor.approve(
             approval_id
