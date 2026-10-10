@@ -442,6 +442,30 @@ def test_rollback_transaction_success():
     assert ctx.controller.reset_calls == ["tx-1"]
 
 
+
+def test_rollback_manifest_persistence_failure_propagates():
+    ctx = make_flow()
+
+    def fail_persist_manifest(transaction):
+        raise RuntimeError("MANIFEST_PERSISTENCE_FAILURE")
+
+    ctx.transactions.persist_manifest = fail_persist_manifest
+
+    with pytest.raises(
+        RuntimeError,
+        match="MANIFEST_PERSISTENCE_FAILURE",
+    ):
+        ctx.flow.rollback_transaction(
+            approval_id="approval-1",
+            transaction=ctx.transaction,
+            repair_state=ctx.repair_state,
+            error="original failure",
+        )
+
+    assert ctx.transactions.rollback_calls == [ctx.transaction]
+    assert ctx.repair_state.status == "rolled_back"
+    assert ctx.controller.reset_calls == []
+
 def test_rollback_transaction_failure():
     ctx = make_flow()
 
