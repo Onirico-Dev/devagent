@@ -4057,3 +4057,53 @@ def test_record_created_identity_ignores_missing_file(tmp_path):
     manager.record_created_identity(transaction, "nao-existe.py")
 
     assert transaction.metadata.get("created_identity", {}) == {}
+
+
+def test_recovery_error_manifest_persistence_failure_releases_lock(
+    tmp_path, monkeypatch
+):
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Transaction, TransactionStatus
+
+    manager = TransactionManager(root=tmp_path)
+    transaction = Transaction(transaction_id="tx-recovery-persist-failure")
+    manager.begin(transaction)
+
+    original_rollback = manager.rollback
+    original_persist = manager.persist_manifest
+    calls = {"rollback": 0}
+
+    def fail_rollback_once(item):
+        calls["rollback"] += 1
+        if calls["rollback"] == 1:
+            raise RuntimeError("simulated rollback failure")
+        return original_rollback(item)
+
+    def fail_recovery_persist(item):
+        if item.metadata.get("recovery_error"):
+            raise OSError("simulated recovery manifest failure")
+        return original_persist(item)
+
+    monkeypatch.setattr(manager, "rollback", fail_rollback_once)
+    monkeypatch.setattr(manager, "persist_manifest", fail_recovery_persist)
+
+    with pytest.raises(OSError, match="simulated recovery manifest failure"):
+        manager.recover_incomplete_transactions()
+
+    persisted = manager.load_manifest(transaction.transaction_id)
+    assert persisted.status in (
+        TransactionStatus.EXECUTING,
+        TransactionStatus.TESTING,
+    )
+    assert "recovery_error" not in persisted.metadata
+
+    monkeypatch.setattr(manager, "persist_manifest", original_persist)
+
+    recovered = manager.recover_incomplete_transactions()
+
+    assert len(recovered) == 1
+    assert recovered[0].status == TransactionStatus.ROLLED_BACK
+    assert calls["rollback"] == 2
+    assert manager.load_manifest(transaction.transaction_id).status == (
+        TransactionStatus.ROLLED_BACK
+    )
