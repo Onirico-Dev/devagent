@@ -158,15 +158,28 @@ class DevAgentGateway:
 
     def _finalize_recovered_repair_states(self, transactions):
         for transaction in transactions:
-            if transaction.status != TransactionStatus.COMMITTED:
-                continue
-
             repair_state_data = getattr(transaction, "repair_state", None)
             if not isinstance(repair_state_data, dict) or not repair_state_data:
                 continue
 
+            if transaction.status not in {
+                TransactionStatus.COMMITTED,
+                TransactionStatus.ROLLED_BACK,
+                TransactionStatus.FAILED,
+            }:
+                continue
+
             state = RepairCycleState.restore(transaction)
-            state.mark_committed()
+
+            if transaction.status == TransactionStatus.COMMITTED:
+                state.mark_committed()
+            elif transaction.status == TransactionStatus.ROLLED_BACK:
+                state.mark_rolled_back()
+            else:
+                state.mark_failed(
+                    transaction.metadata.get("recovery_error", "")
+                )
+
             state.persist(transaction)
             self.transactions.persist_manifest(transaction)
 

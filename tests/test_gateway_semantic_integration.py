@@ -1624,6 +1624,7 @@ def test_gateway_recovers_testing_transaction_after_restart(tmp_path):
         TransactionStatus.TESTING,
     )
     repair_state.persist(transaction)
+    gateway.transactions.persist_manifest(transaction)
 
     approval_id = "testing-restart-approval"
     gateway.history.create(
@@ -1659,6 +1660,122 @@ def test_gateway_recovers_testing_transaction_after_restart(tmp_path):
     history_task = restarted_gateway.history.get(approval_id)
     assert history_task["status"] == TaskHistoryStatus.ROLLED_BACK.value
     assert history_task["transaction_id"] == transaction.transaction_id
+    assert recovered.repair_state["status"] == "rolled_back"
+    assert recovered.metadata["repair_cycle"]["status"] == "rolled_back"
+    assert history_task["repair_state"]["status"] == "rolled_back"
+    assert history_task["repair_cycle"]["status"] == "rolled_back"
+
+
+
+def test_gateway_marks_repair_state_failed_when_recovery_rollback_fails(
+    tmp_path, monkeypatch
+):
+    import subprocess
+
+    from core.engine.repair_cycle_state import RepairCycleState
+    from core.gateway import DevAgentGateway
+    from core.memory.task_history import TaskHistoryStatus
+    from core.schemas.models import (
+        Change,
+        ChangeType,
+        Transaction,
+        TransactionStatus,
+    )
+    from core.executor.transaction_manager import TransactionManager
+
+    target = tmp_path / "recovery-failure.py"
+    target.write_text('VALUE = "original"\\n', encoding="utf-8")
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "add", "."],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "test: initial recovery fixture"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+
+    gateway = DevAgentGateway(None, root=tmp_path)
+    transaction = Transaction(
+        transaction_id="recovery-rollback-failure",
+        changes=[
+            Change(
+                change_type=ChangeType.MODIFY,
+                path="recovery-failure.py",
+                content='VALUE = "changed"\\n',
+                reason="Testar falha de rollback durante recuperação",
+            )
+        ],
+        metadata={"approval_id": "recovery-rollback-failure-approval"},
+    )
+    transaction = gateway.transactions.begin(transaction)
+    for change in transaction.changes:
+        gateway.security.validate_path(change.path)
+        gateway.transactions.backup_file(transaction, change.path)
+    gateway.executor.execute(transaction)
+
+    state = RepairCycleState(transaction_id=transaction.transaction_id)
+    state.mark_testing()
+    gateway.transactions.transition(transaction, TransactionStatus.TESTING)
+    state.persist(transaction)
+    gateway.transactions.persist_manifest(transaction)
+
+    approval_id = "recovery-rollback-failure-approval"
+    gateway.history.create(
+        approval_id=approval_id,
+        instruction="Testar falha de rollback durante recuperação",
+        plan={"instruction": "Testar falha de rollback durante recuperação"},
+    )
+    gateway.history.update(
+        approval_id,
+        status=TaskHistoryStatus.TESTING.value,
+        transaction_id=transaction.transaction_id,
+    )
+
+    def fail_rollback(self, current):
+        raise OSError("rollback de recuperação falhou")
+
+    monkeypatch.setattr(TransactionManager, "rollback", fail_rollback)
+
+    restarted_gateway = DevAgentGateway(None, root=tmp_path)
+    recovered = restarted_gateway.transactions.load_manifest(
+        transaction.transaction_id
+    )
+    history_task = restarted_gateway.history.get(approval_id)
+
+    assert recovered.status == TransactionStatus.FAILED
+    assert recovered.repair_state["status"] == "failed"
+    assert recovered.repair_state["last_error"] == (
+        "rollback de recuperação falhou"
+    )
+    assert recovered.metadata["repair_cycle"]["status"] == "failed"
+    assert history_task["status"] == TaskHistoryStatus.FAILED.value
+    assert history_task["repair_state"]["status"] == "failed"
+    assert history_task["repair_state"]["last_error"] == (
+        "rollback de recuperação falhou"
+    )
 
 def test_gateway_recovers_transaction_started_before_supervisor_approval_after_restart(tmp_path, monkeypatch):
     import subprocess
