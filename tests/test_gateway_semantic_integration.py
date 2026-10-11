@@ -2717,3 +2717,75 @@ def test_gateway_startup_reconciliation_is_idempotent_for_terminal_transaction(
         )
     )
     assert persisted[approval_id] == first
+
+
+def test_gateway_retries_reconciliation_after_task_history_persistence_failure(
+    tmp_path, monkeypatch
+):
+    import json
+
+    from core.executor.transaction_manager import TransactionManager
+    from core.gateway import DevAgentGateway
+    from core.memory.persistent_store import PersistentStore
+    from core.memory.task_history import TaskHistory, TaskHistoryStatus
+    from core.schemas.models import Transaction, TransactionStatus
+
+    approval_id = "approval-reconciliation-persistence"
+    transaction_id = "tx-reconciliation-persistence"
+    tasks_path = tmp_path / "transactions" / "tasks.json"
+
+    history = TaskHistory(tasks_path)
+    history.create(
+        approval_id=approval_id,
+        instruction="teste de reconciliação",
+        plan={},
+    )
+
+    manager = TransactionManager(root=tmp_path)
+    transaction = Transaction(
+        transaction_id=transaction_id,
+        status=TransactionStatus.EXECUTING,
+        metadata={"approval_id": approval_id},
+    )
+    manager.begin(transaction)
+    manager.transition(transaction, TransactionStatus.ROLLED_BACK)
+    manager.persist_manifest(transaction)
+
+    history.update(
+        approval_id,
+        status=TaskHistoryStatus.TESTING.value,
+        transaction_id=transaction_id,
+    )
+
+    persisted_before_failure = tasks_path.read_bytes()
+    task_count_before_failure = len(
+        json.loads(persisted_before_failure.decode("utf-8"))
+    )
+
+    original_save = PersistentStore._save_unlocked
+
+    def fail_task_history_save(self, data):
+        if self.path.resolve() == tasks_path.resolve():
+            raise OSError("simulated tasks.json persistence failure")
+        return original_save(self, data)
+
+    monkeypatch.setattr(
+        PersistentStore, "_save_unlocked", fail_task_history_save
+    )
+
+    with pytest.raises(
+        OSError, match="simulated tasks.json persistence failure"
+    ):
+        DevAgentGateway(FakeAgent(), root=tmp_path)
+
+    assert tasks_path.read_bytes() == persisted_before_failure
+
+    monkeypatch.setattr(PersistentStore, "_save_unlocked", original_save)
+
+    restarted_gateway = DevAgentGateway(FakeAgent(), root=tmp_path)
+    recovered_task = restarted_gateway.history.get(approval_id)
+
+    assert recovered_task is not None
+    assert recovered_task["status"] == TaskHistoryStatus.ROLLED_BACK.value
+    assert recovered_task["transaction_id"] == transaction_id
+    assert len(restarted_gateway.history.list_all()) == task_count_before_failure

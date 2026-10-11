@@ -858,6 +858,44 @@ def test_approve_locked_uses_repair_state_fallback():
     assert result["status"] == "committed"
 
 
+def test_exception_during_testing_after_applied_change_rolls_back():
+    transaction = tx(
+        metadata={
+            "execution": {
+                "phase": "testing",
+                "changes_applied": 1,
+            }
+        }
+    )
+    flow, data = build(transaction=transaction)
+    transaction.status = TransactionStatus.TESTING
+
+    def fail_during_repair(**kwargs):
+        raise RuntimeError("REPAIR_FAILURE_DURING_TESTING")
+
+    data["repair"].run = fail_during_repair
+
+    result = flow._handle_transaction_exception(
+        error="REPAIR_FAILURE_DURING_TESTING",
+        approval_id="approval-1",
+        transaction=transaction,
+        repair_state=data["state"],
+        rollback_fn=flow.rollback_transaction,
+    )
+
+    assert result["status"] == TaskHistoryStatus.ROLLED_BACK.value
+    assert data["transactions"].rollbacks == [transaction]
+    history_updates = [
+        kwargs
+        for args, kwargs in data["updates"]
+        if args and args[0] == "approval-1"
+    ]
+    assert history_updates
+    assert history_updates[-1]["status"] == (
+        TaskHistoryStatus.ROLLED_BACK.value
+    )
+
+
 def test_approve_locked_handles_execution_exception():
     flow, data = build(executor_error=ValueError("executor"))
 

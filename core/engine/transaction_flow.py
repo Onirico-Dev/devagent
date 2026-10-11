@@ -639,10 +639,7 @@ class TransactionFlow:
 
         has_execution_marker = bool(execution)
 
-        partial_execution = (
-            execution.get("phase") == "executing"
-            and execution.get("changes_applied", 0) > 0
-        )
+        partial_execution = execution.get("changes_applied", 0) > 0
 
         # Compatibilidade com transações artificiais/legadas que já
         # chegam em EXECUTING sem o marcador de execução. O fluxo real

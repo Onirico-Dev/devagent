@@ -4588,7 +4588,7 @@ def test_full_task_flow_with_invalid_initial_test_result_rolls_back(
         )
 
         assert status == 200
-        assert result["status"] == "failed"
+        assert result["status"] == "rolled_back"
         assert result["success"] is False
         assert result["transaction_id"]
         assert "tests" not in result or result["tests"] is None
@@ -4602,7 +4602,7 @@ def test_full_task_flow_with_invalid_initial_test_result_rolls_back(
         )
 
         assert status == 200
-        assert final_task["status"] == "failed"
+        assert final_task["status"] == "rolled_back"
 
     finally:
         server.shutdown()

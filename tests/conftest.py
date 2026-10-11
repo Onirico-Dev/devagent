@@ -36,3 +36,8 @@ def isolated_project(tmp_path):
     )
 
     return root
+
+@pytest.fixture(autouse=True)
+def default_ai_provider(monkeypatch):
+    """Mantém os testes isolados de provedores externos por padrão."""
+    monkeypatch.setenv("DEVAGENT_AI", "mock")

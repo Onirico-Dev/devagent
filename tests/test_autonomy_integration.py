@@ -324,7 +324,7 @@ def test_real_autonomy_cycle_failure_rolls_back(tmp_path):
         result.proposals[0].approval_id
     )
 
-    assert task["status"] == "failed"
+    assert task["status"] == "rolled_back"
 
     git_status = subprocess.run(
         [
@@ -1819,7 +1819,7 @@ def test_real_transaction_feedback_second_failure_creates_second_correction(tmp_
 
     first_execution = loop.approve(first_approval_id)
 
-    assert first_execution["status"] == "failed"
+    assert first_execution["status"] == "rolled_back"
 
     observations = observation_store.load()
     transaction_feedback = [
@@ -1836,7 +1836,7 @@ def test_real_transaction_feedback_second_failure_creates_second_correction(tmp_
         first_execution["transaction_id"]
     )
     assert execution_feedback.metadata["approval_id"] == first_approval_id
-    assert execution_feedback.metadata["status"] == "failed"
+    assert execution_feedback.metadata["status"] == "rolled_back"
 
     second_result = worker.run_once()
 
