@@ -2003,6 +2003,17 @@ def test_gateway_handles_crash_after_git_commit_before_final_persistence(
         == TaskHistoryStatus.COMMITTED.value
     )
 
+    recovered_transaction = restarted_gateway.transactions.load_manifest(
+        recovered_history["transaction_id"]
+    )
+    assert recovered_transaction.repair_state["status"] == "committed"
+    assert (
+        recovered_transaction.metadata["repair_cycle"]["status"]
+        == "committed"
+    )
+    assert recovered_history["repair_state"]["status"] == "committed"
+    assert recovered_history["repair_cycle"]["status"] == "committed"
+
 def test_gateway_recovers_testing_transaction_after_tests_run_crash(
     tmp_path,
     monkeypatch,

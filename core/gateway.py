@@ -104,6 +104,7 @@ class DevAgentGateway:
                 commit_detector=self.git.find_transaction_commit,
             )
 
+        self._finalize_recovered_repair_states(recovered_transactions)
         terminal_transactions = self.transactions.list_terminal_transactions()
 
         self.recovery_reconciler.reconcile(
@@ -154,6 +155,20 @@ class DevAgentGateway:
                 thread_lock,
                 process_lock,
             )
+
+    def _finalize_recovered_repair_states(self, transactions):
+        for transaction in transactions:
+            if transaction.status != TransactionStatus.COMMITTED:
+                continue
+
+            repair_state_data = getattr(transaction, "repair_state", None)
+            if not isinstance(repair_state_data, dict) or not repair_state_data:
+                continue
+
+            state = RepairCycleState.restore(transaction)
+            state.mark_committed()
+            state.persist(transaction)
+            self.transactions.persist_manifest(transaction)
 
     def _reconcile_recovered_transactions(self, transactions):
         return self.recovery_reconciler.reconcile(transactions)
