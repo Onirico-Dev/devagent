@@ -741,3 +741,31 @@ def test_task_history_rejects_persisted_task_missing_required_field(
     history = TaskHistory(path)
 
     assert history.tasks == {}
+
+
+def test_task_history_reads_shared_store_across_instances(tmp_path):
+    from core.memory.task_history import TaskHistory, TaskHistoryStatus
+
+    path = tmp_path / "tasks.json"
+    first = TaskHistory(path)
+    second = TaskHistory(path)
+
+    created = first.create(
+        approval_id="shared-approval",
+        instruction="teste de sincronização",
+        plan={},
+    )
+
+    second.refresh()
+    assert second.get("shared-approval") == created
+
+    second.update(
+        "shared-approval",
+        status=TaskHistoryStatus.COMMITTED.value,
+        transaction_id="shared-transaction",
+    )
+
+    first.refresh()
+    assert first.get("shared-approval")["status"] == "committed"
+    assert first.list_pending() == []
+    assert first.list_all()[0]["transaction_id"] == "shared-transaction"

@@ -14,6 +14,9 @@ class RecoveryReconciler:
         self.history = history
 
     def reconcile(self, transactions):
+        refresh = getattr(self.history, "refresh", None)
+        if callable(refresh):
+            refresh()
         reconciled = set()
 
         for transaction in transactions:

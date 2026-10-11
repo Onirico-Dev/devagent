@@ -295,6 +295,10 @@ class TaskHistory:
 
         return dict(updated_tasks[task_id])
 
+    def refresh(self):
+        """Atualiza o cache a partir do estado persistido."""
+        self._load()
+
     def get(self, task_id):
         return self.tasks.get(str(task_id))
 

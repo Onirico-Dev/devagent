@@ -284,3 +284,30 @@ def test_reconcile_is_idempotent_across_repeated_calls():
             },
         ),
     ]
+
+
+def test_reconcile_refreshes_stale_task_history_instance(tmp_path):
+    from core.memory.task_history import TaskHistory
+
+    storage_path = tmp_path / "tasks.json"
+    stale_history = TaskHistory(storage_path)
+    writer_history = TaskHistory(storage_path)
+
+    writer_history.create(
+        approval_id="approval-cross-instance",
+        instruction="reconciliar tarefa",
+        plan={},
+    )
+
+    transaction = FakeTransaction(
+        "tx-cross-instance",
+        TaskHistoryStatus.COMMITTED.value,
+        {"approval_id": "approval-cross-instance"},
+    )
+
+    RecoveryReconciler(stale_history).reconcile([transaction])
+
+    stale_history.refresh()
+    task = stale_history.get("approval-cross-instance")
+    assert task["status"] == TaskHistoryStatus.COMMITTED.value
+    assert task["transaction_id"] == "tx-cross-instance"
