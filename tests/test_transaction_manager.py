@@ -4107,3 +4107,36 @@ def test_recovery_error_manifest_persistence_failure_releases_lock(
     assert manager.load_manifest(transaction.transaction_id).status == (
         TransactionStatus.ROLLED_BACK
     )
+
+
+def test_recovery_retries_after_commit_detector_failure(tmp_path):
+    import pytest
+
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Transaction, TransactionStatus
+
+    manager = TransactionManager(root=tmp_path)
+    transaction = Transaction(transaction_id="tx-detector-retry")
+    manager.begin(transaction)
+
+    def fail_detector(_transaction_id):
+        raise RuntimeError("simulated git inspection failure")
+
+    with pytest.raises(RuntimeError, match="simulated git inspection failure"):
+        manager.recover_incomplete_transactions(
+            commit_detector=fail_detector,
+        )
+
+    persisted = manager.load_manifest("tx-detector-retry")
+    assert persisted.status == TransactionStatus.EXECUTING
+    assert persisted.metadata.get("recovery") is not True
+
+    recovered = manager.recover_incomplete_transactions(
+        commit_detector=lambda _transaction_id: None,
+    )
+
+    assert len(recovered) == 1
+    assert recovered[0].status == TransactionStatus.ROLLED_BACK
+    assert manager.load_manifest(
+        "tx-detector-retry"
+    ).status == TransactionStatus.ROLLED_BACK
