@@ -3204,6 +3204,76 @@ def test_gateway_recovers_terminal_rollback_after_repair_state_persist_crash(
     assert history["repair_cycle"]["status"] == "rolled_back"
     assert restarted_gateway.transactions.list_recoverable_transactions() == []
 
+def test_gateway_retries_terminal_repair_finalization_after_manifest_persist_failure(
+    tmp_path, monkeypatch
+):
+    import pytest
+
+    from core.engine.repair_cycle_state import RepairCycleState
+    from core.executor.transaction_manager import TransactionManager
+    from core.gateway import DevAgentGateway
+    from core.schemas.models import Transaction, TransactionStatus
+
+    transaction_id = "tx-startup-manifest-finalization"
+    manager = TransactionManager(root=tmp_path)
+    transaction = Transaction(
+        transaction_id=transaction_id,
+        status=TransactionStatus.EXECUTING,
+        repair_state=RepairCycleState(
+            transaction_id=transaction_id,
+            status="pending",
+        ).to_dict(),
+        metadata={
+            "repair_cycle": {
+                "status": "pending",
+                "attempts": 0,
+                "max_attempts": 2,
+                "remaining": 2,
+                "last_action": "",
+                "last_error": "",
+            }
+        },
+    )
+    manager.begin(transaction)
+    manager.transition(transaction, TransactionStatus.ROLLED_BACK)
+    manager.persist_manifest(transaction)
+
+    original_persist = TransactionManager.persist_manifest
+    calls = []
+
+    def fail_once(self, current_transaction):
+        if (
+            current_transaction.transaction_id == transaction_id
+            and current_transaction.repair_state.get("status") == "rolled_back"
+            and not calls
+        ):
+            calls.append(transaction_id)
+            raise OSError("simulated terminal manifest persistence failure")
+        return original_persist(self, current_transaction)
+
+    monkeypatch.setattr(TransactionManager, "persist_manifest", fail_once)
+
+    with pytest.raises(
+        OSError,
+        match="simulated terminal manifest persistence failure",
+    ):
+        DevAgentGateway(FakeAgent(), root=tmp_path)
+
+    failed_manifest = manager.load_manifest(transaction_id)
+    assert failed_manifest.status == TransactionStatus.ROLLED_BACK
+    assert failed_manifest.repair_state["status"] == "pending"
+
+    restarted_gateway = DevAgentGateway(FakeAgent(), root=tmp_path)
+    recovered = next(
+        item
+        for item in restarted_gateway.transactions.list_terminal_transactions()
+        if item.transaction_id == transaction_id
+    )
+
+    assert recovered.repair_state["status"] == "rolled_back"
+    assert recovered.metadata["repair_cycle"]["status"] == "rolled_back"
+
+
 def test_gateway_retries_terminal_repair_finalization_after_startup_persist_failure(
     tmp_path, monkeypatch
 ):
