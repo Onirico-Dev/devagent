@@ -1,6 +1,6 @@
 from core.engine.repair_cycle_state import RepairCycleState
 from core.memory.task_history import TaskHistoryStatus
-from core.schemas.models import TestResult, TransactionStatus
+from core.schemas.models import ChangeType, TestResult, TransactionStatus
 from core.supervisor import ApprovalStatus
 from core.executor.git_manager import GitStatus
 
@@ -82,18 +82,19 @@ class TransactionFlow:
             approval_id
         )
 
-        instruction = request["plan"]["instruction"]
+        plan = request["plan"]
+        instruction = plan["instruction"]
+
+        transaction = self._build_transaction(plan)
+        self._validate_approved_transaction(transaction)
 
         if self.history.get(approval_id) is None:
             self.history.create(
                 approval_id=approval_id,
                 instruction=instruction,
-                plan=request["plan"],
+                plan=plan,
             )
 
-        transaction = self._build_transaction(
-            request["plan"]
-        )
         transaction.metadata["approval_id"] = approval_id
 
         transaction = self.transactions.begin(
@@ -559,6 +560,27 @@ class TransactionFlow:
         return self.agent.build_transaction_from_approved_plan(
             plan
         )
+
+    def _validate_approved_transaction(self, transaction):
+        for change in transaction.changes:
+            self.security.validate_path(change.path)
+
+            raw_change_type = getattr(
+                change.change_type,
+                "value",
+                change.change_type,
+            )
+            try:
+                change_type = ChangeType(raw_change_type)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Tipo de alteração não suportado: {raw_change_type}"
+                ) from exc
+
+            if change_type in (ChangeType.CREATE, ChangeType.MODIFY):
+                self.security.validate_content(
+                    getattr(change, "content", None)
+                )
 
     def _prepare_transaction(self, transaction):
         for change in transaction.changes:

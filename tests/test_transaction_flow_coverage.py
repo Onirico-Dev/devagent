@@ -104,9 +104,15 @@ class Transactions:
 class Security:
     def __init__(self):
         self.paths = []
+        self.contents = []
 
     def validate_path(self, path):
         self.paths.append(path)
+        return True
+
+    def validate_content(self, content):
+        self.contents.append(content)
+        return True
 
 
 class Executor:

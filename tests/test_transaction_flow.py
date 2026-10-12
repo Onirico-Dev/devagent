@@ -121,9 +121,19 @@ class FakeTransactions:
 class FakeSecurity:
     def __init__(self):
         self.paths = []
+        self.contents = []
+        self.reject_path = None
+        self.reject_content = None
 
     def validate_path(self, path):
         self.paths.append(path)
+        if path == self.reject_path:
+            raise PermissionError("Caminho bloqueado pelo teste.")
+
+    def validate_content(self, content):
+        self.contents.append(content)
+        if self.reject_content is not None and content == self.reject_content:
+            raise PermissionError("Conteúdo de alto risco não autorizado pelo teste.")
 
 
 class FakeExecutor:
@@ -686,6 +696,36 @@ def test_approve_locked_build_failure_happens_before_transaction_begin():
         )
 
     assert ctx.transactions.begin_calls == []
+    assert ctx.supervisor.approved == []
+
+
+@pytest.mark.parametrize(
+    ("path", "content", "reject_path", "reject_content"),
+    [
+        (".env", "print('ok')", ".env", None),
+        ("app.py", "import subprocess", None, "import subprocess"),
+    ],
+)
+def test_approve_locked_revalidates_persisted_plan_before_history_and_begin(
+    path, content, reject_path, reject_content
+):
+    ctx = make_flow()
+    change = ctx.transaction.changes[0]
+    change.path = path
+    change.content = content
+    ctx.security.reject_path = reject_path
+    ctx.security.reject_content = reject_content
+
+    with pytest.raises(PermissionError):
+        ctx.flow.approve_locked(
+            "approval-1",
+            commit_fn=lambda **kwargs: None,
+            rollback_fn=lambda **kwargs: None,
+        )
+
+    assert ctx.transactions.begin_calls == []
+    assert ctx.executor.calls == []
+    assert ctx.history.created == []
     assert ctx.supervisor.approved == []
 
 
