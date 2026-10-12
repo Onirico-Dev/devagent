@@ -2155,6 +2155,167 @@ def test_gateway_handles_crash_after_git_commit_before_final_persistence(
     assert recovered_history["repair_state"]["status"] == "committed"
     assert recovered_history["repair_cycle"]["status"] == "committed"
 
+
+def test_gateway_recovers_when_repair_state_persist_fails_after_git_commit(
+    tmp_path,
+    monkeypatch,
+):
+    import subprocess
+
+    from core.gateway import DevAgentGateway
+    from core.memory.task_history import TaskHistoryStatus
+    from core.engine.repair_cycle_state import RepairCycleState
+
+    (tmp_path / "example.py").write_text(
+        'def hello():\n'
+        '    return "hello"\n',
+        encoding="utf-8",
+    )
+
+    target = tmp_path / "version.py"
+    target.write_text(
+        "old\n",
+        encoding="utf-8",
+    )
+
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "add", "."],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "test: initial fixture"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+
+    gateway = DevAgentGateway(FakeAgent(), root=tmp_path)
+    monkeypatch.setattr(
+        gateway.tests,
+        "run_tests",
+        lambda tests: {
+            "success": True,
+            "returncode": 0,
+            "stdout": "",
+            "stderr": "",
+        },
+    )
+
+    task = gateway.create_task("alterar version.py")
+    approval_id = task["approval_id"]
+
+    original_persist = RepairCycleState.persist
+    crash_triggered = []
+
+    def persist_then_crash(state, transaction):
+        result = original_persist(state, transaction)
+        if state.status == "committed" and not crash_triggered:
+            crash_triggered.append(True)
+            raise SystemExit("CRASH_AFTER_REPAIR_STATE_PERSIST")
+        return result
+
+    monkeypatch.setattr(
+        RepairCycleState,
+        "persist",
+        persist_then_crash,
+    )
+
+    with pytest.raises(
+        SystemExit,
+        match="CRASH_AFTER_REPAIR_STATE_PERSIST",
+    ):
+        gateway.approve(approval_id)
+
+    assert (
+        target.read_text(encoding="utf-8")
+        != "old\n"
+    )
+
+    assert (
+        gateway.history.get(approval_id)["status"]
+        == TaskHistoryStatus.TESTING.value
+    )
+
+    restarted_gateway = DevAgentGateway(
+        FakeAgent(),
+        root=tmp_path,
+    )
+
+    assert (
+        target.read_text(encoding="utf-8")
+        != "old\n"
+    )
+
+    import subprocess
+
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    log = subprocess.run(
+        ["git", "log", "-1", "--pretty=%s"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    print(f"POST_RECOVERY_HEAD={head}")
+    print(f"POST_RECOVERY_LOG={log}")
+    print(f"POST_RECOVERY_STATUS={status!r}")
+
+    recovered_history = (
+        restarted_gateway.history.get(approval_id)
+    )
+    assert recovered_history is not None
+    assert (
+        recovered_history["status"]
+        == TaskHistoryStatus.COMMITTED.value
+    )
+
+    recovered_transaction = restarted_gateway.transactions.load_manifest(
+        recovered_history["transaction_id"]
+    )
+    assert recovered_transaction.repair_state["status"] == "committed"
+    assert (
+        recovered_transaction.metadata["repair_cycle"]["status"]
+        == "committed"
+    )
+    assert recovered_history["repair_state"]["status"] == "committed"
+    assert recovered_history["repair_cycle"]["status"] == "committed"
+    assert restarted_gateway.transactions.list_recoverable_transactions() == []
 def test_gateway_recovers_testing_transaction_after_tests_run_crash(
     tmp_path,
     monkeypatch,
