@@ -761,13 +761,33 @@ class MockAdapter(AIAdapter):
             flags=re.IGNORECASE | re.DOTALL,
         )
 
-        if not match:
-            return []
+        if match:
+            function_name = match.group(1)
+            parameters = match.group(2).strip()
+            module_path = match.group(3)
+            return_expression = match.group(4).strip()
+        else:
+            create_pattern = (
+                r"(?:crie|criar)\s+(?:um\s+)?arquivo\s+"
+                r"([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*\.py)"
+                r"\s+com\s+(?:uma\s+)?função\s+"
+                r"([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)"
+                r".*?retorne\s+(?:a\s+string\s+)?(.+?)"
+                r"(?:[.!]?\s+inclua\s+um\s+teste\s+pytest"
+                r"\s+para\s+essa\s+função[.!]?)?$"
+            )
+            create_match = re.search(
+                create_pattern,
+                instruction.strip(),
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            if not create_match:
+                return []
 
-        function_name = match.group(1)
-        parameters = match.group(2).strip()
-        module_path = match.group(3)
-        return_expression = match.group(4).strip()
+            module_path = create_match.group(1)
+            function_name = create_match.group(2)
+            parameters = create_match.group(3).strip()
+            return_expression = create_match.group(4).strip()
 
         # Remove pontuação residual introduzida antes da cláusula "e crie".
         return_expression = return_expression.rstrip(" ,.")
