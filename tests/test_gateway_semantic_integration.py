@@ -3102,3 +3102,104 @@ def test_gateway_retries_reconciliation_after_task_history_persistence_failure(
     assert recovered_task["status"] == TaskHistoryStatus.ROLLED_BACK.value
     assert recovered_task["transaction_id"] == transaction_id
     assert len(restarted_gateway.history.list_all()) == task_count_before_failure
+
+
+def test_gateway_recovers_terminal_rollback_after_repair_state_persist_crash(
+    tmp_path, monkeypatch
+):
+    import subprocess
+
+    import pytest
+
+    from core.engine.repair_cycle_state import RepairCycleState
+    from core.gateway import DevAgentGateway
+    from core.memory.task_history import TaskHistoryStatus
+    from core.schemas.models import TransactionStatus
+
+    target = tmp_path / "version.py"
+    target.write_text('VALUE = "old"\n', encoding="utf-8")
+    test_file = tmp_path / "test_version.py"
+    test_file.write_text(
+        "from version import VALUE\n\n"
+        "def test_version():\n"
+        '    assert VALUE == "expected"\n',
+        encoding="utf-8",
+    )
+
+    subprocess.run(
+        ["git", "init"], cwd=tmp_path, check=True, capture_output=True, text=True
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path, check=True, capture_output=True, text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=tmp_path, check=True, capture_output=True, text=True,
+    )
+    subprocess.run(
+        ["git", "add", "."], cwd=tmp_path, check=True, capture_output=True, text=True
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "initial"],
+        cwd=tmp_path, check=True, capture_output=True, text=True,
+    )
+
+    gateway = DevAgentGateway(FakeAgent(), root=tmp_path)
+    monkeypatch.setattr(
+        gateway.transaction_flow,
+        "_repair_cycle",
+        lambda **kwargs: {
+            "success": False,
+            "tests": {"success": False},
+            "repair": {"action": "failed"},
+            "error": "não corrigido",
+        },
+    )
+
+    original_persist = RepairCycleState.persist
+    crashed = False
+
+    def crash_before_terminal_repair_state_persist(state, transaction):
+        nonlocal crashed
+        if (
+            not crashed
+            and transaction.status == TransactionStatus.ROLLED_BACK
+        ):
+            crashed = True
+            raise SystemExit("CRASH_BEFORE_ROLLED_BACK_REPAIR_STATE_PERSIST")
+        return original_persist(state, transaction)
+
+    monkeypatch.setattr(
+        RepairCycleState, "persist", crash_before_terminal_repair_state_persist
+    )
+
+    task = gateway.create_task("alterar version.py")
+    approval_id = task["approval_id"]
+
+    with pytest.raises(
+        SystemExit, match="CRASH_BEFORE_ROLLED_BACK_REPAIR_STATE_PERSIST"
+    ):
+        gateway.approve(approval_id)
+
+    assert crashed
+    assert target.read_text(encoding="utf-8") == 'VALUE = "old"\n'
+
+    before_restart = gateway.history.get(approval_id)
+    transaction_id = before_restart["transaction_id"]
+    manifest = gateway.transactions.load_manifest(transaction_id)
+    assert manifest.status == TransactionStatus.ROLLED_BACK
+    assert manifest.repair_state["status"] != "rolled_back"
+
+    restarted_gateway = DevAgentGateway(FakeAgent(), root=tmp_path)
+
+    recovered = restarted_gateway.transactions.load_manifest(transaction_id)
+    history = restarted_gateway.history.get(approval_id)
+
+    assert recovered.status == TransactionStatus.ROLLED_BACK
+    assert recovered.repair_state["status"] == "rolled_back"
+    assert recovered.metadata["repair_cycle"]["status"] == "rolled_back"
+    assert history["status"] == TaskHistoryStatus.ROLLED_BACK.value
+    assert history["repair_state"]["status"] == "rolled_back"
+    assert history["repair_cycle"]["status"] == "rolled_back"
+    assert restarted_gateway.transactions.list_recoverable_transactions() == []
