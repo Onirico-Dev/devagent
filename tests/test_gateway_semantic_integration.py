@@ -1754,7 +1754,10 @@ def test_gateway_marks_repair_state_failed_when_recovery_rollback_fails(
         transaction_id=transaction.transaction_id,
     )
 
+    rollback_calls = []
+
     def fail_rollback(self, current):
+        rollback_calls.append(current.transaction_id)
         raise OSError("rollback de recuperação falhou")
 
     monkeypatch.setattr(TransactionManager, "rollback", fail_rollback)
@@ -1776,6 +1779,27 @@ def test_gateway_marks_repair_state_failed_when_recovery_rollback_fails(
     assert history_task["repair_state"]["last_error"] == (
         "rollback de recuperação falhou"
     )
+
+    assert rollback_calls == [transaction.transaction_id]
+
+    # A segunda inicialização não deve repetir o rollback terminal.
+    second_gateway = DevAgentGateway(None, root=tmp_path)
+    recovered_again = second_gateway.transactions.load_manifest(
+        transaction.transaction_id
+    )
+    history_again = second_gateway.history.get(approval_id)
+
+    assert rollback_calls == [transaction.transaction_id]
+    assert recovered_again.status == TransactionStatus.FAILED
+    assert recovered_again.repair_state["last_error"] == (
+        "rollback de recuperação falhou"
+    )
+    assert recovered_again.metadata["repair_cycle"]["status"] == "failed"
+    assert history_again["status"] == TaskHistoryStatus.FAILED.value
+    assert history_again["repair_state"]["last_error"] == (
+        "rollback de recuperação falhou"
+    )
+    assert second_gateway.transactions.list_recoverable_transactions() == []
 
 def test_gateway_recovers_transaction_started_before_supervisor_approval_after_restart(tmp_path, monkeypatch):
     import subprocess
