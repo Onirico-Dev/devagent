@@ -361,3 +361,38 @@ def test_ask_ai_delegates_to_adapter(tmp_path):
     agent = DevAgent(root=tmp_path, ai_adapter=FakeAI())
 
     assert agent.ask_ai("hello") == "response:hello"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("objective", 42),
+        ("objective", ""),
+        ("tests", "tests/test_agent.py"),
+        ("tests", [42]),
+        ("tests", [" "]),
+        ("risks", "risco"),
+        ("risks", [42]),
+    ],
+)
+def test_build_transaction_rejects_invalid_approved_metadata(
+    tmp_path, field, value
+):
+    agent = DevAgent(root=tmp_path)
+    plan = {
+        "instruction": "criar app.py",
+        "changes": [
+            {
+                "change_type": "create",
+                "path": "app.py",
+                "content": "print('ok')",
+                "reason": "teste",
+            }
+        ],
+        "tests": [],
+        "risks": [],
+    }
+    plan[field] = value
+
+    with pytest.raises(ValueError, match="inválid"):
+        agent.build_transaction_from_approved_plan(plan)

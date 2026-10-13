@@ -100,6 +100,25 @@ class DevAgent:
                 "Plano aprovado não possui alterações."
             )
 
+        objective = plan.get("objective")
+        if objective is not None and (
+            not isinstance(objective, str) or not objective.strip()
+        ):
+            raise ValueError("Objetivo inválido no plano aprovado.")
+
+        declared_tests = plan.get("tests", [])
+        if not isinstance(declared_tests, list) or any(
+            not isinstance(path, str) or not path.strip()
+            for path in declared_tests
+        ):
+            raise ValueError("Lista de testes inválida no plano aprovado.")
+
+        risks = plan.get("risks", [])
+        if not isinstance(risks, list) or any(
+            not isinstance(risk, str) for risk in risks
+        ):
+            raise ValueError("Lista de riscos inválida no plano aprovado.")
+
         converted_changes = []
 
         for change in changes:
