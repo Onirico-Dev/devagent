@@ -28,4 +28,4 @@ py-modules = ["agent", "api", "cli", "main"]
 include = ["core*"]
 
 [tool.pytest.ini_options]
-norecursedirs = ["transactions"]
+norecursedirs = ["transactions", "ubuntu-fs"]
