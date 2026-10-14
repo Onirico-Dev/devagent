@@ -1267,3 +1267,23 @@ def test_rollback_manifest_contains_final_repair_state():
         ctx.transactions.persisted[-1].repair_state["status"]
         == "rolled_back"
     )
+
+
+
+def test_validate_approved_transaction_rejects_unsupported_change_type():
+    ctx = make_flow(
+        transaction=make_transaction(
+            changes=[
+                SimpleNamespace(
+                    path="app.py",
+                    change_type=SimpleNamespace(value="invalid"),
+                )
+            ]
+        )
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Tipo de alteração não suportado: invalid",
+    ):
+        ctx.flow._validate_approved_transaction(ctx.transaction)

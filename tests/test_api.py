@@ -5643,3 +5643,183 @@ def test_gateway_repairs_natural_modify_semantic_failure_and_commits(
     assert "def modulo(a, b):\n    return a % b" in content
     assert content.count("def somar(a, b):") == 1
     assert content.count("return a + b") == 1
+
+
+def test_finalize_recovered_repair_states_skips_non_terminal_transaction(
+    tmp_path,
+    monkeypatch,
+):
+    from agent import DevAgent
+    from core.gateway import DevAgentGateway
+    from core.engine.repair_cycle_state import RepairCycleState
+    from core.schemas.models import Transaction, TransactionStatus
+
+    gateway = DevAgentGateway(DevAgent(str(tmp_path)), root=str(tmp_path))
+    transaction = Transaction(
+        transaction_id="tx-repair-executing",
+        status=TransactionStatus.EXECUTING,
+    )
+    state = RepairCycleState(
+        transaction_id=transaction.transaction_id,
+        max_attempts=2,
+    )
+    state.persist(transaction)
+
+    persist_calls = []
+    monkeypatch.setattr(
+        gateway.transactions,
+        "persist_manifest",
+        lambda item: persist_calls.append(item),
+    )
+
+    gateway._finalize_recovered_repair_states([transaction])
+
+    assert transaction.status == TransactionStatus.EXECUTING
+    assert transaction.repair_state["status"] == state.status
+    assert persist_calls == []
+
+
+def test_gateway_recovery_guard_releases_locks_after_exception(
+    tmp_path,
+    monkeypatch,
+):
+    from types import SimpleNamespace
+    from agent import DevAgent
+    from core.gateway import DevAgentGateway
+
+    gateway = DevAgentGateway(DevAgent(str(tmp_path)), root=str(tmp_path))
+    thread_lock = object()
+    process_lock = object()
+    acquired = []
+    released = []
+
+    def fake_acquire(approval_id):
+        acquired.append(approval_id)
+        return thread_lock, process_lock
+
+    def fake_release(thread, process):
+        released.append((thread, process))
+
+    monkeypatch.setattr(
+        gateway.approval_coordinator,
+        "acquire",
+        fake_acquire,
+    )
+    monkeypatch.setattr(
+        gateway.approval_coordinator,
+        "release",
+        fake_release,
+    )
+
+    transaction = SimpleNamespace(
+        metadata={"approval_id": "approval-recovery-guard"}
+    )
+
+    with pytest.raises(RuntimeError, match="simulated recovery failure"):
+        with gateway._recovery_guard(transaction):
+            raise RuntimeError("simulated recovery failure")
+
+    assert acquired == ["approval-recovery-guard"]
+    assert released == [(thread_lock, process_lock)]
+
+
+def test_gateway_recovery_guard_without_approval_id_skips_locks(
+    tmp_path,
+    monkeypatch,
+):
+    from types import SimpleNamespace
+    from agent import DevAgent
+    from core.gateway import DevAgentGateway
+
+    gateway = DevAgentGateway(DevAgent(str(tmp_path)), root=str(tmp_path))
+
+    def unexpected_call(*args, **kwargs):
+        raise AssertionError("Locks não deveriam ser adquiridos")
+
+    monkeypatch.setattr(
+        gateway.approval_coordinator,
+        "acquire",
+        unexpected_call,
+    )
+
+    transaction = SimpleNamespace(metadata={})
+
+    with gateway._recovery_guard(transaction):
+        assert True
+
+
+def test_finalize_recovered_failed_transaction_preserves_recovery_error(
+    tmp_path,
+    monkeypatch,
+):
+    from agent import DevAgent
+    from core.gateway import DevAgentGateway
+    from core.engine.repair_cycle_state import RepairCycleState
+    from core.schemas.models import Transaction, TransactionStatus
+
+    gateway = DevAgentGateway(DevAgent(str(tmp_path)), root=str(tmp_path))
+    transaction = Transaction(
+        transaction_id="tx-repair-failed",
+        status=TransactionStatus.FAILED,
+        metadata={"recovery_error": "simulated recovery failure"},
+    )
+    state = RepairCycleState(
+        transaction_id=transaction.transaction_id,
+        max_attempts=2,
+    )
+    state.persist(transaction)
+
+    persisted = []
+    monkeypatch.setattr(
+        gateway.transactions,
+        "persist_manifest",
+        lambda item: persisted.append(item),
+    )
+
+    gateway._finalize_recovered_repair_states([transaction])
+
+    assert transaction.repair_state["status"] == "failed"
+    assert transaction.repair_state["last_error"] == "simulated recovery failure"
+    assert persisted == [transaction]
+
+
+def test_gateway_list_pending_delegates_to_history(tmp_path, monkeypatch):
+    from agent import DevAgent
+    from core.gateway import DevAgentGateway
+
+    gateway = DevAgentGateway(DevAgent(str(tmp_path)), root=str(tmp_path))
+    expected = [{"approval_id": "approval-pending", "status": "pending"}]
+    monkeypatch.setattr(gateway.history, "list_pending", lambda: expected)
+
+    assert gateway.list_pending() == expected
+
+
+def test_gateway_create_task_passes_nonempty_feedback_context(
+    tmp_path,
+    monkeypatch,
+):
+    from core.gateway import DevAgentGateway
+
+    context = {"previous_error": "ImportError", "attempt": 2}
+    calls = []
+    expected = {"status": "pending", "approval_id": "approval-context"}
+
+    class FakeAgent:
+        def process(self, instruction, **kwargs):
+            calls.append((instruction, kwargs))
+            return {"instruction": instruction, "changes": []}
+
+    gateway = DevAgentGateway(FakeAgent(), root=str(tmp_path))
+    monkeypatch.setattr(gateway.task_creator, "validate_plan", lambda plan: None)
+    monkeypatch.setattr(
+        gateway.task_creator,
+        "create_or_reuse",
+        lambda instruction, result: expected,
+    )
+
+    result = gateway.create_task("corrigir erro", context=context)
+
+    assert calls == [
+        ("corrigir erro", {"feedback_context": context})
+    ]
+    assert result == expected

@@ -1139,3 +1139,76 @@ def test_pipeline_collects_relevant_feedback_paths(tmp_path):
 
     assert plan.objective != ""
     assert len(plan.changes) == 1
+
+
+
+def test_pipeline_includes_existing_test_for_modified_python_file(tmp_path, monkeypatch):
+    (tmp_path / "app.py").write_text("print('original')")
+    (tmp_path / "test_app.py").write_text("def test_app(): pass")
+
+    pipeline = DevAgentPipeline(tmp_path)
+    captured = {}
+
+    def capture_context(*, relevant_paths):
+        captured["paths"] = relevant_paths
+        return None
+
+    monkeypatch.setattr(pipeline.context, "build", capture_context)
+    monkeypatch.setattr(
+        pipeline.planner, "create_plan",
+        lambda command: __import__(
+            "core.planner.planner", fromlist=["Planner"]
+        ).Planner().create_plan(command),
+    )
+    monkeypatch.setattr(
+        pipeline.validator, "validate_command_coherence",
+        lambda command, plan: None,
+    )
+    monkeypatch.setattr(
+        pipeline.validator, "validate_project_coherence",
+        lambda plan: None,
+    )
+    monkeypatch.setattr(pipeline.engine, "prepare", lambda plan: plan.changes)
+    monkeypatch.setattr(pipeline.memory, "add", lambda *args, **kwargs: None)
+
+    pipeline.process("Modifique app.py ajuste o arquivo")
+
+    assert "app.py" in captured["paths"]
+    assert "test_app.py" in captured["paths"]
+
+def test_pipeline_ignores_test_path_outside_project_root(tmp_path, monkeypatch):
+    from pathlib import Path
+    from core.pipeline import DevAgentPipeline
+
+    pipeline = DevAgentPipeline(tmp_path)
+    captured = {}
+
+    def capture_context(*, relevant_paths):
+        captured["paths"] = relevant_paths
+        return None
+
+    monkeypatch.setattr(pipeline.context, "build", capture_context)
+    monkeypatch.setattr(
+        pipeline.planner,
+        "create_plan",
+        lambda command: __import__(
+            "core.planner.planner", fromlist=["Planner"]
+        ).Planner().create_plan(command),
+    )
+    monkeypatch.setattr(
+        pipeline.validator, "validate_command_coherence",
+        lambda command, plan: None,
+    )
+    monkeypatch.setattr(
+        pipeline.validator, "validate_project_coherence",
+        lambda plan: None,
+    )
+    monkeypatch.setattr(pipeline.engine, "prepare", lambda plan: plan.changes)
+    monkeypatch.setattr(pipeline.memory, "add", lambda *args, **kwargs: None)
+
+    pipeline.process("Modifique /tmp/app.py ajuste o arquivo")
+
+    assert "/tmp/app.py" in captured["paths"]
+    assert not any(
+        Path(path).name == "test_app.py" for path in captured["paths"]
+    )
