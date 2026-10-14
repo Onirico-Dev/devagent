@@ -580,6 +580,29 @@ def test_worker_load_state_rejects_invalid_instruction():
         })
 
 
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        type("RateLimitError", (Exception,), {"status_code": 429})(
+            "request failed"
+        ),
+        type(
+            "ResponseRateLimitError",
+            (Exception,),
+            {
+                "response": type(
+                    "Response", (), {"status_code": 429}
+                )()
+            },
+        )("request failed"),
+    ],
+)
+def test_worker_recognizes_rate_limit_status_code(exc):
+    from core.worker import Worker
+
+    assert Worker._is_rate_limit_error(exc) is True
+
 def test_worker_load_state_rejects_invalid_metadata():
     import pytest
     from core.worker import Worker
