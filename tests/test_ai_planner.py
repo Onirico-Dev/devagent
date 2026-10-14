@@ -768,6 +768,29 @@ def test_preserve_modify_target_context_keeps_existing_corresponding_test():
     assert preserved.count("=== ARQUIVO:") == 2
 
 
+
+def test_preserve_modify_context_stops_corresponding_test_at_next_file():
+    planner = AIPlanner(None)
+    context = (
+        "=== CONTEXTO DO PROJETO ===\n"
+        "=== ARQUIVO: modify_smoke.py ===\n"
+        "def somar(a, b): return a + b\n"
+        "=== ARQUIVO: test_modify_smoke.py ===\n"
+        "def test_somar(): assert somar(2, 3) == 5\n"
+        "=== ARQUIVO: unrelated.py ===\n"
+        "SECRET_UNRELATED_CONTENT\n"
+    )
+
+    preserved = planner._preserve_modify_target_context(
+        "modifique modify_smoke.py adicionando uma função",
+        context,
+    )
+
+    assert "=== ARQUIVO: test_modify_smoke.py ===" in preserved
+    assert "def test_somar():" in preserved
+    assert "unrelated.py" not in preserved
+    assert "SECRET_UNRELATED_CONTENT" not in preserved
+
 def test_preserve_modify_target_context_does_not_invent_missing_test():
     planner = AIPlanner(None)
 
