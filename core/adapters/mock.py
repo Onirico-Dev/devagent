@@ -587,19 +587,6 @@ class MockAdapter(AIAdapter):
             )
         ]
 
-        # Testes gerados para módulos aninhados podem usar o prefixo
-        # "test_" no diretório raiz (ex.: test_core/...). Nesse caso,
-        # o caminho completo também representa um teste gerado.
-        for change in changes:
-            if (
-                isinstance(change, dict)
-                and isinstance(change.get("path"), str)
-                and change["path"].endswith(".py")
-                and change["path"].startswith("test_")
-                and change["path"] not in tests
-            ):
-                tests.append(change["path"])
-
         # MODIFY deve executar o teste correspondente quando ele já existe
         # no contexto do projeto. Não criar nem inferir testes inexistentes.
         if re.match(

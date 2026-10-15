@@ -347,3 +347,18 @@ def test_compound_create_appends_valid_changes():
     assert len(result) == 2
     assert result[0]["path"] == "primeiro.py"
     assert result[1]["path"] == "segundo.py"
+
+
+def test_build_function_pytest_changes_supports_alternate_create_syntax():
+    from core.adapters.mock import MockAdapter
+
+    changes = MockAdapter()._build_function_pytest_changes(
+        "crie arquivo math_ops.py com função somar(a, b) "
+        "que retorne a + b. inclua um teste pytest para essa função."
+    )
+
+    assert len(changes) == 2
+    assert changes[0]["path"] == "math_ops.py"
+    assert "def somar(a, b):" in changes[0]["content"]
+    assert changes[1]["path"] == "test_math_ops.py"
+    assert "somar(2, 3) == 5" in changes[1]["content"]
