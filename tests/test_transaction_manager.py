@@ -4212,3 +4212,79 @@ def test_recovery_retries_after_commit_detector_failure(tmp_path):
     assert manager.load_manifest(
         "tx-detector-retry"
     ).status == TransactionStatus.ROLLED_BACK
+
+def test_recovery_continues_after_failure_and_preserves_first_transaction(
+    tmp_path, monkeypatch,
+):
+    import pytest
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Transaction, TransactionStatus
+
+    manager = TransactionManager(root=tmp_path)
+    first = Transaction(transaction_id="tx-recovery-first-fails")
+    second = Transaction(transaction_id="tx-recovery-second-succeeds")
+    manager.begin(first)
+    manager.begin(second)
+
+    monkeypatch.setattr(
+        manager, "list_recoverable_transactions", lambda: [first, second]
+    )
+    original_recover = manager._recover_transaction
+    calls = []
+    failure = RuntimeError("first transaction recovery failed")
+
+    def recover_in_order(current, commit_detector):
+        calls.append(current.transaction_id)
+        if current.transaction_id == first.transaction_id:
+            raise failure
+        return original_recover(current, commit_detector)
+
+    monkeypatch.setattr(manager, "_recover_transaction", recover_in_order)
+
+    with pytest.raises(
+        RuntimeError, match="first transaction recovery failed"
+    ) as exc:
+        manager.recover_incomplete_transactions()
+
+    assert exc.value is failure
+    assert calls == [first.transaction_id, second.transaction_id]
+    persisted_first = manager.load_manifest(first.transaction_id)
+    persisted_second = manager.load_manifest(second.transaction_id)
+    assert persisted_first.status == TransactionStatus.EXECUTING
+    assert persisted_first.metadata.get("recovery") is not True
+    assert persisted_second.status == TransactionStatus.ROLLED_BACK
+
+
+def test_recovery_propagates_first_exception_after_all_attempts(
+    tmp_path, monkeypatch,
+):
+    import pytest
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Transaction
+
+    manager = TransactionManager(root=tmp_path)
+    first = Transaction(transaction_id="tx-recovery-error-one")
+    second = Transaction(transaction_id="tx-recovery-error-two")
+    manager.begin(first)
+    manager.begin(second)
+
+    monkeypatch.setattr(
+        manager, "list_recoverable_transactions", lambda: [first, second]
+    )
+    first_error = RuntimeError("first recovery exception")
+    second_error = ValueError("second recovery exception")
+    calls = []
+
+    def fail_each(current, _commit_detector):
+        calls.append(current.transaction_id)
+        if current.transaction_id == first.transaction_id:
+            raise first_error
+        raise second_error
+
+    monkeypatch.setattr(manager, "_recover_transaction", fail_each)
+
+    with pytest.raises(RuntimeError, match="first recovery exception") as exc:
+        manager.recover_incomplete_transactions()
+
+    assert exc.value is first_error
+    assert calls == [first.transaction_id, second.transaction_id]

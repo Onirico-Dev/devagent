@@ -372,21 +372,23 @@ class TransactionManager:
         return current
 
     def recover_incomplete_transactions(
-        self,
-        commit_detector=None,
-        recovery_guard=None,
+        self, commit_detector=None, recovery_guard=None
     ):
         recovered = []
+        first_error = None
+        first_traceback = None
+
+        def record_error(error):
+            nonlocal first_error, first_traceback
+            if first_error is None:
+                first_error = error
+                first_traceback = error.__traceback__
 
         for transaction in self.list_recoverable_transactions():
-            lock = self._recovery_lock(
-                transaction.transaction_id
-            )
+            lock = None
             try:
-                current = self.load_manifest(
-                    transaction.transaction_id
-                )
-
+                lock = self._recovery_lock(transaction.transaction_id)
+                current = self.load_manifest(transaction.transaction_id)
                 if current.status not in (
                     TransactionStatus.EXECUTING,
                     TransactionStatus.TESTING,
@@ -398,41 +400,42 @@ class TransactionManager:
                     if recovery_guard is not None
                     else None
                 )
-
                 if guard is not None:
                     with guard:
                         current = self.load_manifest(
                             transaction.transaction_id
                         )
-
                         if current.status not in (
                             TransactionStatus.EXECUTING,
                             TransactionStatus.TESTING,
                         ):
                             continue
-
                         recovered.append(
                             self._recover_transaction(
-                                current,
-                                commit_detector,
+                                current, commit_detector
                             )
                         )
                 else:
                     recovered.append(
-                        self._recover_transaction(
-                            current,
-                            commit_detector,
-                        )
+                        self._recover_transaction(current, commit_detector)
                     )
+            except Exception as error:
+                record_error(error)
             finally:
-                fcntl.flock(
-                    lock.fileno(),
-                    fcntl.LOCK_UN,
-                )
-                lock.close()
+                if lock is not None:
+                    try:
+                        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+                    except Exception as error:
+                        record_error(error)
+                    try:
+                        lock.close()
+                    except Exception as error:
+                        record_error(error)
+
+        if first_error is not None:
+            raise first_error.with_traceback(first_traceback)
 
         return recovered
-
     def _create_backup_directory(self, parent_fd, backup_name):
         try:
             try:
