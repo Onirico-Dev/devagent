@@ -340,8 +340,18 @@ class TransactionManager:
     def _recover_transaction(self, current, commit_detector):
         if commit_detector is not None:
             commit_result = commit_detector(current.transaction_id)
-
             if commit_result is not None:
+                valid_result = (
+                    isinstance(commit_result, dict)
+                    and commit_result.get("status") == "committed"
+                    and commit_result.get("transaction_id") == current.transaction_id
+                    and isinstance(commit_result.get("commit_hash"), str)
+                    and bool(commit_result["commit_hash"].strip())
+                )
+                if not valid_result:
+                    raise ValueError(
+                        "evidência de commit inválida durante recuperação"
+                    )
                 self.transition(current, TransactionStatus.COMMITTED)
                 current.metadata["recovery"] = True
                 current.metadata["recovery_git"] = dict(commit_result)

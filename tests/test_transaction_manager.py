@@ -3365,6 +3365,7 @@ def test_recover_incomplete_transactions_commits_when_commit_detector_finds_comm
     manager.begin(transaction)
 
     result = {
+        "status": "committed",
         "commit_hash": "abc123",
         "transaction_id": "tx-recovery-commit",
     }
@@ -3388,6 +3389,77 @@ def test_recover_incomplete_transactions_commits_when_commit_detector_finds_comm
     assert persisted.status == TransactionStatus.COMMITTED
     assert persisted.metadata["recovery_git"] == result
 
+
+def test_recovery_rejects_commit_detector_result_without_committed_status(tmp_path):
+    import pytest
+
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Transaction, TransactionStatus
+
+    manager = TransactionManager(tmp_path)
+    transaction = Transaction(transaction_id="tx-invalid-commit-evidence")
+    manager.begin(transaction)
+
+    result = {
+        "status": "error",
+        "transaction_id": transaction.transaction_id,
+        "commit_hash": None,
+    }
+
+    with pytest.raises(ValueError, match="evidência de commit inválida"):
+        manager.recover_incomplete_transactions(
+            commit_detector=lambda _transaction_id: result,
+        )
+
+    persisted = manager.load_manifest(transaction.transaction_id)
+    assert persisted.status == TransactionStatus.EXECUTING
+    assert persisted.metadata.get("recovery") is not True
+
+
+
+def test_recovery_rejects_commit_evidence_with_wrong_id_or_empty_hash(tmp_path):
+    import pytest
+
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Transaction, TransactionStatus
+
+    invalid_results = [
+        (
+            "wrong-id",
+            {
+                "status": "committed",
+                "transaction_id": "different-transaction",
+                "commit_hash": "abc123",
+            },
+        ),
+        (
+            "empty-hash",
+            {
+                "status": "committed",
+                "transaction_id": "tx-empty-hash",
+                "commit_hash": "   ",
+            },
+        ),
+    ]
+
+    for case_name, result in invalid_results:
+        root = tmp_path / case_name
+        root.mkdir()
+        manager = TransactionManager(root)
+        transaction_id = (
+            "tx-wrong-id" if case_name == "wrong-id" else "tx-empty-hash"
+        )
+        transaction = Transaction(transaction_id=transaction_id)
+        manager.begin(transaction)
+
+        with pytest.raises(ValueError, match="evidência de commit inválida"):
+            manager.recover_incomplete_transactions(
+                commit_detector=lambda _transaction_id, result=result: result,
+            )
+
+        persisted = manager.load_manifest(transaction_id)
+        assert persisted.status == TransactionStatus.EXECUTING
+        assert persisted.metadata.get("recovery") is not True
 
 def test_recover_incomplete_transactions_rolls_back_when_commit_detector_returns_none(
     tmp_path,
