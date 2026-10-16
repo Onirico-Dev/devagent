@@ -211,6 +211,7 @@ class DevAgentGateway:
             return None
 
     def list_pending(self):
+        self.history.refresh()
         return self.history.list_pending()
 
     # ------------------------------------------------------------------
@@ -393,10 +394,13 @@ class DevAgentGateway:
     # ------------------------------------------------------------------
 
     def list_tasks(self):
+        self.history.refresh()
         return self.history.list_all()
 
     def get_task(self, task_id):
+        self.history.refresh()
         return self.history.get(task_id)
 
     def latest_task(self):
+        self.history.refresh()
         return self.history.latest()

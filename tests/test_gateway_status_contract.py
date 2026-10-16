@@ -182,3 +182,49 @@ def test_gateway_create_task_does_not_reuse_non_pending_equivalent_proposal(
     pending = gateway.list_pending()
     assert len(pending) == 1
     assert pending[0]["approval_id"] == second["approval_id"]
+
+
+def test_gateway_history_queries_refresh_across_instances(tmp_path):
+    class Agent:
+        def process(self, instruction):
+            return {
+                "instruction": instruction,
+                "changes": [
+                    {
+                        "change_type": "create",
+                        "path": "shared_history_smoke.py",
+                        "content": "print('OK')",
+                    }
+                ],
+            }
+
+    root = str(tmp_path)
+    writer = DevAgentGateway(Agent(), root)
+    created = writer.create_task("verificar histórico compartilhado")
+    approval_id = created["approval_id"]
+
+    readers = [
+        DevAgentGateway(Agent(), root)
+        for _ in range(4)
+    ]
+
+    updater = DevAgentGateway(Agent(), root)
+    updater.history.update(
+        approval_id,
+        status=TaskHistoryStatus.COMMITTED.value,
+        transaction_id="shared-transaction",
+    )
+
+    reader_get, reader_list, reader_latest, reader_pending = readers
+
+    assert reader_get.get_task(approval_id)["status"] == "committed"
+
+    listed = reader_list.list_tasks()
+    assert len(listed) == 1
+    assert listed[0]["transaction_id"] == "shared-transaction"
+
+    latest = reader_latest.latest_task()
+    assert latest["approval_id"] == approval_id
+    assert latest["status"] == "committed"
+
+    assert reader_pending.list_pending() == []
