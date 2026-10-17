@@ -2958,6 +2958,7 @@ def test_gateway_startup_reconciliation_is_idempotent_for_terminal_transaction(
     import subprocess
 
     from agent import DevAgent
+    from core.adapters.mock import MockAdapter
     from core.gateway import DevAgentGateway
     from core.memory.task_history import TaskHistoryStatus
 
@@ -3001,7 +3002,7 @@ def test_gateway_startup_reconciliation_is_idempotent_for_terminal_transaction(
     )
 
     gateway = DevAgentGateway(
-        DevAgent(str(tmp_path)),
+        DevAgent(str(tmp_path), ai_adapter=MockAdapter()),
         root=tmp_path,
     )
 
@@ -3020,7 +3021,7 @@ def test_gateway_startup_reconciliation_is_idempotent_for_terminal_transaction(
     assert first["status"] == TaskHistoryStatus.COMMITTED.value
 
     restarted_gateway = DevAgentGateway(
-        DevAgent(str(tmp_path)),
+        DevAgent(str(tmp_path), ai_adapter=MockAdapter()),
         root=tmp_path,
     )
 
