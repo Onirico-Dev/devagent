@@ -625,6 +625,7 @@ def test_worker_load_state_rejects_invalid_metadata():
 
 def test_worker_persists_processed_observation_across_restart(tmp_path):
     from agent import DevAgent
+    from core.adapters.mock import MockAdapter
     from core.gateway import DevAgentGateway
     from core.observation import Observation
     from core.observation_store import ObservationStore
@@ -674,7 +675,7 @@ def test_worker_persists_processed_observation_across_restart(tmp_path):
     observer = Observer(store=observation_store)
     observer.add(observation)
 
-    agent = DevAgent(tmp_path)
+    agent = DevAgent(tmp_path, ai_adapter=MockAdapter())
     gateway = DevAgentGateway(agent, tmp_path)
 
     worker = Worker(
@@ -703,6 +704,7 @@ def test_worker_persists_processed_observation_across_restart(tmp_path):
 
 def test_worker_processes_new_observation_after_restart(tmp_path):
     from agent import DevAgent
+    from core.adapters.mock import MockAdapter
     from core.gateway import DevAgentGateway
     from core.observation import Observation
     from core.observation_store import ObservationStore
@@ -752,7 +754,7 @@ def test_worker_processes_new_observation_after_restart(tmp_path):
         )
     )
 
-    agent = DevAgent(tmp_path)
+    agent = DevAgent(tmp_path, ai_adapter=MockAdapter())
     gateway = DevAgentGateway(agent, tmp_path)
 
     worker = Worker(

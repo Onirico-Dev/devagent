@@ -2135,7 +2135,7 @@ def test_gateway_commit_failure_rolls_back_transaction(
     from agent import DevAgent
     from core.gateway import DevAgentGateway
 
-    agent = DevAgent(str(isolated_project))
+    agent = DevAgent(str(isolated_project), ai_adapter=MockAdapter())
     gateway = DevAgentGateway(
         agent,
         str(isolated_project),
