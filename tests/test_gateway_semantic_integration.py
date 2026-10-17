@@ -770,6 +770,7 @@ def test_gateway_rolls_back_after_persistent_declared_semantic_failure(
 
 def test_gateway_rolls_back_real_executor_failure_on_second_change(tmp_path):
     from agent import DevAgent
+    from core.adapters.mock import MockAdapter
     import subprocess
 
     from core.gateway import DevAgentGateway
@@ -824,7 +825,7 @@ def test_gateway_rolls_back_real_executor_failure_on_second_change(tmp_path):
         text=True,
     )
 
-    gateway = DevAgentGateway(DevAgent(tmp_path), root=tmp_path)
+    gateway = DevAgentGateway(DevAgent(tmp_path, ai_adapter=MockAdapter()), root=tmp_path)
     task = gateway.create_task("alterar example.py e version.py")
     approval_id = task["approval_id"]
 
@@ -996,6 +997,7 @@ def test_gateway_recovers_after_crash_during_repair_execution(tmp_path):
     import subprocess
 
     from agent import DevAgent
+    from core.adapters.mock import MockAdapter
     from core.gateway import DevAgentGateway
 
     example = tmp_path / "example.py"
@@ -1110,7 +1112,7 @@ def test_gateway_recovers_after_crash_during_repair_execution(tmp_path):
     )
 
     restarted_gateway = DevAgentGateway(
-        DevAgent(tmp_path),
+        DevAgent(tmp_path, ai_adapter=MockAdapter()),
         root=tmp_path,
     )
 
@@ -1127,6 +1129,7 @@ def test_gateway_recovers_after_crash_during_repair_execution(tmp_path):
 def test_gateway_recovers_after_crash_persisting_repair_state(tmp_path, monkeypatch):
     import subprocess
     from agent import DevAgent
+    from core.adapters.mock import MockAdapter
     from core.gateway import DevAgentGateway
 
     example = tmp_path / "example.py"
@@ -1230,7 +1233,7 @@ def test_gateway_recovers_after_crash_persisting_repair_state(tmp_path, monkeypa
         )
 
     restarted_gateway = DevAgentGateway(
-        DevAgent(tmp_path),
+        DevAgent(tmp_path, ai_adapter=MockAdapter()),
         root=tmp_path,
     )
 
@@ -1248,6 +1251,7 @@ def test_gateway_serializes_concurrent_approve_for_same_task(tmp_path):
     import subprocess
 
     from agent import DevAgent
+    from core.adapters.mock import MockAdapter
     from core.gateway import DevAgentGateway
 
     subprocess.run(
@@ -1273,7 +1277,7 @@ def test_gateway_serializes_concurrent_approve_for_same_task(tmp_path):
     )
 
     gateway = DevAgentGateway(
-        DevAgent(tmp_path),
+        DevAgent(tmp_path, ai_adapter=MockAdapter()),
         tmp_path,
     )
 
