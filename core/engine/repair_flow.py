@@ -168,8 +168,9 @@ class RepairFlow:
                     action="none",
                     status=RepairCycleStatus.REPAIRING,
                     error=(
-                        test_result.get("stderr")
-                        or test_result.get("output", "")
+                        combined_output
+                        if stdout and stderr
+                        else (stderr or stdout or fallback_output)
                     ),
                 )
                 repair_state.persist(transaction)

@@ -1215,3 +1215,45 @@ def test_attempt_none_records_repair_after_changes_applied():
     ]
     assert state.last_error == "falha"
     assert state.persist_calls == 2
+
+
+def test_attempt_none_preserves_stdout_only_failure_diagnostic():
+    diagnosis = {
+        "action": "none",
+        "risk": "baixo",
+        "path": "",
+        "content": "",
+    }
+    flow, _ = make_flow(diagnosis=diagnosis)
+    transaction = make_transaction()
+    transaction.metadata = {
+        "execution": {
+            "changes_applied": 1,
+        }
+    }
+    state = FakeState()
+
+    result = flow.attempt(
+        instruction="corrigir",
+        transaction=transaction,
+        test_result={
+            "stderr": "",
+            "stdout": "falha somente em stdout",
+        },
+        repair_state=state,
+    )
+
+    assert result["status"] == RepairCycleStatus.NO_REPAIR.value
+    assert result["success"] is False
+    assert result["repair"] == diagnosis
+    assert state.attempts == 1
+    assert state.calls == [
+        ("analyzing",),
+        (
+            "record",
+            "none",
+            RepairCycleStatus.REPAIRING,
+        ),
+    ]
+    assert state.last_error == "falha somente em stdout"
+    assert state.persist_calls == 2
