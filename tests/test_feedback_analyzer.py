@@ -130,6 +130,23 @@ def test_syntax_error_is_classified_from_test_stderr():
     assert result["failure_type"] == "syntax_error"
 
 
+def test_syntax_error_is_classified_from_test_stdout():
+    result = FeedbackAnalyzer().analyze(
+        {
+            "transaction_id": "tx-class-stdout",
+            "status": "failed",
+            "repair_attempts": 1,
+            "tests": {
+                "success": False,
+                "stdout": "SyntaxError: invalid syntax",
+                "stderr": "",
+            },
+        }
+    )
+
+    assert result["failure_type"] == "syntax_error"
+
+
 def test_syntax_error_is_classified_from_error():
     result = FeedbackAnalyzer().analyze(
         {

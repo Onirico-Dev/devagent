@@ -110,7 +110,12 @@ class FeedbackAnalyzer:
 
         diagnostic_text = " ".join(
             str(value)
-            for value in (error, stderr, test_error)
+            for value in (
+                error,
+                stderr,
+                tests.get("stdout"),
+                test_error,
+            )
             if value is not None
         ).lower()
 
