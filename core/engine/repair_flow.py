@@ -101,14 +101,23 @@ class RepairFlow:
         repair_state.mark_analyzing()
         repair_state.persist(transaction)
 
-        error = (
-            test_result.get("stderr")
-            or test_result.get("output", "")
-        )
-        test_output = (
-            test_result.get("stdout")
-            or test_result.get("output", "")
-        )
+        stdout = test_result.get("stdout") or ""
+        stderr = test_result.get("stderr") or ""
+        fallback_output = test_result.get("output") or ""
+
+        if stdout or stderr:
+            diagnostic_parts = []
+            if stdout:
+                diagnostic_parts.append(f"STDOUT:\n{stdout}")
+            if stderr:
+                diagnostic_parts.append(f"STDERR:\n{stderr}")
+            combined_output = "\n\n".join(diagnostic_parts)
+        else:
+            combined_output = fallback_output
+
+        # Preserva as evidências dos dois canais para o reparador.
+        error = combined_output
+        test_output = combined_output
 
         import inspect
 

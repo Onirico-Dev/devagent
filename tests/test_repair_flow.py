@@ -198,8 +198,17 @@ def test_attempt_normalizes_invalid_diagnosis():
     assert state.attempts == 0
     assert state.persist_calls == 1
     assert diagnosis_engine.calls[0]["instruction"] == "corrigir"
-    assert diagnosis_engine.calls[0]["error"] == "erro"
-    assert diagnosis_engine.calls[0]["test_output"] == "saida"
+    expected_diagnostics = "\n".join(
+        [
+            "STDOUT:",
+            "saida",
+            "",
+            "STDERR:",
+            "erro",
+        ]
+    )
+    assert diagnosis_engine.calls[0]["error"] == expected_diagnostics
+    assert diagnosis_engine.calls[0]["test_output"] == expected_diagnostics
 
 
 def test_attempt_high_risk_rolls_back_without_consuming_attempt():
@@ -974,6 +983,44 @@ def test_run_marks_repair_none_when_limit_reached_without_repair_dict():
     assert result["tests"]["success"] is False
     assert result["repair"] is None
     assert result["repair_attempts"] == state.max_attempts
+
+def test_prepare_repair_attempt_passes_both_output_channels():
+    flow, _ = make_flow()
+    transaction = make_transaction()
+    state = FakeState()
+    captured = {}
+
+    def analyze_failure(instruction, error, test_output, failure_type=None):
+        captured["error"] = error
+        captured["test_output"] = test_output
+        return {
+            "action": "none",
+            "risk": "baixo",
+            "path": "",
+            "content": "",
+            "diagnosis": "sem reparo",
+            "correction": "",
+        }
+
+    flow.repair_engine.analyze_failure = analyze_failure
+
+    flow._prepare_repair_attempt(
+        instruction="corrigir",
+        transaction=transaction,
+        test_result={
+            "success": False,
+            "stdout": "AssertionError: esperado 2, recebido 3",
+            "stderr": "Traceback: teste_falhou",
+        },
+        repair_state=state,
+    )
+
+    for field in ("error", "test_output"):
+        assert "AssertionError: esperado 2, recebido 3" in captured[field]
+        assert "Traceback: teste_falhou" in captured[field]
+        assert "STDOUT:" in captured[field]
+        assert "STDERR:" in captured[field]
+
 
 def test_prepare_repair_attempt_passes_failure_type_when_supported():
     flow, _ = make_flow()
