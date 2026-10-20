@@ -388,7 +388,7 @@ def test_real_autonomy_cycle_recovers_after_crash(
         state_store=loop_store,
     )
 
-    def crash_during_execution(transaction, on_change_applied=None):
+    def crash_during_execution(transaction, on_change_applied=None, on_create_prepared=None):
         raise SystemExit(
             "CRASH_DURING_AUTONOMOUS_EXECUTION"
         )
@@ -1158,7 +1158,7 @@ def test_real_autonomy_restart_after_recovery_does_not_reprocess_observation(
         state_store=WorkerStateStore(loop_path),
     )
 
-    def crash_during_execution(transaction, on_change_applied=None):
+    def crash_during_execution(transaction, on_change_applied=None, on_create_prepared=None):
         raise SystemExit("CRASH_BEFORE_COMPLETION")
 
     monkeypatch.setattr(
@@ -2023,16 +2023,14 @@ def test_real_autonomy_cycle_repair_physical_mismatch_rolls_back(
 
     original_execute_change = gateway.executor.execute_change
 
-    def execute_change_with_physical_mismatch(change):
+    def execute_change_with_physical_mismatch(change, on_create_prepared=None):
+        result = original_execute_change(
+            change, on_create_prepared=on_create_prepared
+        )
         if change.content == "VALUE = 42\n":
             target = tmp_path / change.path
-            target.write_text(
-                "VALUE = 999\n",
-                encoding="utf-8",
-            )
-            return None
-
-        return original_execute_change(change)
+            target.write_text("VALUE = 999\n", encoding="utf-8")
+        return result
 
     monkeypatch.setattr(
         gateway.executor,

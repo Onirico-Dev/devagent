@@ -120,7 +120,7 @@ class Executor:
         self.error = error
         self.calls = []
 
-    def execute(self, tx, on_change_applied=None):
+    def execute(self, tx, on_change_applied=None, on_create_prepared=None):
         self.calls.append(tx)
 
         if self.error:

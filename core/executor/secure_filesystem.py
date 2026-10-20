@@ -1,5 +1,6 @@
 from pathlib import Path
 import errno
+import ctypes
 import os
 import stat
 import uuid
@@ -322,19 +323,122 @@ class SecureFileSystem:
             finally:
                 os.close(current_destination_fd)
 
+    @staticmethod
+    def _rename_noreplace_in_parent(parent_fd, source, destination):
+        libc = ctypes.CDLL(None, use_errno=True)
+        renameat2 = getattr(libc, "renameat2", None)
+        if renameat2 is None:
+            raise OSError(errno.ENOSYS, "renameat2 indisponível")
+
+        renameat2.argtypes = [
+            ctypes.c_int, ctypes.c_char_p,
+            ctypes.c_int, ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        renameat2.restype = ctypes.c_int
+        result = renameat2(
+            parent_fd, os.fsencode(source),
+            parent_fd, os.fsencode(destination),
+            1,  # RENAME_NOREPLACE
+        )
+        if result != 0:
+            code = ctypes.get_errno()
+            raise OSError(code, os.strerror(code), destination)
+
     @classmethod
     def _replace_temporary_destination(
         cls,
         destination_parent_fd,
         destination_relative,
         temporary_name,
+        expected_destination_identity,
     ):
-        os.replace(
-            temporary_name,
-            destination_relative.name,
-            src_dir_fd=destination_parent_fd,
-            dst_dir_fd=destination_parent_fd,
-        )
+        destination_name = destination_relative.name
+
+        if expected_destination_identity is None:
+            cls._rename_noreplace_in_parent(
+                destination_parent_fd, temporary_name, destination_name
+            )
+            return
+
+        quarantine_name = None
+        for _ in range(32):
+            candidate = (
+                f".{destination_name}.devagent-quarantine-{uuid.uuid4().hex}"
+            )
+            try:
+                cls._rename_noreplace_in_parent(
+                    destination_parent_fd, destination_name, candidate
+                )
+                quarantine_name = candidate
+                break
+            except FileExistsError:
+                continue
+            except FileNotFoundError as error:
+                raise RuntimeError(
+                    "Destino foi removido durante a restauração: "
+                    f"{destination_relative}"
+                ) from error
+
+        if quarantine_name is None:
+            raise FileExistsError(
+                f"Não foi possível criar quarentena para: {destination_relative}"
+            )
+
+        published = False
+        try:
+            quarantined_fd = os.open(
+                quarantine_name,
+                os.O_RDONLY | os.O_NOFOLLOW,
+                dir_fd=destination_parent_fd,
+            )
+            try:
+                info = os.fstat(quarantined_fd)
+                actual_identity = (info.st_dev, info.st_ino)
+                if (
+                    not stat.S_ISREG(info.st_mode)
+                    or actual_identity != expected_destination_identity
+                ):
+                    raise RuntimeError(
+                        "Destino foi substituído durante a restauração: "
+                        f"{destination_relative}"
+                    )
+            finally:
+                os.close(quarantined_fd)
+
+            cls._rename_noreplace_in_parent(
+                destination_parent_fd, temporary_name, destination_name
+            )
+            cls.fsync_directory(destination_parent_fd)
+            published = True
+
+        except BaseException:
+            if not published and quarantine_name is not None:
+                try:
+                    cls._rename_noreplace_in_parent(
+                        destination_parent_fd, quarantine_name, destination_name
+                    )
+                    quarantine_name = None
+                    cls.fsync_directory(destination_parent_fd)
+                except OSError:
+                    pass
+            raise
+
+        # A publicação já está persistida. Falhas de limpeza não devem
+        # tentar restaurar o original sobre o novo destino.
+        try:
+            os.unlink(quarantine_name, dir_fd=destination_parent_fd)
+            quarantine_name = None
+            cls.fsync_directory(destination_parent_fd)
+        except OSError as error:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Publicação concluída, mas a quarentena %r não foi "
+                "totalmente removida para %s: %s",
+                quarantine_name,
+                destination_relative,
+                error,
+            )
 
     @classmethod
     def copy_file_no_follow(
@@ -418,6 +522,7 @@ class SecureFileSystem:
                     destination_parent_fd,
                     destination_relative,
                     temporary_name,
+                    expected_destination_identity,
                 )
 
             temporary_name = None

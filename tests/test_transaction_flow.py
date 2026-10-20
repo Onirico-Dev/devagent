@@ -140,7 +140,7 @@ class FakeExecutor:
     def __init__(self):
         self.calls = []
 
-    def execute(self, transaction, on_change_applied=None):
+    def execute(self, transaction, on_change_applied=None, on_create_prepared=None):
         self.calls.append(transaction)
 
 
@@ -1084,6 +1084,30 @@ def test_execute_and_test_transaction_fails_when_post_execution_verification_fai
     }
 
 
+def test_create_rejects_executor_with_only_generic_kwargs():
+    import pytest
+
+    ctx = make_flow()
+    calls = []
+
+    def execute(transaction, **kwargs):
+        calls.append((transaction, kwargs))
+
+    ctx.executor.execute = execute
+
+    with pytest.raises(
+        RuntimeError,
+        match="Executor não suporta criação transacional por temporário",
+    ):
+        ctx.flow._execute_and_test_transaction(
+            ctx.transaction,
+            ctx.repair_state,
+            "approval-1",
+        )
+
+    assert calls == []
+
+
 def test_execute_and_test_transaction_persists_each_applied_create():
     ctx = make_flow()
 
@@ -1094,7 +1118,7 @@ def test_execute_and_test_transaction_persists_each_applied_create():
 
     ctx.transactions.record_created_identity = record_identity
 
-    def execute(transaction, on_change_applied=None):
+    def execute(transaction, on_change_applied=None, on_create_prepared=None):
         ctx.executor.calls.append(transaction)
         on_change_applied()
 

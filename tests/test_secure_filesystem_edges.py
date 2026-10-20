@@ -580,3 +580,139 @@ def test_copy_file_no_follow_overwrite_missing_destination(tmp_path):
     )
 
     assert (destination / "arquivo.txt").read_text() == "novo conteúdo"
+
+
+def test_copy_overwrite_preserves_destination_replaced_after_verification(
+    tmp_path, monkeypatch
+):
+    from core.executor.secure_filesystem import SecureFileSystem
+
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    source_root.mkdir()
+    destination_root.mkdir()
+
+    (source_root / "source.txt").write_text("BACKUP", encoding="utf-8")
+    destination = destination_root / "copy.txt"
+    destination.write_text("ORIGINAL", encoding="utf-8")
+
+    original_replace = SecureFileSystem._replace_temporary_destination
+
+    def replace_after_race(
+        cls,
+        destination_parent_fd,
+        destination_relative,
+        temporary_name,
+        expected_destination_identity,
+    ):
+        destination.unlink()
+        destination.write_text("MUST_SURVIVE", encoding="utf-8")
+        return original_replace(
+            destination_parent_fd,
+            destination_relative,
+            temporary_name,
+            expected_destination_identity,
+        )
+
+    monkeypatch.setattr(
+        SecureFileSystem,
+        "_replace_temporary_destination",
+        classmethod(replace_after_race),
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="substituído"):
+            SecureFileSystem.copy_file_no_follow(
+                source_root,
+                Path("source.txt"),
+                destination_root,
+                Path("copy.txt"),
+                overwrite=True,
+            )
+    finally:
+        content = destination.read_text(encoding="utf-8") if destination.exists() else None
+
+    assert content == "MUST_SURVIVE", (
+        "A restauração sobrescreveu uma substituição concorrente; "
+        f"conteúdo final: {content!r}"
+    )
+
+
+def test_copy_overwrite_restores_original_when_publication_fails(
+    tmp_path, monkeypatch
+):
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    source_root.mkdir()
+    destination_root.mkdir()
+
+    (source_root / "source.txt").write_text("NEW", encoding="utf-8")
+    destination = destination_root / "copy.txt"
+    destination.write_text("ORIGINAL", encoding="utf-8")
+
+    original_rename = SecureFileSystem._rename_noreplace_in_parent
+
+    def fail_publication(parent_fd, source, target):
+        if (
+            target == "copy.txt"
+            and "quarantine" not in source
+            and ".devagent-" in source
+        ):
+            raise OSError(5, "falha injetada na publicação")
+        return original_rename(parent_fd, source, target)
+
+    monkeypatch.setattr(
+        SecureFileSystem,
+        "_rename_noreplace_in_parent",
+        staticmethod(fail_publication),
+    )
+
+    with pytest.raises(OSError, match="falha injetada"):
+        SecureFileSystem.copy_file_no_follow(
+            source_root,
+            Path("source.txt"),
+            destination_root,
+            Path("copy.txt"),
+            overwrite=True,
+        )
+
+    assert destination.read_text(encoding="utf-8") == "ORIGINAL"
+    assert not list(destination_root.glob(".*.devagent-quarantine-*"))
+
+
+def test_copy_overwrite_preserves_quarantine_if_unlink_fails(
+    tmp_path, monkeypatch
+):
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    source_root.mkdir()
+    destination_root.mkdir()
+
+    (source_root / "source.txt").write_text("NEW", encoding="utf-8")
+    destination = destination_root / "copy.txt"
+    destination.write_text("ORIGINAL", encoding="utf-8")
+
+    original_unlink = os.unlink
+
+    def fail_quarantine_unlink(path, *args, **kwargs):
+        if "devagent-quarantine-" in str(path):
+            raise PermissionError(13, "falha injetada ao remover quarentena")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", fail_quarantine_unlink)
+
+    SecureFileSystem.copy_file_no_follow(
+        source_root,
+        Path("source.txt"),
+        destination_root,
+        Path("copy.txt"),
+        overwrite=True,
+    )
+
+    assert destination.read_text(encoding="utf-8") == "NEW"
+
+    quarantines = list(
+        destination_root.glob(".*.devagent-quarantine-*")
+    )
+    assert len(quarantines) == 1
+    assert quarantines[0].read_text(encoding="utf-8") == "ORIGINAL"

@@ -1157,24 +1157,16 @@ def test_safe_executor_blocks_create_symlink_swap_before_open(
         ],
     )
 
-    original_open = safe_executor_module.os.open
+    original_publish = executor._rename_noreplace_in_parent
     swapped = {"value": False}
 
-    def open_with_swap(candidate, flags, *args, **kwargs):
-        if (
-            not swapped["value"]
-            and Path(candidate).name == target.name
-        ):
+    def publish_with_swap(parent_fd, source, destination):
+        if not swapped["value"] and destination == target.name:
             target.symlink_to(outside)
             swapped["value"] = True
+        return original_publish(parent_fd, source, destination)
 
-        return original_open(candidate, flags, *args, **kwargs)
-
-    monkeypatch.setattr(
-        safe_executor_module.os,
-        "open",
-        open_with_swap,
-    )
+    monkeypatch.setattr(executor, "_rename_noreplace_in_parent", publish_with_swap)
 
     try:
         executor.execute_change(transaction.changes[0])
@@ -1377,26 +1369,17 @@ def test_safe_executor_blocks_parent_directory_symlink_swap(tmp_path, monkeypatc
 
     executor = SafeExecutor(root=str(tmp_path))
 
-    original_open = safe_executor_module.os.open
+    original_publish = executor._rename_noreplace_in_parent
     swapped = {"value": False}
 
-    def open_with_swap(candidate, flags, *args, **kwargs):
-        if (
-            not swapped["value"]
-            and Path(candidate).name == "created.py"
-            and kwargs.get("dir_fd") is not None
-        ):
+    def publish_with_swap(parent_fd, source, destination):
+        if not swapped["value"] and destination == "created.py":
             parent.rename(real_parent)
             parent.symlink_to(outside, target_is_directory=True)
             swapped["value"] = True
+        return original_publish(parent_fd, source, destination)
 
-        return original_open(candidate, flags, *args, **kwargs)
-
-    monkeypatch.setattr(
-        safe_executor_module.os,
-        "open",
-        open_with_swap,
-    )
+    monkeypatch.setattr(executor, "_rename_noreplace_in_parent", publish_with_swap)
 
     executor.execute_change(
         Change(
@@ -4531,7 +4514,7 @@ def test_safe_executor_create_fsyncs_file_and_parent_directory(
 
     assert target.read_text(encoding="utf-8") == "durable"
     assert len(file_fsyncs) == 1
-    assert len(directory_fsyncs) == 1
+    assert len(directory_fsyncs) == 2
 
 
 def test_safe_executor_modify_fsyncs_file_and_parent_directory(
@@ -4725,3 +4708,134 @@ def test_git_manager_commit_transaction_preserves_pre_staged_unrelated_changes(
     ).stdout.splitlines()
 
     assert staged == ["unrelated.py"]
+
+
+def test_create_persists_staged_identity_before_publishing(
+    tmp_path, monkeypatch
+):
+    import os
+    from core.executor.safe_executor import SafeExecutor
+    from core.schemas.models import Change, ChangeType, Transaction
+
+    target = tmp_path / "novo.py"
+    executor = SafeExecutor(tmp_path)
+    transaction = Transaction(
+        transaction_id="tx-staged-create",
+        changes=[
+            Change(
+                change_type=ChangeType.CREATE,
+                path="novo.py",
+                content="VALUE = 1\n",
+            )
+        ],
+    )
+    observed = {}
+
+    def on_create_prepared(change, temporary_path, device, inode):
+        staged = tmp_path / temporary_path
+        assert not target.exists()
+        assert staged.is_file()
+        info = staged.stat()
+        assert (info.st_dev, info.st_ino) == (device, inode)
+        observed["temporary_path"] = temporary_path
+        observed["identity"] = (device, inode)
+
+    executor.execute(
+        transaction,
+        on_create_prepared=on_create_prepared,
+    )
+
+    assert observed["temporary_path"]
+    assert target.read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert not (tmp_path / observed["temporary_path"]).exists()
+
+
+def test_safe_executor_create_preserves_original_error_when_staging_cleanup_fails(
+    tmp_path, monkeypatch
+):
+    from core.executor.safe_executor import SafeExecutor
+    from core.schemas.models import Change, ChangeType
+
+    executor = SafeExecutor(tmp_path)
+
+    def fail_cleanup(parent_fd, name, device, inode):
+        raise OSError("simulated cleanup failure")
+
+    def fail_before_publish(change, temporary_path, device, inode):
+        raise ValueError("original staging callback failure")
+
+    monkeypatch.setattr(
+        SafeExecutor, "_cleanup_staged_file", staticmethod(fail_cleanup)
+    )
+
+    with pytest.raises(ValueError, match="original staging callback failure") as caught:
+        executor.execute_change(
+            Change(
+                path="created.txt",
+                change_type=ChangeType.CREATE,
+                content="staged",
+            ),
+            on_create_prepared=fail_before_publish,
+        )
+
+    assert any(
+        "simulated cleanup failure" in note
+        for note in getattr(caught.value, "__notes__", [])
+    )
+
+
+def test_staged_cleanup_preserves_concurrent_replacement(
+    tmp_path, monkeypatch
+):
+    import os
+    from core.executor.safe_executor import SafeExecutor
+
+    staged = tmp_path / "staged.tmp"
+    staged.write_text("original", encoding="utf-8")
+    info = staged.stat()
+    parent_fd = os.open(
+        tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    )
+
+    original_rename = SafeExecutor._rename_noreplace_in_parent
+    injected = False
+
+    def racing_rename(dir_fd, source, destination):
+        nonlocal injected
+        if source == "staged.tmp" and not injected:
+            injected = True
+            displaced = ".displaced-original"
+            replacement = ".replacement-new"
+            os.rename(source, displaced, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+            fd = os.open(
+                replacement,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+                dir_fd=dir_fd,
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write("replacement that must survive")
+            os.rename(
+                replacement, source,
+                src_dir_fd=dir_fd, dst_dir_fd=dir_fd,
+            )
+            os.unlink(displaced, dir_fd=dir_fd)
+        return original_rename(dir_fd, source, destination)
+
+    monkeypatch.setattr(
+        SafeExecutor,
+        "_rename_noreplace_in_parent",
+        staticmethod(racing_rename),
+    )
+    try:
+        SafeExecutor._cleanup_staged_file(
+            parent_fd, "staged.tmp", info.st_dev, info.st_ino
+        )
+    finally:
+        os.close(parent_fd)
+
+    assert injected
+    assert staged.read_text(encoding="utf-8") == (
+        "replacement that must survive"
+    )
+    assert not list(tmp_path.glob(".devagent-cleanup-*"))

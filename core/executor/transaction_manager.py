@@ -18,6 +18,10 @@ from core.schemas.models import (
 )
 
 
+class CreatedFileIdentityMismatch(RuntimeError):
+    pass
+
+
 class TransactionManager:
 
     def __init__(self, root=".", backup_dir="transactions"):
@@ -361,6 +365,12 @@ class TransactionManager:
         try:
             self.rollback(current)
         except Exception as error:
+            if current.status == TransactionStatus.ROLLED_BACK:
+                # O rollback terminou; repetir a persistência do estado final.
+                current.metadata["recovery"] = True
+                self.persist_manifest(current)
+                return current
+
             self.transition(current, TransactionStatus.FAILED)
             current.metadata["recovery"] = True
             current.metadata["recovery_error"] = str(error)
@@ -712,7 +722,7 @@ class TransactionManager:
             ) from error
 
         expected_backup = (
-            self.root / "transactions" / transaction.transaction_id
+            self.backup_dir / transaction.transaction_id
         ).resolve()
         if backup_dir != expected_backup:
             raise ValueError("Caminho de backup inválido")
@@ -849,6 +859,30 @@ class TransactionManager:
             transaction.metadata["created_identity"] = identity_before
             raise
 
+    def record_staged_created_identity(
+        self, transaction, relative_path, temporary_path, device, inode
+    ):
+        relative = str(self._validate_created_file_path(relative_path))
+        temporary = str(self._validate_created_file_path(temporary_path))
+        if Path(relative).parent != Path(temporary).parent:
+            raise ValueError("Temporário deve estar no diretório do destino.")
+
+        identities = transaction.metadata.setdefault("created_identity", {})
+        previous = dict(identities.get(relative, {}))
+        identities[relative] = {
+            "st_dev": device,
+            "st_ino": inode,
+            "temporary_path": temporary,
+        }
+        try:
+            self.persist_manifest(transaction)
+        except Exception:
+            if previous:
+                identities[relative] = previous
+            else:
+                identities.pop(relative, None)
+            raise
+
     def _record_created_path(self, transaction, relative_path):
         transaction.metadata["created"].append(relative_path)
 
@@ -864,13 +898,16 @@ class TransactionManager:
 
         file_stat = target.stat()
 
-        transaction.metadata.setdefault(
+        identities = transaction.metadata.setdefault(
             "created_identity",
             {},
-        )[relative_path] = {
+        )
+        identity = dict(identities.get(relative_path, {}))
+        identity.update({
             "st_dev": file_stat.st_dev,
             "st_ino": file_stat.st_ino,
-        }
+        })
+        identities[relative_path] = identity
 
 
     def register_created(
@@ -1044,19 +1081,76 @@ class TransactionManager:
             file_stat.st_dev != expected_dev
             or file_stat.st_ino != expected_ino
         ):
-            raise RuntimeError(
+            raise CreatedFileIdentityMismatch(
                 "Arquivo criado foi alterado durante a "
                 f"transação: {relative}"
             )
 
 
-    def _unlink_created_file(self, parent_fd, relative):
-        os.unlink(
-            relative.name,
-            dir_fd=parent_fd,
-        )
-        self._fsync_directory(parent_fd)
+    @staticmethod
+    def _rename_noreplace_in_parent(parent_fd, source, destination):
+        import ctypes
 
+        libc = ctypes.CDLL(None, use_errno=True)
+        renameat2 = getattr(libc, "renameat2", None)
+        if renameat2 is None:
+            raise OSError(errno.ENOSYS, "renameat2 indisponível")
+
+        renameat2.argtypes = [
+            ctypes.c_int, ctypes.c_char_p,
+            ctypes.c_int, ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        renameat2.restype = ctypes.c_int
+        result = renameat2(
+            parent_fd, os.fsencode(source),
+            parent_fd, os.fsencode(destination),
+            1,
+        )
+        if result != 0:
+            code = ctypes.get_errno()
+            raise OSError(code, os.strerror(code), destination)
+
+    def _unlink_created_file(
+        self, parent_fd, relative, expected_dev, expected_ino
+    ):
+        quarantine = f".devagent-rollback-{uuid.uuid4().hex}"
+        self._rename_noreplace_in_parent(
+            parent_fd, relative.name, quarantine
+        )
+
+        try:
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            flags |= getattr(os, "O_CLOEXEC", 0)
+            file_fd = os.open(quarantine, flags, dir_fd=parent_fd)
+            try:
+                file_stat = os.fstat(file_fd)
+                if (
+                    not stat.S_ISREG(file_stat.st_mode)
+                    or file_stat.st_dev != expected_dev
+                    or file_stat.st_ino != expected_ino
+                ):
+                    raise CreatedFileIdentityMismatch(
+                        "Arquivo criado foi substituído durante o rollback: "
+                        f"{relative}"
+                    )
+            finally:
+                os.close(file_fd)
+
+            os.unlink(quarantine, dir_fd=parent_fd)
+            self._fsync_directory(parent_fd)
+
+        except BaseException:
+            # Nunca apaga o arquivo movido se a identidade não conferir.
+            try:
+                self._rename_noreplace_in_parent(
+                    parent_fd, quarantine, relative.name
+                )
+                self._fsync_directory(parent_fd)
+            except OSError:
+                # Falha fechada: preservar o arquivo na quarentena.
+                pass
+            raise
 
     def _remove_created_file(
         self,
@@ -1089,38 +1183,58 @@ class TransactionManager:
                     expected_ino,
                 )
                 self._unlink_created_file(
-                    parent_fd,
-                    relative,
-                )
+                parent_fd, relative, expected_dev, expected_ino
+            )
             finally:
                 os.close(file_fd)
         finally:
             os.close(parent_fd)
 
     def _remove_created_files(self, transaction):
-        created = transaction.metadata.get(
-            "created",
-            [],
-        )
+        created = transaction.metadata.get("created", [])
+        identities = transaction.metadata.get("created_identity", {})
 
-        for relative_path in created:
+        # Inclui CREATEs cujo staging foi persistido, mas cuja publicação
+        # ainda não chegou a ser contabilizada em metadata["created"].
+        candidates = list(created)
+        for path, identity in identities.items():
+            if identity.get("temporary_path") and path not in candidates:
+                candidates.append(path)
+
+        created_set = set(created)
+
+        for relative_path in candidates:
+            relative = self._validate_created_file_path(relative_path)
             expected_dev, expected_ino = (
-                self._get_created_file_identity(
-                    transaction,
-                    relative_path,
+                self._get_created_file_identity(transaction, relative_path)
+            )
+            identity = identities.get(str(relative_path), {})
+            temporary_path = identity.get("temporary_path")
+
+            try:
+                self._remove_created_file(
+                    relative=relative,
+                    expected_dev=expected_dev,
+                    expected_ino=expected_ino,
                 )
-            )
+            except CreatedFileIdentityMismatch as exc:
+                # Só a divergência de identidade pode representar um
+                # destino preexistente ou uma publicação não comprovada.
+                # Outros erros de recuperação devem continuar explícitos.
+                if relative_path in created_set:
+                    raise
 
-            relative = self._validate_created_file_path(
-                relative_path
-            )
-
-            self._remove_created_file(
-                relative=relative,
-                expected_dev=expected_dev,
-                expected_ino=expected_ino,
-            )
-
+            if temporary_path:
+                temporary = self._validate_created_file_path(temporary_path)
+                if temporary.parent != relative.parent:
+                    raise ValueError(
+                        "Temporário registrado fora do diretório do destino."
+                    )
+                self._remove_created_file(
+                    relative=temporary,
+                    expected_dev=expected_dev,
+                    expected_ino=expected_ino,
+                )
 
     def _restore_backup_files(self, backup_root):
         for backup_file in backup_root.rglob("*"):

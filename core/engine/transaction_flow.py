@@ -1,3 +1,4 @@
+import inspect
 from core.engine.repair_cycle_state import RepairCycleState
 from core.memory.task_history import TaskHistoryStatus
 from core.schemas.models import ChangeType, TestResult, TransactionStatus
@@ -201,10 +202,48 @@ class TransactionFlow:
             self.transactions.persist_manifest(transaction)
             applied_change_index += 1
 
-        self.executor.execute(
-            transaction,
-            on_change_applied=on_change_applied,
-        )
+        def on_create_prepared(
+            change, temporary_path, device, inode
+        ):
+            record_staged = getattr(
+                self.transactions,
+                "record_staged_created_identity",
+                None,
+            )
+            if record_staged is None:
+                raise RuntimeError(
+                    "TransactionManager não suporta identidade temporária."
+                )
+            record_staged(
+                transaction,
+                change.path,
+                temporary_path,
+                device,
+                inode,
+            )
+
+        execute_kwargs = {
+            "on_change_applied": on_change_applied,
+        }
+        try:
+            parameters = inspect.signature(
+                self.executor.execute
+            ).parameters
+            supports_staging = "on_create_prepared" in parameters
+        except (TypeError, ValueError):
+            supports_staging = False
+
+        if supports_staging:
+            execute_kwargs["on_create_prepared"] = on_create_prepared
+        elif any(
+            change.change_type.value == "create"
+            for change in transaction.changes
+        ):
+            raise RuntimeError(
+                "Executor não suporta criação transacional por temporário."
+            )
+
+        self.executor.execute(transaction, **execute_kwargs)
 
         verification = None
         if self.post_execution_verifier is not None:

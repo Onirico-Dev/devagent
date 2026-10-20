@@ -1066,7 +1066,7 @@ def test_gateway_reports_rollback_failure(tmp_path, monkeypatch):
             failing_rollback,
         )
 
-        def failing_execute(transaction, on_change_applied=None):
+        def failing_execute(transaction, on_change_applied=None, on_create_prepared=None):
             raise RuntimeError(
                 "EXECUTION_FAILURE_TEST"
             )
@@ -1138,7 +1138,7 @@ def test_gateway_reports_rollback_failure_separately(
             failing_rollback,
         )
 
-        def failing_execute(transaction, on_change_applied=None):
+        def failing_execute(transaction, on_change_applied=None, on_create_prepared=None):
             raise RuntimeError(
                 "EXECUTION_FAILURE_TEST"
             )
@@ -3030,7 +3030,7 @@ def test_gateway_does_not_execute_same_approval_twice(
 
     original_execute = gateway.executor.execute
 
-    def controlled_execute(transaction, on_change_applied=None):
+    def controlled_execute(transaction, on_change_applied=None, on_create_prepared=None):
         executions["count"] += 1
 
         if executions["count"] == 1:
@@ -3041,7 +3041,7 @@ def test_gateway_does_not_execute_same_approval_twice(
                     "timeout aguardando liberação da primeira execução"
                 )
 
-        return original_execute(transaction, on_change_applied=on_change_applied)
+        return original_execute(transaction, on_change_applied=on_change_applied, on_create_prepared=on_create_prepared)
 
     monkeypatch.setattr(
         gateway.executor,
@@ -5149,7 +5149,7 @@ def test_gateway_blocks_reject_while_approve_holds_same_approval_lock(
     original_execute = gateway.executor.execute
     original_reject = gateway.supervisor.reject
 
-    def controlled_execute(transaction, on_change_applied=None):
+    def controlled_execute(transaction, on_change_applied=None, on_create_prepared=None):
         approve_entered.set()
 
         if not release_approve.wait(timeout=5):
@@ -5157,7 +5157,7 @@ def test_gateway_blocks_reject_while_approve_holds_same_approval_lock(
                 "timeout aguardando liberação da aprovação"
             )
 
-        return original_execute(transaction, on_change_applied=on_change_applied)
+        return original_execute(transaction, on_change_applied=on_change_applied, on_create_prepared=on_create_prepared)
 
     def controlled_reject(request_id):
         reject_called.set()

@@ -772,7 +772,7 @@ def test_create_change_writes_file_and_syncs_directory(tmp_path, monkeypatch):
 
     assert target.exists()
     assert target.read_text(encoding="utf-8") == "created content"
-    assert len(fsync_calls) == 1
+    assert len(fsync_calls) == 2
 
 def test_safe_path_rejects_absolute_path(tmp_path):
     from core.executor.safe_executor import SafeExecutor

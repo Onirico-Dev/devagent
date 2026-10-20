@@ -653,11 +653,15 @@ def test_rollback_recovers_after_partial_created_file_removal(
     original_unlink = manager._unlink_created_file
     calls = {"count": 0}
 
-    def fail_on_second_unlink(parent_fd, relative):
+    def fail_on_second_unlink(
+        parent_fd, relative, expected_dev, expected_ino
+    ):
         calls["count"] += 1
         if calls["count"] == 2:
             raise OSError("simulated partial rollback failure")
-        return original_unlink(parent_fd, relative)
+        return original_unlink(
+            parent_fd, relative, expected_dev, expected_ino
+        )
 
     monkeypatch.setattr(
         manager,
@@ -1089,6 +1093,42 @@ def test_backup_blocks_ancestor_directory_symlink_swap(tmp_path):
     assert legitimate.exists()
     assert legitimate.read_text(encoding="utf-8") == "SAFE"
 
+
+
+def test_rollback_preserves_replacement_swapped_before_unlink(
+    tmp_path, monkeypatch
+):
+    manager, transaction = make_started_transaction(tmp_path)
+    race_dir = tmp_path / "race"
+    race_dir.mkdir()
+    created = race_dir / "created.py"
+    replacement = race_dir / "replacement.py"
+    created.write_text("ORIGINAL\\n", encoding="utf-8")
+    replacement.write_text("MUST_SURVIVE\\n", encoding="utf-8")
+    manager.register_created(transaction, "race/created.py")
+
+    real_unlink = manager._unlink_created_file
+
+    def swap_before_unlink(
+        parent_fd, relative, expected_dev, expected_ino
+    ):
+        created.unlink()
+        replacement.rename(created)
+        return real_unlink(
+            parent_fd, relative, expected_dev, expected_ino
+        )
+
+    monkeypatch.setattr(
+        manager, "_unlink_created_file", swap_before_unlink
+    )
+    with pytest.raises(
+        RuntimeError, match="substituído durante o rollback"
+    ):
+        manager.rollback(transaction)
+
+    assert created.exists()
+    assert created.read_text(encoding="utf-8") == "MUST_SURVIVE\\n"
+    assert not replacement.exists()
 
 def test_rollback_removes_identity_tracked_created_file(
     tmp_path,
@@ -2227,8 +2267,14 @@ def test_copy_file_suppresses_missing_temporary_during_cleanup(
         encoding="utf-8",
     )
 
-    def fail_replace(*args, **kwargs):
-        raise RuntimeError("simulated replace failure")
+    from core.executor.secure_filesystem import SecureFileSystem
+
+    original_rename = SecureFileSystem._rename_noreplace_in_parent
+
+    def fail_replace(parent_fd, source, destination):
+        if source.endswith(".tmp") and destination == "copy.txt":
+            raise RuntimeError("simulated replace failure")
+        return original_rename(parent_fd, source, destination)
 
     original_unlink = os.unlink
     unlink_calls = 0
@@ -2245,8 +2291,9 @@ def test_copy_file_suppresses_missing_temporary_during_cleanup(
         return original_unlink(*args, **kwargs)
 
     monkeypatch.setattr(
-        "core.executor.transaction_manager.os.replace",
-        fail_replace,
+        SecureFileSystem,
+        "_rename_noreplace_in_parent",
+        staticmethod(fail_replace),
     )
     monkeypatch.setattr(
         "core.executor.transaction_manager.os.unlink",
@@ -2894,6 +2941,38 @@ def test_rollback_rejects_created_path_that_is_not_regular_file(
         manager.rollback(transaction)
 
 
+def test_rollback_preserves_preexisting_destination_after_unpublished_staging(
+    tmp_path,
+):
+    manager, transaction = make_started_transaction(tmp_path)
+
+    race_dir = tmp_path / "race"
+    race_dir.mkdir()
+
+    destination = race_dir / "created.py"
+    temporary = race_dir / ".created.py.tmp"
+
+    destination.write_text("PREEXISTING", encoding="utf-8")
+    temporary.write_text("STAGED", encoding="utf-8")
+    staged_stat = temporary.stat()
+
+    manager.record_staged_created_identity(
+        transaction,
+        "race/created.py",
+        "race/.created.py.tmp",
+        staged_stat.st_dev,
+        staged_stat.st_ino,
+    )
+
+    # Simula a limpeza do staging após falha de publicação por conflito.
+    temporary.unlink()
+
+    manager.rollback(transaction)
+
+    assert destination.read_text(encoding="utf-8") == "PREEXISTING"
+    assert not temporary.exists()
+
+
 def test_rollback_rejects_created_file_identity_change(
     tmp_path,
 ):
@@ -2917,6 +2996,94 @@ def test_rollback_rejects_created_file_identity_change(
         match="Arquivo criado foi alterado durante a transação",
     ):
         manager.rollback(transaction)
+
+
+def test_rollback_removes_create_published_before_directory_fsync_failure(
+    tmp_path, monkeypatch,
+):
+    from core.executor.safe_executor import SafeExecutor
+    from core.schemas.models import Change, ChangeType
+
+    manager, transaction = make_started_transaction(tmp_path)
+    transaction.changes = [
+        Change(change_type=ChangeType.CREATE, path="created.txt", content="CONTENT")
+    ]
+    executor = SafeExecutor(tmp_path)
+    calls = []
+
+    def fail_second_directory_fsync(parent_fd):
+        calls.append(parent_fd)
+        if len(calls) == 2:
+            raise OSError("simulated post-publication fsync failure")
+
+    monkeypatch.setattr(
+        executor, "_fsync_directory", fail_second_directory_fsync,
+    )
+
+    def on_create_prepared(change, temporary_path, device, inode):
+        manager.record_staged_created_identity(
+            transaction, change.path, temporary_path, device, inode,
+        )
+
+    with pytest.raises(OSError, match="post-publication fsync failure"):
+        executor.execute(
+            transaction,
+            on_create_prepared=on_create_prepared,
+        )
+
+    target = tmp_path / "created.txt"
+    assert target.read_text(encoding="utf-8") == "CONTENT"
+    assert transaction.metadata["created"] == []
+    assert transaction.metadata["created_identity"]["created.txt"]["temporary_path"]
+
+    manager.rollback(transaction)
+
+    assert not target.exists()
+    assert transaction.status == TransactionStatus.ROLLED_BACK
+
+
+def test_rollback_preserves_replacement_after_create_fsync_failure(
+    tmp_path, monkeypatch,
+):
+    from core.executor.safe_executor import SafeExecutor
+    from core.schemas.models import Change, ChangeType
+
+    manager, transaction = make_started_transaction(tmp_path)
+    transaction.changes = [
+        Change(change_type=ChangeType.CREATE, path="created.txt", content="ORIGINAL")
+    ]
+    executor = SafeExecutor(tmp_path)
+    calls = []
+
+    def fail_second_directory_fsync(parent_fd):
+        calls.append(parent_fd)
+        if len(calls) == 2:
+            raise OSError("simulated post-publication fsync failure")
+
+    monkeypatch.setattr(
+        executor, "_fsync_directory", fail_second_directory_fsync,
+    )
+
+    def on_create_prepared(change, temporary_path, device, inode):
+        manager.record_staged_created_identity(
+            transaction, change.path, temporary_path, device, inode,
+        )
+
+    with pytest.raises(OSError, match="post-publication fsync failure"):
+        executor.execute(
+            transaction,
+            on_create_prepared=on_create_prepared,
+        )
+
+    target = tmp_path / "created.txt"
+    replacement = tmp_path / "replacement.txt"
+    replacement.write_text("MUST_SURVIVE", encoding="utf-8")
+    replacement.replace(target)
+
+    manager.rollback(transaction)
+
+    assert target.read_text(encoding="utf-8") == "MUST_SURVIVE"
+    assert transaction.status == TransactionStatus.ROLLED_BACK
 
 def test_list_recoverable_transactions_ignores_manifest_with_non_dict_root(
     tmp_path,
@@ -4288,3 +4455,123 @@ def test_recovery_propagates_first_exception_after_all_attempts(
 
     assert exc.value is first_error
     assert calls == [first.transaction_id, second.transaction_id]
+
+
+def test_recovery_exposes_created_file_without_persisted_identity(tmp_path):
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Transaction, TransactionStatus
+
+    manager = TransactionManager(root=tmp_path)
+    transaction = Transaction(transaction_id="tx-missing-created-identity")
+    manager.begin(transaction)
+    manager.register_created(transaction, "novo.py")
+
+    # Simula a queda após criar o arquivo, mas antes de persistir sua identidade.
+    created = tmp_path / "novo.py"
+    created.write_text("VALUE = 1\n", encoding="utf-8")
+
+    restarted_manager = TransactionManager(root=tmp_path)
+    recovered = restarted_manager.recover_incomplete_transactions()
+
+    assert len(recovered) == 1
+    assert recovered[0].status == TransactionStatus.FAILED
+    assert "Identidade do arquivo criado não foi registrada" in (
+        recovered[0].metadata["recovery_error"]
+    )
+    assert created.read_text(encoding="utf-8") == "VALUE = 1\n"
+
+def test_recovery_retries_manifest_persist_after_rollback_completed(
+    tmp_path, monkeypatch
+):
+    from core.schemas.models import TransactionStatus
+
+    manager, transaction = make_started_transaction(tmp_path)
+    original_persist = manager.persist_manifest
+    failed_once = {"value": False}
+
+    def fail_once_after_rollback(item):
+        if (
+            item.status == TransactionStatus.ROLLED_BACK
+            and not failed_once["value"]
+        ):
+            failed_once["value"] = True
+            raise OSError("simulated final rollback manifest failure")
+        return original_persist(item)
+
+    monkeypatch.setattr(manager, "persist_manifest", fail_once_after_rollback)
+
+    recovered = manager.recover_incomplete_transactions()
+
+    assert failed_once["value"] is True
+    assert len(recovered) == 1
+    assert recovered[0].status == TransactionStatus.ROLLED_BACK
+    persisted = manager.load_manifest(transaction.transaction_id)
+    assert persisted.status == TransactionStatus.ROLLED_BACK
+
+
+def test_rollback_preserves_quarantine_when_restore_collides(
+    tmp_path, monkeypatch
+):
+    manager, transaction = make_started_transaction(tmp_path)
+    created = tmp_path / "created.py"
+    created.write_text("ORIGINAL\n", encoding="utf-8")
+    original_stat = created.stat()
+
+    parent_fd = os.open(
+        tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    )
+    real_rename = manager._rename_noreplace_in_parent
+    calls = {"count": 0}
+
+    def fail_restore_on_collision(fd, source, destination):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            created.write_text("MUST_SURVIVE\n", encoding="utf-8")
+        return real_rename(fd, source, destination)
+
+    monkeypatch.setattr(
+        manager, "_rename_noreplace_in_parent", fail_restore_on_collision
+    )
+    try:
+        with pytest.raises(
+            RuntimeError, match="substituído durante o rollback"
+        ):
+            manager._unlink_created_file(
+                parent_fd,
+                Path("created.py"),
+                original_stat.st_dev,
+                original_stat.st_ino + 1,
+            )
+    finally:
+        os.close(parent_fd)
+
+    assert calls["count"] == 2
+    assert created.read_text(encoding="utf-8") == "MUST_SURVIVE\n"
+    quarantined = list(tmp_path.glob(".devagent-rollback-*"))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_text(encoding="utf-8") == "ORIGINAL\n"
+
+
+
+def test_backup_file_uses_configured_backup_directory(tmp_path):
+    from pathlib import Path
+
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Transaction
+
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "sample.txt").write_text("original", encoding="utf-8")
+
+    manager = TransactionManager(
+        root=root,
+        backup_dir="state/transactions",
+    )
+    transaction = Transaction(transaction_id="custom-backup-test")
+
+    manager.begin(transaction)
+    manager.backup_file(transaction, "sample.txt")
+
+    backup = Path(transaction.metadata["backup"]) / "sample.txt"
+    assert backup.read_text(encoding="utf-8") == "original"
+    assert backup.is_relative_to(root / "state" / "transactions")

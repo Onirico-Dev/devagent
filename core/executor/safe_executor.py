@@ -1,4 +1,5 @@
 import errno
+import ctypes
 import os
 import stat
 import secrets
@@ -292,24 +293,159 @@ class SafeExecutor:
         finally:
             os.close(fd)
 
-    def _create_change(self, change, relative):
-        parent_fd = self._open_parent_directory(
-            self.root,
-            change.path,
-            create=True,
+    @staticmethod
+    def _rename_noreplace_in_parent(parent_fd, source, destination):
+        libc = ctypes.CDLL(None, use_errno=True)
+        renameat2 = getattr(libc, "renameat2", None)
+        if renameat2 is None:
+            raise OSError(errno.ENOSYS, "renameat2 indisponível")
+
+        renameat2.argtypes = [
+            ctypes.c_int, ctypes.c_char_p,
+            ctypes.c_int, ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        renameat2.restype = ctypes.c_int
+        result = renameat2(
+            parent_fd, os.fsencode(source),
+            parent_fd, os.fsencode(destination),
+            1,  # RENAME_NOREPLACE
         )
+        if result != 0:
+            code = ctypes.get_errno()
+            raise OSError(code, os.strerror(code), destination)
+
+    @staticmethod
+    def _cleanup_staged_file(parent_fd, name, device, inode):
+        if not name:
+            return
+
+        quarantine = f".devagent-cleanup-{secrets.token_hex(16)}"
         try:
+            SafeExecutor._rename_noreplace_in_parent(
+                parent_fd, name, quarantine
+            )
+        except FileNotFoundError:
+            return
+
+        quarantined = True
+        try:
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            flags |= getattr(os, "O_CLOEXEC", 0)
+            file_fd = os.open(quarantine, flags, dir_fd=parent_fd)
             try:
-                self._write_new_file_in_parent(
-                    parent_fd,
-                    relative.name,
-                    change.content or "",
+                info = os.fstat(file_fd)
+                matches = (
+                    stat.S_ISREG(info.st_mode)
+                    and info.st_dev == device
+                    and info.st_ino == inode
                 )
-            except FileExistsError as error:
+            finally:
+                os.close(file_fd)
+
+            if not matches:
+                SafeExecutor._rename_noreplace_in_parent(
+                    parent_fd, quarantine, name
+                )
+                quarantined = False
+                SafeExecutor._fsync_directory(parent_fd)
+                return
+
+            os.unlink(quarantine, dir_fd=parent_fd)
+            quarantined = False
+            SafeExecutor._fsync_directory(parent_fd)
+        except BaseException:
+            if quarantined:
+                try:
+                    SafeExecutor._rename_noreplace_in_parent(
+                        parent_fd, quarantine, name
+                    )
+                    SafeExecutor._fsync_directory(parent_fd)
+                except OSError:
+                    # Preserva o arquivo na quarentena se não for possível
+                    # restaurá-lo sem sobrescrever outro destino.
+                    pass
+            raise
+
+    def _create_change(
+        self, change, relative, on_create_prepared=None
+    ):
+        parent_fd = self._open_parent_directory(
+            self.root, change.path, create=True
+        )
+        temporary_name = None
+        device = inode = None
+        published = False
+        fd = None
+        try:
+            for _ in range(32):
+                candidate = (
+                    f".{relative.name}.devagent-"
+                    f"{secrets.token_hex(16)}.tmp"
+                )
+                try:
+                    fd = os.open(
+                        candidate,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                        | os.O_NOFOLLOW,
+                        0o644,
+                        dir_fd=parent_fd,
+                    )
+                    temporary_name = candidate
+                    info = os.fstat(fd)
+                    device, inode = info.st_dev, info.st_ino
+                    break
+                except FileExistsError:
+                    continue
+            if fd is None or temporary_name is None:
                 raise FileExistsError(
-                    f"Arquivo já existe: {change.path}"
-                ) from error
+                    f"Não foi possível criar temporário: {change.path}"
+                )
+
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                fd = None
+                handle.write(change.content or "")
+                handle.flush()
+                os.fsync(handle.fileno())
+                info = os.fstat(handle.fileno())
+                device, inode = info.st_dev, info.st_ino
+
+            self._fsync_directory(parent_fd)
+
+            temporary_path = str(relative.parent / temporary_name)
+            if on_create_prepared is not None:
+                on_create_prepared(
+                    change, temporary_path, device, inode
+                )
+
+            try:
+                self._rename_noreplace_in_parent(
+                    parent_fd, temporary_name, relative.name
+                )
+            except OSError as error:
+                if error.errno == errno.EEXIST:
+                    raise FileExistsError(
+                        f"Arquivo já existe: {change.path}"
+                    ) from error
+                raise
+
+            published = True
+            self._fsync_directory(parent_fd)
+        except Exception as original_error:
+            if not published and temporary_name is not None:
+                try:
+                    self._cleanup_staged_file(
+                        parent_fd, temporary_name, device, inode
+                    )
+                except OSError as cleanup_error:
+                    original_error.add_note(
+                        f"Falha ao limpar arquivo temporário {temporary_name}: "
+                        f"{cleanup_error!r}"
+                    )
+            raise
         finally:
+            if fd is not None:
+                os.close(fd)
             os.close(parent_fd)
 
     def _modify_change(self, change, relative):
@@ -381,7 +517,7 @@ class SafeExecutor:
         finally:
             os.close(parent_fd)
 
-    def execute_change(self, change):
+    def execute_change(self, change, on_create_prepared=None):
         target = self._safe_path(change.path)
 
         if (
@@ -399,7 +535,9 @@ class SafeExecutor:
         relative = Path(change.path)
 
         if change.change_type == ChangeType.CREATE:
-            self._create_change(change, relative)
+            self._create_change(
+                change, relative, on_create_prepared=on_create_prepared
+            )
         elif change.change_type == ChangeType.MODIFY:
             self._modify_change(change, relative)
         elif change.change_type == ChangeType.DELETE:
@@ -410,7 +548,10 @@ class SafeExecutor:
             )
 
 
-    def execute(self, transaction, on_change_applied=None):
+    def execute(
+        self, transaction, on_change_applied=None,
+        on_create_prepared=None,
+    ):
 
         if on_change_applied is not None and not callable(on_change_applied):
             raise ValueError(
@@ -435,7 +576,15 @@ class SafeExecutor:
 
         try:
             for change in transaction.changes:
-                self.execute_change(change)
+                if (
+                    change.change_type == ChangeType.CREATE
+                    and on_create_prepared is not None
+                ):
+                    self.execute_change(
+                        change, on_create_prepared=on_create_prepared
+                    )
+                else:
+                    self.execute_change(change)
                 execution["changes_applied"] += 1
 
                 if on_change_applied is not None:
