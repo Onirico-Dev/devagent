@@ -19,6 +19,23 @@ class FakeHistory:
     def update(self, task_id, **kwargs):
         self.updates.append((task_id, kwargs))
 
+        task = next(
+            (item for item in self.tasks if item["task_id"] == task_id),
+            None,
+        )
+        if task is None:
+            raise KeyError(f"Tarefa não encontrada: {task_id}")
+
+        if kwargs.get("status") is not None:
+            task["status"] = kwargs["status"]
+
+        if kwargs.get("transaction_id") is not None:
+            task["transaction_id"] = kwargs["transaction_id"]
+
+        extra = kwargs.get("extra")
+        if extra:
+            task.update(extra)
+
 
 class FakeTransaction:
     def __init__(self, transaction_id, status, metadata=None):
@@ -252,9 +269,7 @@ def test_reconcile_is_idempotent_across_repeated_calls():
     transaction = FakeTransaction(
         "tx-repeat",
         TaskHistoryStatus.COMMITTED.value,
-        {
-            "recovery": True,
-        },
+        {"recovery": True},
     )
 
     reconciler = RecoveryReconciler(history)
@@ -268,23 +283,14 @@ def test_reconcile_is_idempotent_across_repeated_calls():
             {
                 "status": TaskHistoryStatus.COMMITTED.value,
                 "transaction_id": "tx-repeat",
-                "extra": {
-                    "recovery": True,
-                },
+                "extra": {"recovery": True},
             },
-        ),
-        (
-            "task-repeat",
-            {
-                "status": TaskHistoryStatus.COMMITTED.value,
-                "transaction_id": "tx-repeat",
-                "extra": {
-                    "recovery": True,
-                },
-            },
-        ),
+        )
     ]
 
+    assert history.tasks[0]["status"] == TaskHistoryStatus.COMMITTED.value
+    assert history.tasks[0]["transaction_id"] == "tx-repeat"
+    assert history.tasks[0]["recovery"] is True
 
 def test_reconcile_refreshes_stale_task_history_instance(tmp_path):
     from core.memory.task_history import TaskHistory
