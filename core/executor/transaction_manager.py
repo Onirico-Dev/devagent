@@ -649,10 +649,15 @@ class TransactionManager:
         try:
             self.persist_manifest(transaction)
         except Exception:
-            try:
-                backup.rmdir()
-            except OSError:
-                pass
+            # Se os.replace() já publicou o manifesto, a falha posterior
+            # (por exemplo, no fsync do diretório) não autoriza remover
+            # o backup referenciado por esse manifesto.
+            manifest = self._manifest_path(transaction.transaction_id)
+            if not manifest.exists():
+                try:
+                    backup.rmdir()
+                except OSError:
+                    pass
             raise
 
         return transaction

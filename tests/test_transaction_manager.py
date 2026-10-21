@@ -226,6 +226,68 @@ def test_begin_creates_transaction_backup_directory(tmp_path):
     assert transaction.metadata["created"] == []
 
 
+def test_begin_preserves_backup_when_manifest_published_but_directory_fsync_fails(
+    tmp_path,
+    monkeypatch,
+):
+    import os
+    import stat
+
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import TransactionStatus
+
+    manager = TransactionManager(tmp_path)
+    transaction = make_transaction(tmp_path)
+    published = {"manifest": None}
+
+    original_replace = os.replace
+    original_fsync = os.fsync
+
+    def track_replace(source, destination):
+        result = original_replace(source, destination)
+        destination = Path(destination)
+        if (
+            destination.parent == manager.backup_dir
+            and destination.suffix == ".json"
+        ):
+            published["manifest"] = destination
+        return result
+
+    def fail_directory_fsync_after_publication(fd):
+        if (
+            published["manifest"] is not None
+            and stat.S_ISDIR(os.fstat(fd).st_mode)
+        ):
+            raise OSError("simulated post-publication directory fsync failure")
+        return original_fsync(fd)
+
+    monkeypatch.setattr(
+        "core.executor.transaction_manager.os.replace",
+        track_replace,
+    )
+    monkeypatch.setattr(
+        "core.executor.transaction_manager.os.fsync",
+        fail_directory_fsync_after_publication,
+    )
+
+    with pytest.raises(
+        OSError,
+        match="post-publication directory fsync failure",
+    ):
+        manager.begin(transaction)
+
+    manifest = manager._manifest_path(transaction.transaction_id)
+    backup = manager.backup_dir / transaction.transaction_id
+
+    assert published["manifest"] == manifest
+    assert manifest.is_file()
+    assert backup.is_dir()
+
+    persisted = manager.load_manifest(transaction.transaction_id)
+    assert persisted.status == TransactionStatus.EXECUTING
+    assert Path(persisted.metadata["backup"]) == backup
+
+
 def test_begin_cleans_transaction_directory_when_manifest_persist_fails(
     tmp_path,
     monkeypatch,
