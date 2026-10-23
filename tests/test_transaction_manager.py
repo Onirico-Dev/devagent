@@ -4637,3 +4637,205 @@ def test_backup_file_uses_configured_backup_directory(tmp_path):
     backup = Path(transaction.metadata["backup"]) / "sample.txt"
     assert backup.read_text(encoding="utf-8") == "original"
     assert backup.is_relative_to(root / "state" / "transactions")
+
+
+@pytest.mark.parametrize("damage", ["missing", "truncated", "altered"])
+def test_rollback_rejects_missing_or_corrupted_backup(
+    tmp_path, damage
+):
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import (
+        Change,
+        ChangeType,
+        Transaction,
+        TransactionStatus,
+    )
+
+    manager = TransactionManager(root=tmp_path)
+    original = tmp_path / "original.py"
+    original.write_text("ORIGINAL CONTENT\n", encoding="utf-8")
+
+    transaction = Transaction(
+        transaction_id=f"tx-backup-integrity-{damage}",
+        changes=[
+            Change(
+                change_type=ChangeType.MODIFY,
+                path="original.py",
+                content="ALTERED CONTENT\n",
+            )
+        ],
+    )
+    manager.begin(transaction)
+    manager.backup_file(transaction, "original.py")
+
+    backup = Path(transaction.metadata["backup"]) / "original.py"
+    original.write_text("ALTERED CONTENT\n", encoding="utf-8")
+
+    if damage == "missing":
+        backup.unlink()
+    elif damage == "truncated":
+        backup.write_bytes(b"")
+    else:
+        backup.write_text("TAMPERED CONTENT\n", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        manager.rollback(transaction)
+
+    assert original.read_text(encoding="utf-8") == "ALTERED CONTENT\n"
+    assert transaction.status != TransactionStatus.ROLLED_BACK
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    ["pkg/../outside.py", "../outside.py"],
+)
+def test_backup_file_rejects_parent_traversal(tmp_path, relative_path):
+    manager, transaction = make_started_transaction(tmp_path)
+
+    with pytest.raises(ValueError, match="Caminho fora do projeto"):
+        manager.backup_file(transaction, relative_path)
+
+
+def test_backup_file_rejects_malformed_existing_integrity_record(tmp_path):
+    manager, transaction = make_started_transaction(tmp_path)
+    transaction.metadata["backup_integrity"] = {
+        "missing.py": {"size": -1, "sha256": "invalid"}
+    }
+
+    with pytest.raises(ValueError, match="Registro de integridade inválido"):
+        manager.backup_file(transaction, "missing.py")
+
+
+def test_rollback_requires_backup_when_legacy_execution_count_is_positive(
+    tmp_path,
+):
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Change, ChangeType, Transaction
+
+    manager = TransactionManager(root=tmp_path)
+    target = tmp_path / "target.py"
+    target.write_text("alterado", encoding="utf-8")
+
+    transaction = Transaction(
+        transaction_id="tx-legacy-positive-count",
+        changes=[
+            Change(
+                change_type=ChangeType.MODIFY,
+                path="target.py",
+                content="original",
+            )
+        ],
+    )
+    manager.begin(transaction)
+    transaction.metadata["execution"] = {"changes_applied": 1}
+
+    with pytest.raises(
+        ValueError, match="Backup obrigatório ausente ou sem registro"
+    ):
+        manager.rollback(transaction)
+
+    assert target.read_text(encoding="utf-8") == "alterado"
+
+
+@pytest.mark.parametrize("invalid_count", [True, -1, 2, "1"])
+def test_rollback_rejects_invalid_execution_count(tmp_path, invalid_count):
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Change, ChangeType, Transaction
+
+    manager = TransactionManager(root=tmp_path)
+    transaction = Transaction(
+        transaction_id=f"tx-invalid-count-{str(invalid_count)}",
+        changes=[
+            Change(
+                change_type=ChangeType.MODIFY,
+                path="target.py",
+                content="original",
+            )
+        ],
+    )
+    manager.begin(transaction)
+    transaction.metadata["execution"] = {
+        "phase": "executing",
+        "changes_applied": invalid_count,
+    }
+
+    with pytest.raises(ValueError, match="Contador de alterações aplicadas"):
+        manager.rollback(transaction)
+
+
+def test_rollback_testing_phase_requires_all_change_backups(tmp_path):
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Change, ChangeType, Transaction
+
+    manager = TransactionManager(root=tmp_path)
+    first = tmp_path / "first.py"
+    second = tmp_path / "second.py"
+    first.write_text("first original", encoding="utf-8")
+    second.write_text("second altered", encoding="utf-8")
+
+    transaction = Transaction(
+        transaction_id="tx-testing-requires-all-backups",
+        changes=[
+            Change(
+                change_type=ChangeType.MODIFY,
+                path="first.py",
+                content="first altered",
+            ),
+            Change(
+                change_type=ChangeType.MODIFY,
+                path="second.py",
+                content="second original",
+            ),
+        ],
+    )
+    manager.begin(transaction)
+    manager.backup_file(transaction, "first.py")
+    transaction.metadata["execution"] = {
+        "phase": "testing",
+        "changes_applied": 2,
+    }
+
+    with pytest.raises(
+        ValueError, match="Backup obrigatório ausente ou sem registro"
+    ):
+        manager.rollback(transaction)
+
+    assert first.read_text(encoding="utf-8") == "first original"
+    assert second.read_text(encoding="utf-8") == "second altered"
+
+def test_backup_file_rejects_existing_backup_without_integrity_record(
+    tmp_path,
+):
+    from pathlib import Path
+
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Change, ChangeType, Transaction
+
+    manager = TransactionManager(root=tmp_path)
+    target = tmp_path / "target.py"
+    target.write_text("original source\\n", encoding="utf-8")
+
+    transaction = Transaction(
+        transaction_id="tx-orphan-backup-no-integrity-record",
+        changes=[
+            Change(
+                change_type=ChangeType.MODIFY,
+                path="target.py",
+                content="modified source\\n",
+            )
+        ],
+    )
+    manager.begin(transaction)
+
+    backup = Path(transaction.metadata["backup"]) / "target.py"
+    backup.parent.mkdir(parents=True, exist_ok=True)
+    backup.write_text("unverified backup\\n", encoding="utf-8")
+
+    with pytest.raises(
+        ValueError, match="Backup existente sem registro de integridade"
+    ):
+        manager.backup_file(transaction, "target.py")
+
+    assert backup.read_text(encoding="utf-8") == "unverified backup\\n"
+    assert "target.py" not in transaction.metadata["backup_integrity"]
+    assert target.read_text(encoding="utf-8") == "original source\\n"

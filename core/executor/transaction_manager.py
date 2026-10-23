@@ -1,4 +1,5 @@
 from pathlib import Path
+import hashlib
 import fcntl
 import errno
 import os
@@ -645,6 +646,7 @@ class TransactionManager:
         backup = self.backup_dir / transaction.transaction_id
         transaction.metadata["backup"] = str(backup)
         transaction.metadata["created"] = []
+        transaction.metadata.setdefault("backup_integrity", {})
 
         try:
             self.persist_manifest(transaction)
@@ -696,7 +698,7 @@ class TransactionManager:
         destination_relative: Path,
         *,
         overwrite: bool = False,
-    ) -> None:
+    ):
         return SecureFileSystem.copy_file_no_follow(
             source_root,
             source_relative,
@@ -706,11 +708,35 @@ class TransactionManager:
         )
 
     def _validate_backup_path(self, relative_path):
-        relative = Path(relative_path)
+        try:
+            raw_path = str(relative_path)
+            relative = Path(relative_path)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"Caminho inválido: {relative_path}"
+            ) from error
+
         if relative.is_absolute():
             raise ValueError(
                 f"Caminho absoluto não permitido: {relative_path}"
             )
+
+        if "\x00" in raw_path:
+            raise ValueError(f"Caminho inválido: {relative_path}")
+
+        raw_parts = raw_path.split("/")
+        if ".." in raw_parts:
+            raise ValueError(
+                f"Caminho fora do projeto: {relative_path}"
+            )
+
+        if (
+            not raw_path
+            or not relative.parts
+            or any(part in ("", ".") for part in raw_parts)
+        ):
+            raise ValueError(f"Caminho inválido: {relative_path}")
+
         return relative
 
     def _resolve_transaction_backup_directory(self, transaction):
@@ -774,39 +800,293 @@ class TransactionManager:
 
         return destination
 
+    @staticmethod
+    def _is_valid_backup_fingerprint(record):
+        if not isinstance(record, dict):
+            return False
+
+        if set(record) != {"size", "sha256"}:
+            return False
+
+        size = record["size"]
+        digest = record["sha256"]
+
+        return (
+            isinstance(size, int)
+            and not isinstance(size, bool)
+            and size >= 0
+            and isinstance(digest, str)
+            and len(digest) == 64
+            and all(char in "0123456789abcdef" for char in digest)
+        )
+
+    @staticmethod
+    def _fingerprint_backup(path):
+        digest = hashlib.sha256()
+        size = 0
+        fd = os.open(
+            str(path),
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            file_stat = os.fstat(fd)
+            if not stat.S_ISREG(file_stat.st_mode):
+                raise ValueError("Backup não é um arquivo regular.")
+
+            with os.fdopen(fd, "rb") as handle:
+                fd = None
+                while True:
+                    chunk = handle.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                    size += len(chunk)
+        finally:
+            if fd is not None:
+                os.close(fd)
+
+        return {"size": size, "sha256": digest.hexdigest()}
+
+    def _validate_backup_integrity(self, transaction, backup_root):
+        records = transaction.metadata.get("backup_integrity")
+        if records is None:
+            records = {}
+
+        if not isinstance(records, dict):
+            raise ValueError("Registros de integridade de backup inválidos.")
+
+        # Validar os destinos antes de qualquer remoção ou restauração.
+        for entry in backup_root.rglob("*"):
+            if entry.is_symlink():
+                raise ValueError(f"Backup contém symlink: {entry}")
+
+            if not entry.is_file():
+                continue
+
+            relative = entry.relative_to(backup_root)
+            self._validate_backup_path(relative)
+            raw_destination = self.root / relative
+
+            if raw_destination.is_symlink():
+                raise ValueError(
+                    f"Destino de rollback é um symlink: {relative}"
+                )
+
+            current = self.root
+            for index, part in enumerate(relative.parts[:-1]):
+                current = current / part
+                if current.is_symlink():
+                    unsafe_path = Path(*relative.parts[:index + 1])
+                    raise ValueError(
+                        "Caminho de diretório não é seguro: "
+                        f"{unsafe_path}"
+                    )
+
+        execution = transaction.metadata.get("execution", {})
+        if execution is None:
+            execution = {}
+
+        if not isinstance(execution, dict):
+            raise ValueError("Metadados de execução inválidos.")
+
+        changes = list(getattr(transaction, "changes", []))
+        changes_applied = execution.get("changes_applied", 0)
+        phase = execution.get("phase")
+
+        if (
+            not isinstance(changes_applied, int)
+            or isinstance(changes_applied, bool)
+            or not 0 <= changes_applied <= len(changes)
+        ):
+            raise ValueError("Contador de alterações aplicadas inválido.")
+
+        valid_phases = {
+            None,
+            "preparing",
+            "executing",
+            "testing",
+            "completed",
+        }
+        if phase not in valid_phases:
+            raise ValueError(f"Fase de execução inválida: {phase!r}")
+
+        if phase == "preparing" and changes_applied != 0:
+            raise ValueError(
+                "Metadados contraditórios: preparação com alterações aplicadas."
+            )
+
+        if phase in ("testing", "completed"):
+            # Reparos podem acrescentar alterações à transação depois
+            # da execução inicial. O contador registra o progresso
+            # executado, enquanto a lista atual pode incluir reparos.
+            # Exigir backups para todas as alterações atuais continua
+            # protegendo o rollback contra restaurações incompletas.
+            required_changes = len(changes)
+        elif phase == "executing" or phase is None:
+            # Sem fase, preservar compatibilidade com manifestos antigos,
+            # mas nunca ignorar um contador positivo.
+            required_changes = changes_applied
+        else:
+            required_changes = 0
+
+        if required_changes:
+            created = transaction.metadata.get("created", [])
+            if not isinstance(created, (list, tuple)):
+                raise ValueError("Registro de arquivos criados inválido.")
+
+            created_paths = set()
+            for item in created:
+                created_paths.add(
+                    self._validate_backup_path(item).as_posix()
+                )
+
+            for change in changes[:required_changes]:
+                if change.change_type not in (
+                    ChangeType.MODIFY,
+                    ChangeType.DELETE,
+                ):
+                    continue
+
+                relative = self._validate_backup_path(change.path)
+                key = relative.as_posix()
+                if key not in records and key not in created_paths:
+                    raise ValueError(
+                        "Backup obrigatório ausente ou sem registro: "
+                        f"{change.path}"
+                    )
+
+        for relative_path, expected in records.items():
+            relative = self._validate_backup_path(relative_path)
+
+            if expected == {"exists": False}:
+                continue
+
+            if not self._is_valid_backup_fingerprint(expected):
+                raise ValueError(
+                    f"Registro de integridade inválido: {relative_path}"
+                )
+
+            backup_file = self._validate_backup_destination(
+                backup_root, relative, relative_path
+            )
+
+            if backup_file.is_symlink() or not backup_file.is_file():
+                raise ValueError(
+                    "Backup obrigatório ausente ou inválido: "
+                    f"{relative_path}"
+                )
+
+            actual = self._fingerprint_backup(backup_file)
+            if actual != expected:
+                raise ValueError(
+                    f"Integridade do backup comprometida: {relative_path}"
+                )
+
     def backup_file(self, transaction, relative_path: str) -> None:
         relative = self._validate_backup_path(relative_path)
         backup_dir = self._resolve_transaction_backup_directory(
             transaction
         )
-        source = self._resolve_backup_source(
-            relative,
-            relative_path,
-        )
+        record_key = relative.as_posix()
+        records = transaction.metadata.setdefault("backup_integrity", {})
+        if not isinstance(records, dict):
+            raise ValueError("Registros de integridade de backup inválidos.")
+
+        source = self._resolve_backup_source(relative, relative_path)
         if source is None:
+            absent_record = {"exists": False}
+
+            if record_key in records:
+                previous = records[record_key]
+
+                if previous == absent_record:
+                    return
+
+                if self._is_valid_backup_fingerprint(previous):
+                    # O arquivo de origem pode ter desaparecido após
+                    # a criação de um backup válido. Preserve esse backup.
+                    return
+
+                raise ValueError(
+                    f"Registro de integridade inválido: {record_key}"
+                )
+
+            previous = None
+            records[record_key] = absent_record
+            try:
+                self.persist_manifest(transaction)
+            except Exception:
+                if previous is None:
+                    records.pop(record_key, None)
+                else:
+                    records[record_key] = previous
+                raise
             return
 
         destination = self._validate_backup_destination(
-            backup_dir,
-            relative,
-            relative_path,
+            backup_dir, relative, relative_path
         )
-        if destination.exists():
-            return
+        created_destination = False
 
-        self._copy_file_no_follow(
-            self.root,
-            relative,
-            backup_dir,
-            relative,
-        )
+        if destination.exists():
+            if destination.is_symlink() or not destination.is_file():
+                raise ValueError(
+                    f"Backup não é um arquivo regular: {relative_path}"
+                )
+
+            existing = records.get(record_key)
+            if existing is None:
+                raise ValueError(
+                    "Backup existente sem registro de integridade: "
+                    f"{relative_path}"
+                )
+
+            fingerprint = self._fingerprint_backup(destination)
+            if existing != fingerprint:
+                raise ValueError(
+                    f"Integridade do backup comprometida: {relative_path}"
+                )
+            return
+        else:
+            fingerprint = self._copy_file_no_follow(
+                self.root, relative, backup_dir, relative
+            )
+            created_destination = True
+            if not isinstance(fingerprint, dict):
+                raise RuntimeError(
+                    "A cópia segura não retornou a integridade do backup."
+                )
+
+        previous = records.get(record_key)
+        records[record_key] = fingerprint
+
         try:
             self.persist_manifest(transaction)
         except Exception:
+            published = False
+            manifest = self._manifest_path(transaction.transaction_id)
             try:
-                destination.unlink()
-            except OSError:
-                pass
+                data = self._read_manifest_data(manifest)
+                metadata = data.get("metadata", {})
+                persisted = metadata.get("backup_integrity", {})
+                published = (
+                    isinstance(persisted, dict)
+                    and persisted.get(record_key) == fingerprint
+                )
+            except (OSError, ValueError, AttributeError):
+                published = False
+
+            if not published:
+                if previous is None:
+                    records.pop(record_key, None)
+                else:
+                    records[record_key] = previous
+
+                if created_destination:
+                    try:
+                        destination.unlink()
+                    except OSError:
+                        pass
             raise
 
     def _validate_created_path(self, relative_path):
@@ -1282,6 +1562,7 @@ class TransactionManager:
 
     def rollback(self, transaction):
         backup_root = self._validate_backup_root(transaction)
+        self._validate_backup_integrity(transaction, backup_root)
 
         self._remove_created_files(transaction)
         self._restore_backup_files(

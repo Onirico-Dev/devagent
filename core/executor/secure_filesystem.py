@@ -1,5 +1,6 @@
 from pathlib import Path
 import errno
+import hashlib
 import ctypes
 import os
 import stat
@@ -237,29 +238,27 @@ class SecureFileSystem:
         source_fd,
         destination_fd,
     ):
-        while True:
-            chunk = os.read(
-                source_fd,
-                1024 * 1024,
-            )
+        digest = hashlib.sha256()
+        size = 0
 
+        while True:
+            chunk = os.read(source_fd, 1024 * 1024)
             if not chunk:
                 break
 
+            digest.update(chunk)
+            size += len(chunk)
             view = memoryview(chunk)
 
             while view:
-                written = os.write(
-                    destination_fd,
-                    view,
-                )
-
+                written = os.write(destination_fd, view)
                 if written <= 0:
                     raise OSError(
                         "Falha ao escrever arquivo de destino."
                     )
-
                 view = view[written:]
+
+        return {"size": size, "sha256": digest.hexdigest()}
 
     @classmethod
     def _verify_overwrite_destination(
@@ -500,7 +499,7 @@ class SecureFileSystem:
                 overwrite,
             )
 
-            cls._copy_file_contents(
+            fingerprint = cls._copy_file_contents(
                 source_fd,
                 destination_fd,
             )
@@ -527,6 +526,7 @@ class SecureFileSystem:
 
             temporary_name = None
             cls.fsync_directory(destination_parent_fd)
+            return fingerprint
 
         finally:
             if source_fd is not None:
