@@ -2660,3 +2660,23 @@ def test_mock_compound_create_preserves_explicit_content_for_each_file():
     changes = {item["path"]: item for item in result}
     assert changes["app.py"]["content"] == "print('APP_OK')"
     assert changes["config.py"]["content"] == "APP_NAME = 'DevAgent'"
+
+
+def test_mock_compound_create_preserves_explicit_content_for_three_files():
+    from core.adapters.mock import MockAdapter
+
+    instruction = (
+        "Crie app.py contendo exatamente print('APP_OK') "
+        "e config.py contendo exatamente APP_NAME = 'DevAgent' "
+        "e main.py contendo exatamente from app import main"
+    )
+
+    result = MockAdapter()._build_compound_create_changes(instruction)
+
+    assert len(result) == 3
+    changes = {item["path"]: item["content"] for item in result}
+    assert changes == {
+        "app.py": "print('APP_OK')",
+        "config.py": "APP_NAME = 'DevAgent'",
+        "main.py": "from app import main",
+    }

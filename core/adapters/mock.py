@@ -873,33 +873,59 @@ class MockAdapter(AIAdapter):
 
     def _build_compound_create_changes(self, instruction: str):
 
-        compound_content_match = re.match(
-            r"^\s*(crie|criar|create)\s+"
-            r"(?P<path1>[A-Za-z0-9_./-]+\.[A-Za-z0-9_-]+)\s+"
-            r"(?:contendo|com\s+(?:o\s+)?conteúdo)\s+"
-            r"(?P<content1>.*?)\s+e\s+"
-            r"(?P<path2>[A-Za-z0-9_./-]+\.[A-Za-z0-9_-]+)\s+"
-            r"(?:contendo|com\s+(?:o\s+)?conteúdo)\s+"
-            r"(?P<content2>.*?)\s*$",
+        compound_content_parts = re.split(
+            r"\s+e\s+(?=[A-Za-z0-9_./-]+\.[A-Za-z0-9_-]+"
+            r"\s+(?:contendo|com\s+(?:o\s+)?conteúdo)\b)",
             instruction.strip(),
-            flags=re.IGNORECASE | re.DOTALL,
+            flags=re.IGNORECASE,
         )
-        if compound_content_match:
-            action = compound_content_match.group(1)
-            changes = []
-            for index in (1, 2):
-                target = compound_content_match.group(f"path{index}")
-                content = compound_content_match.group(f"content{index}").strip()
-                content = re.sub(
-                    r"^exatamente\s+", "", content, count=1,
-                    flags=re.IGNORECASE,
-                )
-                change = self._build_planner_change(f"{action} {target}", "")
-                if change is None:
-                    return []
-                change["content"] = content
-                changes.append(change)
-            return changes
+
+        if len(compound_content_parts) >= 2:
+            first_action = re.match(
+                r"^\s*(crie|criar|create)\s+",
+                compound_content_parts[0],
+                flags=re.IGNORECASE,
+            )
+            if first_action:
+                action = first_action.group(1)
+                changes = []
+
+                for index, part in enumerate(compound_content_parts):
+                    operation = part.strip()
+                    if index > 0:
+                        operation = f"{action} {operation}"
+
+                    parsed = re.match(
+                        r"^\s*(?:crie|criar|create)\s+"
+                        r"(?P<path>[A-Za-z0-9_./-]+\.[A-Za-z0-9_-]+)\s+"
+                        r"(?:contendo|com\s+(?:o\s+)?conteúdo)\s+"
+                        r"(?P<content>.*?)\s*$",
+                        operation,
+                        flags=re.IGNORECASE | re.DOTALL,
+                    )
+                    if not parsed:
+                        return []
+
+                    target = parsed.group("path")
+                    content = parsed.group("content").strip()
+                    content = re.sub(
+                        r"^exatamente\s+",
+                        "",
+                        content,
+                        count=1,
+                        flags=re.IGNORECASE,
+                    )
+
+                    change = self._build_planner_change(
+                        f"{action} {target}", ""
+                    )
+                    if change is None:
+                        return []
+
+                    change["content"] = content
+                    changes.append(change)
+
+                return changes
 
         # Forma abreviada de múltiplas operações com a mesma ação:
         # "alterar a.py e b.py", "modificar a.py e b.py", etc.
