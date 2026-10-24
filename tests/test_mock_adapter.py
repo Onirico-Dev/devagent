@@ -2680,3 +2680,35 @@ def test_mock_compound_create_preserves_explicit_content_for_three_files():
         "config.py": "APP_NAME = 'DevAgent'",
         "main.py": "from app import main",
     }
+
+
+def test_mock_compound_create_supports_mixed_content_markers():
+    from core.adapters.mock import MockAdapter
+
+    instruction = (
+        "Crie a.py com conteúdo ALFA "
+        "e b.py com o conteúdo BETA "
+        "e c.py contendo exatamente GAMA"
+    )
+
+    result = MockAdapter()._build_compound_create_changes(instruction)
+
+    assert {item["path"]: item["content"] for item in result} == {
+        "a.py": "ALFA",
+        "b.py": "BETA",
+        "c.py": "GAMA",
+    }
+
+
+def test_mock_compound_create_supports_three_files_without_content():
+    from core.adapters.mock import MockAdapter
+
+    result = MockAdapter()._build_compound_create_changes(
+        "Crie a.py e b.py e c.py"
+    )
+
+    assert {item["path"]: item.get("content", "") for item in result} == {
+        "a.py": "",
+        "b.py": "",
+        "c.py": "",
+    }
