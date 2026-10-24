@@ -2644,3 +2644,19 @@ def test_mock_legacy_create_content_continues_after_empty_marker():
     instruction = "crie arquivo exemplo.py com base contendo "
 
     assert adapter._extract_legacy_create_content(instruction) == "base contendo"
+
+
+def test_mock_compound_create_preserves_explicit_content_for_each_file():
+    from core.adapters.mock import MockAdapter
+
+    instruction = (
+        "Crie app.py contendo exatamente print('APP_OK') "
+        "e config.py contendo exatamente APP_NAME = 'DevAgent'"
+    )
+
+    result = MockAdapter()._build_compound_create_changes(instruction)
+
+    assert len(result) == 2
+    changes = {item["path"]: item for item in result}
+    assert changes["app.py"]["content"] == "print('APP_OK')"
+    assert changes["config.py"]["content"] == "APP_NAME = 'DevAgent'"
