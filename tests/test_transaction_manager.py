@@ -4839,3 +4839,103 @@ def test_backup_file_rejects_existing_backup_without_integrity_record(
     assert backup.read_text(encoding="utf-8") == "unverified backup\\n"
     assert "target.py" not in transaction.metadata["backup_integrity"]
     assert target.read_text(encoding="utf-8") == "original source\\n"
+
+
+def test_restart_recovers_after_partial_created_file_removal(
+    tmp_path, monkeypatch
+):
+    import pytest
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import TransactionStatus
+
+    manager, transaction = make_started_transaction(tmp_path)
+    first = tmp_path / "restart-first.py"
+    second = tmp_path / "restart-second.py"
+    first.write_text("FIRST\n", encoding="utf-8")
+    second.write_text("SECOND\n", encoding="utf-8")
+    manager.register_created(transaction, "restart-first.py")
+    manager.register_created(transaction, "restart-second.py")
+
+    original_unlink = manager._unlink_created_file
+    calls = {"count": 0}
+
+    def fail_on_second_unlink(parent_fd, relative, expected_dev, expected_ino):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            raise OSError("simulated failure before restart")
+        return original_unlink(parent_fd, relative, expected_dev, expected_ino)
+
+    monkeypatch.setattr(manager, "_unlink_created_file", fail_on_second_unlink)
+    with pytest.raises(OSError, match="simulated failure before restart"):
+        manager.rollback(transaction)
+
+    assert not first.exists()
+    assert second.exists()
+    transaction_id = transaction.transaction_id
+    monkeypatch.undo()
+
+    restarted_manager = TransactionManager(root=tmp_path)
+    recovered = restarted_manager.recover_incomplete_transactions()
+
+    assert len(recovered) == 1
+    assert recovered[0].transaction_id == transaction_id
+    assert recovered[0].status == TransactionStatus.ROLLED_BACK
+    assert not first.exists()
+    assert not second.exists()
+    assert restarted_manager.load_manifest(transaction_id).status == (
+        TransactionStatus.ROLLED_BACK
+    )
+
+
+def test_restart_recovers_after_partial_backup_restoration(
+    tmp_path, monkeypatch
+):
+    import pytest
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import TransactionStatus
+
+    manager, transaction = make_started_transaction(tmp_path)
+    first = tmp_path / "restart-original-first.py"
+    second = tmp_path / "restart-original-second.py"
+    first.write_text("ORIGINAL FIRST\n", encoding="utf-8")
+    second.write_text("ORIGINAL SECOND\n", encoding="utf-8")
+    manager.backup_file(transaction, "restart-original-first.py")
+    manager.backup_file(transaction, "restart-original-second.py")
+    first.write_text("CHANGED FIRST\n", encoding="utf-8")
+    second.write_text("CHANGED SECOND\n", encoding="utf-8")
+
+    original_copy = manager._copy_file_no_follow
+    calls = {"count": 0}
+
+    def fail_on_second_restore(
+        source_root, source_relative, destination_root,
+        destination_relative, overwrite=False,
+    ):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            raise OSError("simulated restore failure before restart")
+        return original_copy(
+            source_root, source_relative, destination_root,
+            destination_relative, overwrite=overwrite,
+        )
+
+    monkeypatch.setattr(manager, "_copy_file_no_follow", fail_on_second_restore)
+    with pytest.raises(OSError, match="simulated restore failure before restart"):
+        manager.rollback(transaction)
+
+    assert first.read_text(encoding="utf-8") == "ORIGINAL FIRST\n"
+    assert second.read_text(encoding="utf-8") == "CHANGED SECOND\n"
+    transaction_id = transaction.transaction_id
+    monkeypatch.undo()
+
+    restarted_manager = TransactionManager(root=tmp_path)
+    recovered = restarted_manager.recover_incomplete_transactions()
+
+    assert len(recovered) == 1
+    assert recovered[0].transaction_id == transaction_id
+    assert recovered[0].status == TransactionStatus.ROLLED_BACK
+    assert first.read_text(encoding="utf-8") == "ORIGINAL FIRST\n"
+    assert second.read_text(encoding="utf-8") == "ORIGINAL SECOND\n"
+    assert restarted_manager.load_manifest(transaction_id).status == (
+        TransactionStatus.ROLLED_BACK
+    )
