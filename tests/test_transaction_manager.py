@@ -4939,3 +4939,440 @@ def test_restart_recovers_after_partial_backup_restoration(
     assert restarted_manager.load_manifest(transaction_id).status == (
         TransactionStatus.ROLLED_BACK
     )
+
+
+
+def test_coverage_validate_backup_path_rejects_non_pathlike(tmp_path):
+    manager = TransactionManager(root=tmp_path)
+
+    class NotPathLike:
+        def __str__(self):
+            return "valid-looking-name"
+
+    with pytest.raises(ValueError, match="Caminho inválido"):
+        manager._validate_backup_path(NotPathLike())
+
+
+@pytest.mark.parametrize("path", ["", ".", "bad\x00name"])
+def test_coverage_validate_backup_path_rejects_empty_dot_and_nul(
+    tmp_path, path
+):
+    manager = TransactionManager(root=tmp_path)
+    with pytest.raises(ValueError, match="Caminho inválido"):
+        manager._validate_backup_path(path)
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        None,
+        [],
+        {},
+        {"size": True, "sha256": "a" * 64},
+        {"size": -1, "sha256": "a" * 64},
+        {"size": 0, "sha256": "A" * 64},
+        {"size": 0, "sha256": "a" * 63},
+        {"size": 0, "sha256": "a" * 64, "extra": 1},
+    ],
+)
+def test_coverage_invalid_backup_fingerprints_are_rejected(tmp_path, record):
+    manager = TransactionManager(root=tmp_path)
+    assert manager._is_valid_backup_fingerprint(record) is False
+
+
+def test_coverage_fingerprint_rejects_non_regular_file(tmp_path):
+    manager = TransactionManager(root=tmp_path)
+    directory = tmp_path / "not-a-file"
+    directory.mkdir()
+    with pytest.raises(ValueError, match="não é um arquivo regular"):
+        manager._fingerprint_backup(directory)
+
+
+def test_coverage_backup_file_rejects_non_dict_integrity_records(tmp_path):
+    manager, transaction = make_started_transaction(tmp_path)
+    transaction.metadata["backup_integrity"] = []
+    with pytest.raises(ValueError, match="Registros de integridade"):
+        manager.backup_file(transaction, "missing.py")
+
+
+def test_coverage_backup_file_reuses_absent_file_record(tmp_path):
+    manager, transaction = make_started_transaction(tmp_path)
+    transaction.metadata["backup_integrity"] = {
+        "missing.py": {"exists": False}
+    }
+    manager.backup_file(transaction, "missing.py")
+    assert transaction.metadata["backup_integrity"]["missing.py"] == {
+        "exists": False
+    }
+
+
+def test_coverage_backup_file_rolls_back_absent_record_on_persist_failure(
+    tmp_path, monkeypatch
+):
+    manager, transaction = make_started_transaction(tmp_path)
+
+    def fail_persist(_transaction):
+        raise OSError("injected absent-record persistence failure")
+
+    monkeypatch.setattr(manager, "persist_manifest", fail_persist)
+    with pytest.raises(OSError, match="absent-record persistence failure"):
+        manager.backup_file(transaction, "missing.py")
+    assert "missing.py" not in transaction.metadata["backup_integrity"]
+
+
+def test_coverage_backup_file_preserves_valid_record_after_source_disappears(
+    tmp_path,
+):
+    manager, transaction = make_started_transaction(tmp_path)
+    source = tmp_path / "present.py"
+    source.write_text("original", encoding="utf-8")
+    manager.backup_file(transaction, "present.py")
+    source.unlink()
+
+    expected = transaction.metadata["backup_integrity"]["present.py"]
+    manager.backup_file(transaction, "present.py")
+    assert transaction.metadata["backup_integrity"]["present.py"] == expected
+
+
+def test_coverage_validate_backup_integrity_rejects_non_dict_records(
+    tmp_path,
+):
+    manager, transaction = make_started_transaction(tmp_path)
+    transaction.metadata["backup_integrity"] = []
+    with pytest.raises(ValueError, match="Registros de integridade"):
+        manager._validate_backup_integrity(
+            transaction, Path(transaction.metadata["backup"])
+        )
+
+
+def test_coverage_validate_backup_integrity_rejects_non_dict_execution(
+    tmp_path,
+):
+    manager, transaction = make_started_transaction(tmp_path)
+    transaction.metadata["execution"] = []
+    with pytest.raises(ValueError, match="Metadados de execução inválidos"):
+        manager._validate_backup_integrity(
+            transaction, Path(transaction.metadata["backup"])
+        )
+
+
+def test_coverage_validate_backup_integrity_rejects_unknown_phase(tmp_path):
+    from core.schemas.models import Change, ChangeType
+
+    manager, transaction = make_started_transaction(tmp_path)
+    transaction.changes = [
+        Change(change_type=ChangeType.CREATE, path="new.py", content="x")
+    ]
+    transaction.metadata["execution"] = {
+        "phase": "unknown-phase",
+        "changes_applied": 0,
+    }
+    with pytest.raises(ValueError, match="Fase de execução inválida"):
+        manager._validate_backup_integrity(
+            transaction, Path(transaction.metadata["backup"])
+        )
+
+
+def test_coverage_validate_backup_integrity_rejects_preparing_contradiction(
+    tmp_path,
+):
+    from core.schemas.models import Change, ChangeType
+
+    manager, transaction = make_started_transaction(tmp_path)
+    transaction.changes = [
+        Change(change_type=ChangeType.CREATE, path="new.py", content="x")
+    ]
+    transaction.metadata["execution"] = {
+        "phase": "preparing",
+        "changes_applied": 1,
+    }
+    with pytest.raises(ValueError, match="preparação com alterações aplicadas"):
+        manager._validate_backup_integrity(
+            transaction, Path(transaction.metadata["backup"])
+        )
+
+
+def test_coverage_validate_backup_integrity_rejects_invalid_created_registry(
+    tmp_path,
+):
+    from core.schemas.models import Change, ChangeType
+
+    manager, transaction = make_started_transaction(tmp_path)
+    transaction.changes = [
+        Change(change_type=ChangeType.CREATE, path="new.py", content="x")
+    ]
+    transaction.metadata["execution"] = {
+        "phase": "executing",
+        "changes_applied": 1,
+    }
+    transaction.metadata["created"] = "not-a-list"
+    with pytest.raises(ValueError, match="Registro de arquivos criados inválido"):
+        manager._validate_backup_integrity(
+            transaction, Path(transaction.metadata["backup"])
+        )
+
+
+def test_coverage_validate_backup_integrity_rejects_malformed_fingerprint(
+    tmp_path,
+):
+    manager, transaction = make_started_transaction(tmp_path)
+    transaction.metadata["backup_integrity"] = {
+        "sample.py": {"size": -1, "sha256": "invalid"}
+    }
+    with pytest.raises(ValueError, match="Registro de integridade inválido"):
+        manager._validate_backup_integrity(
+            transaction, Path(transaction.metadata["backup"])
+        )
+
+
+def test_coverage_record_staged_identity_rejects_different_parent(tmp_path):
+    manager, transaction = make_started_transaction(tmp_path)
+    with pytest.raises(ValueError, match="Temporário deve estar no diretório"):
+        manager.record_staged_created_identity(
+            transaction, "dir/target.py", "other/temp.py", 1, 2
+        )
+
+
+def test_coverage_record_staged_identity_restores_previous_metadata(
+    tmp_path, monkeypatch
+):
+    manager, transaction = make_started_transaction(tmp_path)
+    transaction.metadata["created_identity"] = {
+        "target.py": {"st_dev": 11, "st_ino": 22}
+    }
+
+    def fail_persist(_transaction):
+        raise OSError("injected identity persistence failure")
+
+    monkeypatch.setattr(manager, "persist_manifest", fail_persist)
+    with pytest.raises(OSError, match="identity persistence failure"):
+        manager.record_staged_created_identity(
+            transaction, "target.py", ".target.py.tmp", 33, 44
+        )
+    assert transaction.metadata["created_identity"]["target.py"] == {
+        "st_dev": 11, "st_ino": 22
+    }
+
+
+def test_coverage_record_staged_identity_removes_new_metadata_on_failure(
+    tmp_path, monkeypatch
+):
+    manager, transaction = make_started_transaction(tmp_path)
+
+    def fail_persist(_transaction):
+        raise OSError("injected new identity persistence failure")
+
+    monkeypatch.setattr(manager, "persist_manifest", fail_persist)
+    with pytest.raises(OSError, match="new identity persistence failure"):
+        manager.record_staged_created_identity(
+            transaction, "target.py", ".target.py.tmp", 33, 44
+        )
+    assert "target.py" not in transaction.metadata["created_identity"]
+
+
+def test_coverage_backup_source_symlink_resolving_outside_project(tmp_path):
+    manager, transaction = make_started_transaction(tmp_path)
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-coverage.txt"
+    outside.write_text("outside", encoding="utf-8")
+    link = tmp_path / "escape-coverage.txt"
+    link.symlink_to(outside)
+
+    try:
+        with pytest.raises(ValueError, match="Caminho fora do projeto"):
+            manager.backup_file(transaction, link.name)
+    finally:
+        link.unlink(missing_ok=True)
+        outside.unlink(missing_ok=True)
+
+
+def test_coverage_validate_backup_integrity_defaults_none_metadata(tmp_path):
+    manager = TransactionManager(root=tmp_path, backup_dir="transactions")
+    transaction = make_transaction(tmp_path)
+    transaction.metadata["backup_integrity"] = None
+    transaction.metadata["execution"] = None
+    backup_root = tmp_path / "backup-root"
+    backup_root.mkdir()
+
+    manager._validate_backup_integrity(transaction, backup_root)
+
+
+def test_coverage_backup_file_rejects_directory_at_destination(tmp_path):
+    manager, transaction = make_started_transaction(tmp_path)
+    (tmp_path / "target-coverage.py").write_text("source", encoding="utf-8")
+    backup_dir = manager._resolve_transaction_backup_directory(transaction)
+    (backup_dir / "target-coverage.py").mkdir()
+
+    with pytest.raises(ValueError, match="Backup não é um arquivo regular"):
+        manager.backup_file(transaction, "target-coverage.py")
+
+
+def test_coverage_backup_file_detects_changed_existing_backup(tmp_path):
+    manager, transaction = make_started_transaction(tmp_path)
+    (tmp_path / "changed-backup-coverage.py").write_text(
+        "original", encoding="utf-8"
+    )
+    manager.backup_file(transaction, "changed-backup-coverage.py")
+    backup = (
+        manager._resolve_transaction_backup_directory(transaction)
+        / "changed-backup-coverage.py"
+    )
+    backup.write_text("tampered", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Integridade do backup comprometida"):
+        manager.backup_file(transaction, "changed-backup-coverage.py")
+
+
+def test_coverage_backup_file_rejects_non_dict_copy_fingerprint(
+    tmp_path, monkeypatch
+):
+    manager, transaction = make_started_transaction(tmp_path)
+    (tmp_path / "bad-fingerprint-coverage.py").write_text(
+        "source", encoding="utf-8"
+    )
+    monkeypatch.setattr(manager, "_copy_file_no_follow", lambda *_args: "invalid")
+
+    with pytest.raises(RuntimeError, match="não retornou a integridade"):
+        manager.backup_file(transaction, "bad-fingerprint-coverage.py")
+
+
+def test_coverage_backup_file_handles_manifest_read_error_and_cleans_copy(
+    tmp_path, monkeypatch
+):
+    manager, transaction = make_started_transaction(tmp_path)
+    (tmp_path / "manifest-read-coverage.py").write_text(
+        "source", encoding="utf-8"
+    )
+
+    def fail_persist(_transaction):
+        raise OSError("simulated persist failure")
+
+    def fail_read(_manifest):
+        raise ValueError("simulated manifest read failure")
+
+    monkeypatch.setattr(manager, "persist_manifest", fail_persist)
+    monkeypatch.setattr(manager, "_read_manifest_data", fail_read)
+
+    with pytest.raises(OSError, match="simulated persist failure"):
+        manager.backup_file(transaction, "manifest-read-coverage.py")
+
+    backup = (
+        manager._resolve_transaction_backup_directory(transaction)
+        / "manifest-read-coverage.py"
+    )
+    assert not backup.exists()
+    assert "manifest-read-coverage.py" not in transaction.metadata["backup_integrity"]
+
+
+def test_coverage_backup_file_restores_previous_record_after_persist_failure(
+    tmp_path, monkeypatch
+):
+    manager, transaction = make_started_transaction(tmp_path)
+    (tmp_path / "previous-record-coverage.py").write_text(
+        "source", encoding="utf-8"
+    )
+    records = transaction.metadata.setdefault("backup_integrity", {})
+    previous = {"previous": "record"}
+    records["previous-record-coverage.py"] = previous
+
+    def fail_persist(_transaction):
+        raise OSError("simulated persist failure")
+
+    def fail_read(_manifest):
+        raise ValueError("simulated manifest read failure")
+
+    monkeypatch.setattr(manager, "persist_manifest", fail_persist)
+    monkeypatch.setattr(manager, "_read_manifest_data", fail_read)
+
+    with pytest.raises(OSError, match="simulated persist failure"):
+        manager.backup_file(transaction, "previous-record-coverage.py")
+
+    assert records["previous-record-coverage.py"] == previous
+    backup = (
+        manager._resolve_transaction_backup_directory(transaction)
+        / "previous-record-coverage.py"
+    )
+    assert not backup.exists()
+
+
+def test_coverage_rename_noreplace_reports_unavailable_syscall(monkeypatch):
+    import ctypes
+    import errno
+
+    monkeypatch.setattr(ctypes, "CDLL", lambda *_args, **_kwargs: object())
+
+    with pytest.raises(OSError) as exc_info:
+        TransactionManager._rename_noreplace_in_parent(
+            -1, b"source", b"destination"
+        )
+
+    assert exc_info.value.errno == errno.ENOSYS
+
+
+def test_coverage_remove_created_files_rejects_temporary_in_other_directory(
+    tmp_path, monkeypatch
+):
+    manager = TransactionManager(root=tmp_path)
+    transaction = make_transaction(tmp_path)
+    transaction.metadata["created_identity"] = {
+        "target-coverage.txt": {
+            "temporary_path": "subdir/temp-coverage.txt"
+        }
+    }
+
+    monkeypatch.setattr(
+        manager, "_get_created_file_identity", lambda *_args: (10, 20)
+    )
+    monkeypatch.setattr(manager, "_remove_created_file", lambda **_kwargs: None)
+
+    with pytest.raises(ValueError, match="Temporário registrado fora"):
+        manager._remove_created_files(transaction)
+
+
+def test_coverage_restore_backup_files_rejects_symlink(tmp_path):
+    manager = TransactionManager(root=tmp_path)
+    backup_root = tmp_path / "backup-symlink-coverage"
+    backup_root.mkdir()
+    outside = tmp_path / "outside-symlink-coverage.txt"
+    outside.write_text("content", encoding="utf-8")
+    (backup_root / "linked.txt").symlink_to(outside)
+
+    with pytest.raises(ValueError, match="Backup contém symlink"):
+        manager._restore_backup_files(backup_root)
+
+
+def test_coverage_recovery_records_unlock_and_close_errors(
+    tmp_path, monkeypatch
+):
+    import fcntl
+    from core.schemas.models import Transaction
+
+    manager = TransactionManager(root=tmp_path)
+    transaction = Transaction(transaction_id="tx-coverage-lock-errors")
+    manager.begin(transaction)
+
+    class FailingLock:
+        def fileno(self):
+            return 123
+
+        def close(self):
+            raise OSError("simulated close failure")
+
+    lock = FailingLock()
+    monkeypatch.setattr(manager, "_recovery_lock", lambda *_args: lock)
+    monkeypatch.setattr(
+        manager, "_recover_transaction", lambda current, *_args: current
+    )
+
+    original_flock = fcntl.flock
+
+    def fail_unlock(fd, operation):
+        if operation == fcntl.LOCK_UN:
+            raise OSError("simulated unlock failure")
+        return original_flock(fd, operation)
+
+    monkeypatch.setattr(
+        "core.executor.transaction_manager.fcntl.flock", fail_unlock
+    )
+
+    with pytest.raises(OSError, match="simulated unlock failure"):
+        manager.recover_incomplete_transactions()

@@ -1311,3 +1311,55 @@ def test_validate_approved_transaction_rejects_unsupported_change_type():
         match="Tipo de alteração não suportado: invalid",
     ):
         ctx.flow._validate_approved_transaction(ctx.transaction)
+
+
+def test_create_handles_signature_inspection_failure(monkeypatch):
+    import core.engine.transaction_flow as transaction_flow_module
+
+    ctx = make_flow()
+
+    def fail_signature(_):
+        raise ValueError("assinatura indisponível")
+
+    monkeypatch.setattr(
+        transaction_flow_module.inspect,
+        "signature",
+        fail_signature,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Executor não suporta criação transacional por temporário",
+    ):
+        ctx.flow._execute_and_test_transaction(
+            ctx.transaction,
+            ctx.repair_state,
+            "approval-1",
+        )
+
+    assert ctx.executor.calls == []
+
+
+def test_create_rejects_missing_staged_identity_recorder():
+    ctx = make_flow()
+
+    def execute(transaction, on_change_applied=None, on_create_prepared=None):
+        assert on_create_prepared is not None
+        on_create_prepared(
+            transaction.changes[0],
+            ".app.py.devagent-tmp",
+            123,
+            456,
+        )
+
+    ctx.executor.execute = execute
+
+    with pytest.raises(
+        RuntimeError,
+        match="TransactionManager não suporta identidade temporária",
+    ):
+        ctx.flow._execute_and_test_transaction(
+            ctx.transaction,
+            ctx.repair_state,
+            "approval-1",
+        )

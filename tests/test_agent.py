@@ -396,3 +396,15 @@ def test_build_transaction_rejects_invalid_approved_metadata(
 
     with pytest.raises(ValueError, match="inválid"):
         agent.build_transaction_from_approved_plan(plan)
+
+def test_process_rejects_invalid_feedback_context(tmp_path):
+    agent = DevAgent(root=tmp_path)
+    instructions_before = list(agent.session.instructions)
+
+    with pytest.raises(
+        ValueError,
+        match="Contexto de feedback inválido.",
+    ):
+        agent.process("criar app.py", feedback_context=[])
+
+    assert agent.session.instructions == instructions_before

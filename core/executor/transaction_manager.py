@@ -1011,15 +1011,11 @@ class TransactionManager:
                     f"Registro de integridade inválido: {record_key}"
                 )
 
-            previous = None
             records[record_key] = absent_record
             try:
                 self.persist_manifest(transaction)
             except Exception:
-                if previous is None:
-                    records.pop(record_key, None)
-                else:
-                    records[record_key] = previous
+                records.pop(record_key, None)
                 raise
             return
 

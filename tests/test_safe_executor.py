@@ -1186,3 +1186,299 @@ def test_execute_updates_progress_and_calls_callback(tmp_path):
     assert progress == [1, 2]
     assert transaction.metadata["execution"]["phase"] == "completed"
     assert transaction.metadata["execution"]["changes_applied"] == 2
+
+
+def test_write_new_file_in_parent_writes_and_syncs(tmp_path, monkeypatch):
+    import os
+    from core.executor.safe_executor import SafeExecutor
+
+    parent_fd = os.open(
+        tmp_path,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+    )
+    sync_calls = []
+    monkeypatch.setattr(
+        SafeExecutor,
+        "_fsync_directory",
+        staticmethod(lambda fd: sync_calls.append(fd)),
+    )
+    try:
+        SafeExecutor._write_new_file_in_parent(
+            parent_fd, "direct.txt", "durable content"
+        )
+        assert (tmp_path / "direct.txt").read_text(
+            encoding="utf-8"
+        ) == "durable content"
+        assert sync_calls == [parent_fd]
+    finally:
+        os.close(parent_fd)
+
+
+def test_rename_noreplace_reports_unavailable_renameat2(monkeypatch):
+    import errno
+    from core.executor.safe_executor import SafeExecutor
+
+    monkeypatch.setattr(
+        "core.executor.safe_executor.ctypes.CDLL",
+        lambda *args, **kwargs: object(),
+    )
+    with pytest.raises(OSError) as caught:
+        SafeExecutor._rename_noreplace_in_parent(
+            -1, "source", "destination"
+        )
+    assert caught.value.errno == errno.ENOSYS
+
+
+def test_staged_cleanup_ignores_empty_name_and_missing_file(
+    tmp_path, monkeypatch
+):
+    import os
+    from core.executor.safe_executor import SafeExecutor
+
+    parent_fd = os.open(
+        tmp_path,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+    )
+    calls = []
+
+    def missing_file(parent_fd, source, destination):
+        calls.append((source, destination))
+        raise FileNotFoundError(source)
+
+    monkeypatch.setattr(
+        SafeExecutor,
+        "_rename_noreplace_in_parent",
+        staticmethod(missing_file),
+    )
+    try:
+        SafeExecutor._cleanup_staged_file(parent_fd, "", None, None)
+        assert calls == []
+
+        SafeExecutor._cleanup_staged_file(
+            parent_fd, "already-gone.tmp", None, None
+        )
+        assert len(calls) == 1
+        assert calls[0][0] == "already-gone.tmp"
+    finally:
+        os.close(parent_fd)
+
+
+def test_staged_cleanup_restores_file_when_quarantine_open_fails(
+    tmp_path, monkeypatch
+):
+    import os
+    from core.executor.safe_executor import SafeExecutor
+
+    staged = tmp_path / "staged.tmp"
+    staged.write_text("preserve me", encoding="utf-8")
+    info = staged.stat()
+    parent_fd = os.open(
+        tmp_path,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+    )
+    original_open = os.open
+
+    def fail_quarantine_open(path, *args, **kwargs):
+        if isinstance(path, str) and path.startswith(".devagent-cleanup-"):
+            raise OSError("simulated quarantine open failure")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(
+        "core.executor.safe_executor.os.open",
+        fail_quarantine_open,
+    )
+    try:
+        with pytest.raises(
+            OSError, match="simulated quarantine open failure"
+        ):
+            SafeExecutor._cleanup_staged_file(
+                parent_fd, "staged.tmp", info.st_dev, info.st_ino
+            )
+        assert staged.read_text(encoding="utf-8") == "preserve me"
+        assert not list(tmp_path.glob(".devagent-cleanup-*"))
+    finally:
+        os.close(parent_fd)
+
+
+def test_staged_cleanup_preserves_quarantine_if_restore_fails(
+    tmp_path, monkeypatch
+):
+    import os
+    from core.executor.safe_executor import SafeExecutor
+
+    staged = tmp_path / "staged.tmp"
+    staged.write_text("preserve me", encoding="utf-8")
+    info = staged.stat()
+    parent_fd = os.open(
+        tmp_path,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+    )
+    original_rename = SafeExecutor._rename_noreplace_in_parent
+    quarantine_names = []
+    rename_calls = 0
+    original_open = os.open
+
+    def fail_quarantine_open(path, *args, **kwargs):
+        if isinstance(path, str) and path.startswith(".devagent-cleanup-"):
+            raise OSError("simulated quarantine open failure")
+        return original_open(path, *args, **kwargs)
+
+    def fail_restore(dir_fd, source, destination):
+        nonlocal rename_calls
+        rename_calls += 1
+        if rename_calls == 1:
+            quarantine_names.append(destination)
+            return original_rename(dir_fd, source, destination)
+        raise OSError("simulated restore failure")
+
+    monkeypatch.setattr(
+        "core.executor.safe_executor.os.open",
+        fail_quarantine_open,
+    )
+    monkeypatch.setattr(
+        SafeExecutor,
+        "_rename_noreplace_in_parent",
+        staticmethod(fail_restore),
+    )
+    try:
+        with pytest.raises(
+            OSError, match="simulated quarantine open failure"
+        ):
+            SafeExecutor._cleanup_staged_file(
+                parent_fd, "staged.tmp", info.st_dev, info.st_ino
+            )
+
+        assert not staged.exists()
+        assert len(quarantine_names) == 1
+        quarantined = tmp_path / quarantine_names[0]
+        assert quarantined.read_text(encoding="utf-8") == "preserve me"
+    finally:
+        os.close(parent_fd)
+
+
+def test_create_change_exhausts_temporary_name_collisions(
+    tmp_path, monkeypatch
+):
+    from core.executor.safe_executor import SafeExecutor
+    from core.schemas.models import Change, ChangeType
+
+    executor = SafeExecutor(tmp_path)
+    original_open = os.open
+    attempts = 0
+
+    def collide_on_create_temp(path, *args, **kwargs):
+        nonlocal attempts
+        if isinstance(path, str) and path.startswith(".created.txt.devagent-"):
+            attempts += 1
+            raise FileExistsError("simulated temporary collision")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(
+        "core.executor.safe_executor.os.open",
+        collide_on_create_temp,
+    )
+    with pytest.raises(
+        FileExistsError,
+        match="Não foi possível criar temporário: created.txt",
+    ):
+        executor.execute_change(
+            Change(
+                change_type=ChangeType.CREATE,
+                path="created.txt",
+                content="content",
+            )
+        )
+
+    assert attempts == 32
+    assert not (tmp_path / "created.txt").exists()
+
+
+def test_create_change_preserves_non_collision_publish_error(
+    tmp_path, monkeypatch
+):
+    import errno
+    from core.executor.safe_executor import SafeExecutor
+    from core.schemas.models import Change, ChangeType
+
+    executor = SafeExecutor(tmp_path)
+    original_rename = SafeExecutor._rename_noreplace_in_parent
+
+    def fail_target_publish(parent_fd, source, destination):
+        if destination == "created.txt":
+            raise OSError(errno.EIO, "simulated publish I/O failure")
+        return original_rename(parent_fd, source, destination)
+
+    monkeypatch.setattr(
+        SafeExecutor,
+        "_rename_noreplace_in_parent",
+        staticmethod(fail_target_publish),
+    )
+    with pytest.raises(OSError, match="simulated publish I/O failure"):
+        executor.execute_change(
+            Change(
+                change_type=ChangeType.CREATE,
+                path="created.txt",
+                content="content",
+            )
+        )
+
+    assert not (tmp_path / "created.txt").exists()
+    assert not list(tmp_path.glob(".created.txt.devagent-*.tmp"))
+    assert not list(tmp_path.glob(".devagent-cleanup-*"))
+
+
+def test_create_change_closes_fd_when_initial_fstat_fails(
+    tmp_path, monkeypatch
+):
+    import os
+    from core.executor.safe_executor import SafeExecutor
+    from core.schemas.models import Change, ChangeType
+
+    executor = SafeExecutor(tmp_path)
+    original_open = os.open
+    original_fstat = os.fstat
+    captured_fds = []
+    failed = False
+
+    def capture_temp_fd(path, *args, **kwargs):
+        fd = original_open(path, *args, **kwargs)
+        if isinstance(path, str) and path.startswith(".created.txt.devagent-"):
+            captured_fds.append(fd)
+        return fd
+
+    def fail_first_fstat(fd):
+        nonlocal failed
+        if captured_fds and fd == captured_fds[0] and not failed:
+            failed = True
+            raise OSError("simulated initial fstat failure")
+        return original_fstat(fd)
+
+    monkeypatch.setattr(
+        "core.executor.safe_executor.os.open",
+        capture_temp_fd,
+    )
+    monkeypatch.setattr(
+        "core.executor.safe_executor.os.fstat",
+        fail_first_fstat,
+    )
+
+    with pytest.raises(OSError, match="simulated initial fstat failure"):
+        executor.execute_change(
+            Change(
+                change_type=ChangeType.CREATE,
+                path="created.txt",
+                content="content",
+            )
+        )
+
+    assert failed
+    assert len(captured_fds) == 1
+    with pytest.raises(OSError):
+        original_fstat(captured_fds[0])
+    assert not (tmp_path / "created.txt").exists()
+
+    # Sem identidade confiável, o temporário não deve ser removido
+    # por um teste que não consegue confirmar sua identidade.
+    staged_files = list(tmp_path.glob(".created.txt.devagent-*.tmp"))
+    assert len(staged_files) == 1
+    assert staged_files[0].is_file()

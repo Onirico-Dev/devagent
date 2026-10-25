@@ -716,3 +716,137 @@ def test_copy_overwrite_preserves_quarantine_if_unlink_fails(
     )
     assert len(quarantines) == 1
     assert quarantines[0].read_text(encoding="utf-8") == "ORIGINAL"
+
+
+
+def test_open_directory_chain_maps_eloop_to_value_error(monkeypatch, tmp_path):
+    original_open = os.open
+
+    def fail(path, flags, *args, **kwargs):
+        if kwargs.get("dir_fd") is not None and path == "unsafe":
+            raise OSError(errno.ELOOP, "symlink loop")
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", fail)
+    with pytest.raises(ValueError, match="Caminho de diretório não é seguro"):
+        SecureFileSystem.open_directory_chain(tmp_path, ("unsafe",))
+
+
+def test_coverage_renameat2_unavailable_branch(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(
+        "core.executor.secure_filesystem.ctypes.CDLL",
+        lambda *a, **k: SimpleNamespace(),
+    )
+    with pytest.raises(OSError) as caught:
+        SecureFileSystem._rename_noreplace_in_parent(1, "source", "dest")
+    assert caught.value.errno == errno.ENOSYS
+
+
+def test_coverage_renameat2_syscall_error(monkeypatch):
+    from types import SimpleNamespace
+
+    class FailedRename:
+        def __call__(self, *args):
+            return -1
+
+    rename = FailedRename()
+    monkeypatch.setattr(
+        "core.executor.secure_filesystem.ctypes.CDLL",
+        lambda *a, **k: SimpleNamespace(renameat2=rename),
+    )
+    monkeypatch.setattr(
+        "core.executor.secure_filesystem.ctypes.get_errno",
+        lambda: errno.EPERM,
+    )
+    with pytest.raises(OSError) as caught:
+        SecureFileSystem._rename_noreplace_in_parent(1, "source", "dest")
+    assert caught.value.errno == errno.EPERM
+
+
+def test_replace_temporary_destination_reports_removed_destination(tmp_path):
+    dest = tmp_path / "destination.txt"
+    temp = tmp_path / ".destination.txt.devagent-temp"
+    dest.write_text("original", encoding="utf-8")
+    temp.write_text("replacement", encoding="utf-8")
+    identity = (dest.stat().st_dev, dest.stat().st_ino)
+    dest.unlink()
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(RuntimeError, match="Destino foi removido"):
+            SecureFileSystem._replace_temporary_destination(
+                fd, Path(dest.name), temp.name, identity
+            )
+    finally:
+        os.close(fd)
+    assert temp.exists()
+
+
+def test_replace_temporary_destination_stops_after_quarantine_collisions(
+    monkeypatch, tmp_path
+):
+    dest = tmp_path / "destination.txt"
+    temp = tmp_path / ".destination.txt.devagent-temp"
+    dest.write_text("original", encoding="utf-8")
+    temp.write_text("replacement", encoding="utf-8")
+    identity = (dest.stat().st_dev, dest.stat().st_ino)
+    calls = {"count": 0}
+
+    def collide(parent, source, target):
+        calls["count"] += 1
+        raise FileExistsError(errno.EEXIST, "collision", target)
+
+    monkeypatch.setattr(
+        SecureFileSystem, "_rename_noreplace_in_parent", staticmethod(collide)
+    )
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(FileExistsError, match="Não foi possível criar quarentena"):
+            SecureFileSystem._replace_temporary_destination(
+                fd, Path(dest.name), temp.name, identity
+            )
+    finally:
+        os.close(fd)
+    assert calls["count"] == 32
+    assert dest.read_text(encoding="utf-8") == "original"
+
+
+def test_replace_temporary_destination_preserves_quarantine_if_restore_fails(
+    monkeypatch, tmp_path
+):
+    dest = tmp_path / "destination.txt"
+    temp = tmp_path / ".destination.txt.devagent-temp"
+    dest.write_text("original", encoding="utf-8")
+    temp.write_text("replacement", encoding="utf-8")
+    identity = (dest.stat().st_dev, dest.stat().st_ino)
+    original_rename = SecureFileSystem._rename_noreplace_in_parent
+    calls = {"publish": False, "restore": False}
+
+    def fail_publish_and_restore(parent, source, target):
+        if source == temp.name and target == dest.name:
+            calls["publish"] = True
+            raise OSError(errno.EIO, "publication failed")
+        if "quarantine" in source and target == dest.name:
+            calls["restore"] = True
+            raise OSError(errno.EIO, "restore failed")
+        return original_rename(parent, source, target)
+
+    monkeypatch.setattr(
+        SecureFileSystem,
+        "_rename_noreplace_in_parent",
+        staticmethod(fail_publish_and_restore),
+    )
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(OSError, match="publication failed"):
+            SecureFileSystem._replace_temporary_destination(
+                fd, Path(dest.name), temp.name, identity
+            )
+    finally:
+        os.close(fd)
+
+    quarantines = list(tmp_path.glob(".*.devagent-quarantine-*"))
+    assert calls["publish"] and calls["restore"]
+    assert not dest.exists()
+    assert len(quarantines) == 1
+    assert quarantines[0].read_text(encoding="utf-8") == "original"

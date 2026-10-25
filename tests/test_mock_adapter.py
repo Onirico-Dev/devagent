@@ -2712,3 +2712,59 @@ def test_mock_compound_create_supports_three_files_without_content():
         "b.py": "",
         "c.py": "",
     }
+
+
+def test_mock_repair_observed_operand_conversion_failure(monkeypatch):
+    import builtins
+
+    original_float = builtins.float
+
+    def fail_observed_operand(value):
+        if value == "2":
+            raise ValueError("conversão simulada")
+        return original_float(value)
+
+    monkeypatch.setattr(builtins, "float", fail_observed_operand)
+
+    prompt = (
+        "corrija reparo.py "
+        "def somar(a, b): return a + b "
+        "e crie um teste para somar(2, 3)\n"
+        "Erro:\n"
+        "E       assert 4 == 5\n"
+        "Saída dos testes:\n"
+        "FAILED test_reparo.py::test_somar - assert 4 == 5"
+    )
+
+    assert MockAdapter()._generate_repair_response(prompt) == ""
+
+
+def test_mock_compound_create_rejects_invalid_first_operation():
+    adapter = MockAdapter()
+
+    result = adapter._build_compound_create_changes(
+        "crie operação inválida e arquivo_valido.py contendo conteúdo"
+    )
+
+    assert result == []
+
+
+def test_mock_compound_create_returns_empty_when_change_builder_fails(
+    monkeypatch,
+):
+    adapter = MockAdapter()
+
+    def fail_change_builder(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(
+        adapter,
+        "_build_planner_change",
+        fail_change_builder,
+    )
+
+    result = adapter._build_compound_create_changes(
+        "crie arquivo_a.py contendo A e arquivo_b.py contendo B"
+    )
+
+    assert result == []

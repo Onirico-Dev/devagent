@@ -159,7 +159,6 @@ class MockAdapter(AIAdapter):
                                 if second == 0:
                                     return None
                                 return first / second
-                            return None
 
                         if second == 0 and explicit_expected == 0:
                             return ""
@@ -319,7 +318,6 @@ class MockAdapter(AIAdapter):
                     if second == 0:
                         return None
                     return first / second
-                return None
 
             current_result = apply_operation(
                 first,
@@ -814,7 +812,6 @@ class MockAdapter(AIAdapter):
                     return first * second
                 if operation == "/":
                     return first / second
-                return None
 
             test_expected = apply_operation(
                 float(test_left),
@@ -1392,6 +1389,12 @@ class MockAdapter(AIAdapter):
                 .rstrip()
             )
 
+            content = (
+                f"{existing}\n\n{addition}\n"
+                if generated_addition is not None
+                else f"{existing}\n{addition}\n"
+            )
+
             if generated_addition is not None:
                 function_match = re.match(
                     r"def\s+([A-Za-z_]\w*)\s*\(",
@@ -1427,12 +1430,6 @@ class MockAdapter(AIAdapter):
                             + replacement
                             + "".join(lines[end:])
                         ).rstrip() + "\n"
-                    else:
-                        content = f"{existing}\n\n{addition}\n"
-                else:
-                    content = f"{existing}\n\n{addition}\n"
-            else:
-                content = f"{existing}\n{addition}\n"
 
         return {
             "type": "modify",

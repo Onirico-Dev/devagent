@@ -29,3 +29,4 @@ include = ["core*"]
 
 [tool.pytest.ini_options]
 norecursedirs = ["transactions", "ubuntu-fs"]
+addopts = "--cov=core --cov=api --cov=agent --cov-report=term-missing --cov-fail-under=100"
