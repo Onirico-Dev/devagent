@@ -929,7 +929,8 @@ class MockAdapter(AIAdapter):
         same_action_match = re.match(
             r"^\s*"
             r"(crie|criar|create|modifique|modificar|"
-            r"altere|alterar|modify|delete|apague|remova|remover)"
+            r"altere|alterar|modify|delete|apague|remova|remover|"
+            r"exclua|excluir)"
             r"\s+"
             r"(.+?)"
             r"\s*$",
@@ -1134,7 +1135,8 @@ class MockAdapter(AIAdapter):
         action_pattern = re.compile(
             r"\s+(?:e\s+)+"
             r"(?=(?:crie|criar|create|modifique|modificar|"
-            r"altere|alterar|modify|delete|apague|remova|remover)\b)",
+            r"altere|alterar|modify|delete|apague|remova|remover|"
+            r"exclua|excluir)\b)",
             flags=re.IGNORECASE,
         )
 

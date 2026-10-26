@@ -861,6 +861,24 @@ def test_mock_build_compound_changes_supports_multiple_operations():
     assert result[2]["path"] == "old.py"
 
 
+
+def test_mock_build_compound_changes_supports_exclua_and_excluir():
+    adapter = MockAdapter()
+
+    for verb in ("exclua", "excluir"):
+        instruction = (
+            "crie app.py contendo print('APP') "
+            f"e {verb} old.py"
+        )
+        result = adapter._build_compound_create_changes(instruction)
+
+        assert len(result) == 2, f"Falha para o verbo: {verb}"
+        assert result[0]["type"] == "create"
+        assert result[0]["path"] == "app.py"
+        assert result[1]["type"] == "delete"
+        assert result[1]["path"] == "old.py"
+
+
 def test_mock_build_compound_changes_supports_create_and_modify():
     adapter = MockAdapter()
 
