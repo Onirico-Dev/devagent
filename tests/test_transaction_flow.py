@@ -4,7 +4,7 @@ import pytest
 
 from core.engine.transaction_flow import TransactionFlow
 from core.memory.task_history import TaskHistoryStatus
-from core.schemas.models import TransactionStatus
+from core.schemas.models import ChangeType, TransactionStatus
 
 
 class FakeRepairState:
@@ -1363,3 +1363,69 @@ def test_create_rejects_missing_staged_identity_recorder():
             ctx.repair_state,
             "approval-1",
         )
+
+
+def test_delete_only_transaction_skips_individual_tests_but_runs_declared_tests_and_verification():
+    transaction = make_transaction(
+        changes=[
+            SimpleNamespace(
+                path="removed.py",
+                change_type=ChangeType.DELETE,
+            )
+        ],
+        metadata={"tests": ["tests/test_app.py"]},
+    )
+
+    verification_calls = []
+    verification_result = {"success": True, "status": "verified"}
+
+    verifier = SimpleNamespace(
+        verify_transaction=lambda tx: (
+            verification_calls.append(tx) or verification_result
+        )
+    )
+
+    ctx = make_flow(
+        transaction=transaction,
+        semantic_result={"success": True},
+        post_execution_verifier=verifier,
+    )
+
+    result = ctx.flow._execute_and_test_transaction(
+        transaction,
+        ctx.repair_state,
+        "approval-1",
+    )
+
+    assert ctx.tests.run_calls == []
+    assert ctx.tests.semantic_calls == [["tests/test_app.py"]]
+    assert verification_calls == [transaction]
+    assert result["success"] is True
+    assert result["verification"] == verification_result
+
+
+def test_mixed_transaction_tests_only_non_deleted_paths():
+    transaction = make_transaction(
+        changes=[
+            SimpleNamespace(
+                path="removed.py",
+                change_type=ChangeType.DELETE,
+            ),
+            SimpleNamespace(
+                path="modified.py",
+                change_type=ChangeType.MODIFY,
+            ),
+        ]
+    )
+
+    ctx = make_flow(transaction=transaction)
+
+    result = ctx.flow._execute_and_test_transaction(
+        transaction,
+        ctx.repair_state,
+        "approval-1",
+    )
+
+    assert result["success"] is True
+    assert ctx.tests.run_calls == [["modified.py"]]
+    assert ctx.tests.semantic_calls == []

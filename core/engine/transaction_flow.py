@@ -267,12 +267,24 @@ class TransactionFlow:
             transaction_id=transaction.transaction_id,
         )
 
-        test_result = self.tests.run(
-            [
-                change.path
-                for change in transaction.changes
-            ]
-        )
+        testable_paths = [
+            change.path
+            for change in transaction.changes
+            if change.change_type != ChangeType.DELETE
+        ]
+
+        if testable_paths:
+            test_result = self.tests.run(testable_paths)
+        else:
+            test_result = {
+                "success": True,
+                "returncode": 0,
+                "stdout": (
+                    "Nenhum arquivo criado ou modificado para "
+                    "compilação individual."
+                ),
+                "stderr": "",
+            }
 
         result = self._run_declared_tests(
             transaction,
