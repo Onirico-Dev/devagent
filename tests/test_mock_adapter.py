@@ -217,6 +217,8 @@ def test_mock_modify_recognizes_modify_variants(instruction):
         "delete app.py",
         "apague app.py",
         "remova app.py",
+        "exclua arquivo app.py",
+        "excluir arquivo app.py",
         "remover o arquivo app.py",
     ],
 )

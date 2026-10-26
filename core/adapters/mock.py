@@ -1162,7 +1162,7 @@ class MockAdapter(AIAdapter):
     def _build_delete_change(self, instruction: str):
         delete_match = re.match(
             r"^\s*"
-            r"(?:delete|apague|remova|remover)"
+            r"(?:delete|apague|remova|remover|exclua|excluir)"
             r"\s+"
             r"(?:o\s+|a\s+)?(?:arquivo\s+)?"
             r"([A-Za-z0-9_./-]+\.[A-Za-z0-9_-]+)"
