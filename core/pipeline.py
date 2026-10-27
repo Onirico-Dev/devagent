@@ -29,7 +29,7 @@ class DevAgentPipeline:
         self.engine = ChangeEngine(root)
         self.validator = PlanValidator(root)
         self.context = ProjectContext(root)
-        self.memory = Memory()
+        self.memory = Memory(Path(self.root) / "logs" / "memory.json")
 
     def process(self, text: str, feedback_context: dict | None = None):
         command = self.parser.parse(text)

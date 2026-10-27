@@ -24,6 +24,10 @@ def test_process_serializes_plan_and_updates_session(tmp_path):
     agent = DevAgent(root=tmp_path, ai_adapter=FakeAI())
 
     result = agent.process("criar app.py")
+    assert agent.session.path == (tmp_path / "logs" / "session.json").resolve()
+    assert agent.pipeline.memory.path == (tmp_path / "logs" / "memory.json").resolve()
+    assert agent.session.path.is_file()
+    assert agent.pipeline.memory.path.is_file()
 
     assert result["instruction"] == "criar app.py"
     assert result["objective"] == "Criar app.py"

@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 from core.pipeline import DevAgentPipeline
 from core.adapters.mock import MockAdapter
@@ -10,7 +11,7 @@ from core.schemas.models import Change, ChangeType, Transaction
 class DevAgent:
     def __init__(self, root=".", ai_adapter=None):
         self.root = root
-        self.session = Session()
+        self.session = Session(Path(self.root) / "logs" / "session.json")
         self.ai = ai_adapter or self._create_ai_adapter()
         self.pipeline = DevAgentPipeline(
             root=root,
