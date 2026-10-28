@@ -361,6 +361,12 @@ def main(state_root: str | Path = "transactions", command_args=None):
                     f"{result.get('repair_attempts', 0)}"
                 )
 
+                if non_interactive and (
+                    result.get("status") in {"failed", "rolled_back"}
+                    or result.get("success") is False
+                ):
+                    exit_code = 1
+
             elif action == "reject":
                 if len(parts) < 2:
                     print("Uso: reject <id>")

@@ -941,6 +941,10 @@ def test_main_autonomy_continuous_handles_keyboard_interrupt(
         (["comando-inexistente"], None, 2, "Comando desconhecido."),
         (["status"], None, 2, "Uso: status <id>"),
         (["tasks"], "runtime", 1, "Erro: RuntimeError: falha de teste"),
+        (["approve", "a1"], "approve_rolled_back", 1, "Execução: rolled_back"),
+        (["approve", "a1"], "approve_failed", 1, "Execução: failed"),
+        (["approve", "a1"], "approve_success_false", 1, "Execução: committed"),
+        (["approve", "a1"], "approve_success", 0, "Execução: committed"),
     ],
 )
 def test_non_interactive_exit_contract(
@@ -965,6 +969,34 @@ def test_non_interactive_exit_contract(
             raise RuntimeError("falha de teste")
 
         monkeypatch.setattr(gateway, "list_tasks", fail)
+    elif failure and failure.startswith("approve_"):
+        results = {
+            "approve_rolled_back": {
+                "transaction_id": "tx1",
+                "status": "rolled_back",
+                "success": False,
+            },
+            "approve_failed": {
+                "transaction_id": "tx1",
+                "status": "failed",
+                "success": False,
+            },
+            "approve_success_false": {
+                "transaction_id": "tx1",
+                "status": "committed",
+                "success": False,
+            },
+            "approve_success": {
+                "transaction_id": "tx1",
+                "status": "committed",
+                "success": True,
+            },
+        }
+        monkeypatch.setattr(
+            gateway,
+            "approve",
+            lambda approval_id: results[failure],
+        )
 
     result = cli.main(
         state_root=tmp_path,
