@@ -434,5 +434,12 @@ class GitManager:
                 message,
             )
         except Exception:
-            self._unstage_all()
+            try:
+                recovered = self.find_transaction_commit(transaction_id)
+            except Exception:
+                raise
+            if recovered is not None and recovered.get('commit_hash'):
+                recovered['files'] = list(changed_paths)
+                recovered['message'] = message
+                return recovered
             raise

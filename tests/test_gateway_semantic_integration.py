@@ -3347,3 +3347,74 @@ def test_gateway_retries_terminal_repair_finalization_after_startup_persist_fail
 
     assert recovered.repair_state["status"] == "rolled_back"
     assert recovered.metadata["repair_cycle"]["status"] == "rolled_back"
+
+
+def test_gateway_preserves_real_git_commit_when_commit_result_build_fails(
+    tmp_path,
+    monkeypatch,
+):
+    import subprocess
+
+    from core.gateway import DevAgentGateway
+
+    (tmp_path / "example.py").write_text(
+        'def hello():\n'
+        '    return "hello"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "version.py").write_text("old\n", encoding="utf-8")
+    (tmp_path / "test_version.py").write_text(
+        'def test_version():\n'
+        '    assert True\n',
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path, check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "DevAgent Test"],
+        cwd=tmp_path, check=True, capture_output=True,
+    )
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "test: initial fixture"],
+        cwd=tmp_path, check=True, capture_output=True,
+    )
+
+    gateway = DevAgentGateway(FakeAgent(), root=tmp_path)
+    monkeypatch.setattr(
+        gateway.tests,
+        "run_tests",
+        lambda tests: {
+            "success": True,
+            "returncode": 0,
+            "stdout": "",
+            "stderr": "",
+        },
+    )
+    task = gateway.create_task("alterar example.py e version.py")
+    approval_id = task["approval_id"]
+
+    def fail_result_build(*args, **kwargs):
+        raise RuntimeError("RESULT_BUILD_FAILURE_IN_GATEWAY_TEST")
+
+    monkeypatch.setattr(gateway.git, "_build_commit_result", fail_result_build,)
+    result = gateway.approve(approval_id)
+    assert result["status"] == "committed"
+
+    transaction_id = gateway.history.get(approval_id)["transaction_id"]
+    committed = gateway.git.find_transaction_commit(transaction_id)
+    assert committed is not None
+    assert committed["status"] == "committed"
+    assert committed["transaction_id"] == transaction_id
+    assert (tmp_path / "example.py").read_text(encoding="utf-8") == (
+        'def hello():\n'
+        '    return "hello from DevAgent"\n'
+    )
+    assert (tmp_path / "version.py").read_text(encoding="utf-8") == (
+        'def version():\n'
+        '    return "invalid"\n'
+    )
+    assert gateway.history.get(approval_id)["status"] == "committed"

@@ -4400,7 +4400,7 @@ def test_git_manager_unstages_and_reraises_commit_exception(
     assert status.stdout == " M app.py\n"
 
 
-def test_git_manager_unstages_and_reraises_post_commit_failure(tmp_path):
+def test_git_manager_propagates_recovery_lookup_failure_after_post_commit_error(tmp_path):
     import subprocess
 
     subprocess.run(
@@ -4452,7 +4452,12 @@ def test_git_manager_unstages_and_reraises_post_commit_failure(tmp_path):
 
     manager._run_git = fail_after_commit
 
-    with pytest.raises(RuntimeError, match="simulated post-commit failure"):
+    def fail_recovery_lookup(transaction_id):
+        raise RuntimeError("simulated recovery lookup failure")
+
+    manager.find_transaction_commit = fail_recovery_lookup
+
+    with pytest.raises(RuntimeError, match="simulated recovery lookup failure"):
         manager.commit_transaction(
             "transaction-post-commit-failure",
             "Alterar app.py",
