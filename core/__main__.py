@@ -41,18 +41,18 @@ def _version():
 def main():
     if "--help" in sys.argv[1:] or "-h" in sys.argv[1:]:
         print(HELP_TEXT)
-        return
+        return 0
 
     if "--version" in sys.argv[1:] or "-V" in sys.argv[1:]:
         print(_version())
-        return
+        return 0
 
     cli_args = sys.argv[1:]
 
     if cli_args and cli_args[0].startswith("-"):
         print(f"Argumento não reconhecido: {cli_args[0]}")
         print("Use 'devagent --help' para ver os comandos disponíveis.")
-        return
+        return 2
 
     from cli import main as cli_main
 
@@ -60,6 +60,7 @@ def main():
         cli_main(command_args=cli_args)
     else:
         cli_main()
+    return 0
 
 
 if __name__ == "__main__":

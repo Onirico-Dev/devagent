@@ -579,3 +579,30 @@ def test_extract_fallback_target_file_without_instruction():
 
     assert target == "arquivo.py"
     assert instruction == ""
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected_code"),
+    [
+        (["devagent", "--unknown"], 2),
+        (["devagent", "--help"], 0),
+        (["devagent", "--version"], 0),
+    ],
+)
+def test_cli_exit_contract(argv, expected_code, monkeypatch, capsys):
+    import core.__main__ as core_main
+
+    monkeypatch.setattr("sys.argv", argv)
+
+    result = core_main.main()
+
+    output = capsys.readouterr().out
+
+    if argv[1] == "--unknown":
+        assert "Argumento não reconhecido: --unknown" in output
+    elif argv[1] == "--help":
+        assert "devagent --help" in output
+    else:
+        assert output.strip() == "0.6.8"
+
+    assert result == expected_code
