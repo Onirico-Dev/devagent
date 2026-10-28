@@ -5376,3 +5376,61 @@ def test_coverage_recovery_records_unlock_and_close_errors(
 
     with pytest.raises(OSError, match="simulated unlock failure"):
         manager.recover_incomplete_transactions()
+
+
+def test_recovery_survives_repeated_final_rollback_manifest_failures_after_restart(
+    tmp_path, monkeypatch
+):
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import TransactionStatus
+
+    manager, transaction = make_started_transaction(tmp_path)
+    source = tmp_path / "arquivo.py"
+    source.write_text("ORIGINAL\n", encoding="utf-8")
+    manager.backup_file(transaction, "arquivo.py")
+    source.write_text("ALTERADO\n", encoding="utf-8")
+
+    original_persist = manager.persist_manifest
+    failures = {"count": 0}
+
+    def fail_twice_on_terminal_rollback(item):
+        if (
+            item.transaction_id == transaction.transaction_id
+            and item.status == TransactionStatus.ROLLED_BACK
+            and failures["count"] < 2
+        ):
+            failures["count"] += 1
+            raise OSError("simulated repeated final rollback manifest failure")
+        return original_persist(item)
+
+    monkeypatch.setattr(
+        manager, "persist_manifest", fail_twice_on_terminal_rollback
+    )
+
+    with pytest.raises(
+        OSError,
+        match="simulated repeated final rollback manifest failure",
+    ):
+        manager.recover_incomplete_transactions()
+
+    assert failures["count"] == 2
+    assert source.read_text(encoding="utf-8") == "ORIGINAL\n"
+
+    persisted_before_restart = manager.load_manifest(transaction.transaction_id)
+    assert persisted_before_restart.status in (
+        TransactionStatus.EXECUTING,
+        TransactionStatus.TESTING,
+    )
+
+    restarted_manager = TransactionManager(root=tmp_path)
+    recovered = restarted_manager.recover_incomplete_transactions()
+
+    assert len(recovered) == 1
+    assert recovered[0].transaction_id == transaction.transaction_id
+    assert recovered[0].status == TransactionStatus.ROLLED_BACK
+    assert source.read_text(encoding="utf-8") == "ORIGINAL\n"
+
+    persisted_after_restart = restarted_manager.load_manifest(
+        transaction.transaction_id
+    )
+    assert persisted_after_restart.status == TransactionStatus.ROLLED_BACK
