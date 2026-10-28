@@ -3420,7 +3420,7 @@ def test_recover_incomplete_transactions_is_serialized_across_processes(tmp_path
     assert final_transaction.status == TransactionStatus.ROLLED_BACK
     assert manager.list_recoverable_transactions() == []
 
-def test_persist_manifest_is_serialized_across_processes(tmp_path):
+def test_persist_manifest_remains_valid_under_concurrent_writes(tmp_path):
     import multiprocessing
     from core.executor.transaction_manager import TransactionManager
     from core.schemas.models import Transaction
