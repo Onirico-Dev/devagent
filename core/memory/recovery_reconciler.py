@@ -48,6 +48,13 @@ class RecoveryReconciler:
             if task is None:
                 continue
 
+            existing_transaction_id = task.get("transaction_id")
+            if existing_transaction_id and existing_transaction_id != transaction_id:
+                raise ValueError(
+                    "conflito de transaction_id na reconciliação: "
+                    "a tarefa já está associada a outra transação."
+                )
+
             recovery = transaction.metadata.get("recovery") is True
             extra = {}
 

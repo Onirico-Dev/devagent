@@ -3418,3 +3418,38 @@ def test_gateway_preserves_real_git_commit_when_commit_result_build_fails(
         '    return "invalid"\n'
     )
     assert gateway.history.get(approval_id)["status"] == "committed"
+
+
+
+def test_recovery_reconciler_rejects_conflicting_transaction_identity(tmp_path):
+    import pytest
+
+    from core.memory.recovery_reconciler import RecoveryReconciler
+    from core.memory.task_history import TaskHistory, TaskHistoryStatus
+    from core.schemas.models import Transaction, TransactionStatus
+
+    history = TaskHistory(tmp_path / "tasks.json")
+    approval_id = "approval-identity-conflict"
+    history.create(
+        approval_id=approval_id,
+        instruction="teste de conflito de identidade",
+        plan={},
+    )
+    history.update(
+        approval_id,
+        status=TaskHistoryStatus.TESTING.value,
+        transaction_id="tx-B",
+    )
+
+    transaction = Transaction(
+        transaction_id="tx-A",
+        status=TransactionStatus.FAILED,
+        metadata={"approval_id": approval_id},
+    )
+
+    with pytest.raises(ValueError, match="conflito.*transaction_id"):
+        RecoveryReconciler(history).reconcile([transaction])
+
+    task = history.get(approval_id)
+    assert task["transaction_id"] == "tx-B"
+    assert task["status"] == TaskHistoryStatus.TESTING.value
