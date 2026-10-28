@@ -933,3 +933,44 @@ def test_main_autonomy_continuous_handles_keyboard_interrupt(
 
     output = capsys.readouterr().out
     assert "Loop contínuo interrompido." in output
+
+@pytest.mark.parametrize(
+    ("command_args", "failure", "expected_code", "expected_output"),
+    [
+        (["tasks"], None, 0, "[a1] pending — teste"),
+        (["comando-inexistente"], None, 2, "Comando desconhecido."),
+        (["status"], None, 2, "Uso: status <id>"),
+        (["tasks"], "runtime", 1, "Erro: RuntimeError: falha de teste"),
+    ],
+)
+def test_non_interactive_exit_contract(
+    command_args,
+    failure,
+    expected_code,
+    expected_output,
+    monkeypatch,
+    capsys,
+    tmp_path,
+):
+    gateway = FakeGateway(None, ".")
+    monkeypatch.setattr(cli, "DevAgent", lambda root: object())
+    monkeypatch.setattr(
+        cli,
+        "DevAgentGateway",
+        lambda agent, root: gateway,
+    )
+
+    if failure == "runtime":
+        def fail():
+            raise RuntimeError("falha de teste")
+
+        monkeypatch.setattr(gateway, "list_tasks", fail)
+
+    result = cli.main(
+        state_root=tmp_path,
+        command_args=command_args,
+    )
+
+    output = capsys.readouterr().out
+    assert expected_output in output
+    assert result == expected_code

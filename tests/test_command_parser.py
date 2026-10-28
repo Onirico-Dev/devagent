@@ -606,3 +606,11 @@ def test_cli_exit_contract(argv, expected_code, monkeypatch, capsys):
         assert output.strip() == "0.6.8"
 
     assert result == expected_code
+
+def test_entrypoint_propagates_cli_failure(monkeypatch):
+    import core.__main__ as core_main
+
+    monkeypatch.setattr("sys.argv", ["devagent", "tasks"])
+    monkeypatch.setattr("cli.main", lambda command_args=None: 1)
+
+    assert core_main.main() == 1

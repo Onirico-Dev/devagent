@@ -57,10 +57,10 @@ def main():
     from cli import main as cli_main
 
     if cli_args:
-        cli_main(command_args=cli_args)
+        result = cli_main(command_args=cli_args)
     else:
-        cli_main()
-    return 0
+        result = cli_main()
+    return result if isinstance(result, int) else 0
 
 
 if __name__ == "__main__":

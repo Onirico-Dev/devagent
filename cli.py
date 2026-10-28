@@ -158,6 +158,7 @@ def main(state_root: str | Path = "transactions", command_args=None):
     print("  sair")
 
     non_interactive = command_args is not None
+    exit_code = 0  # CLI exit contract
     pending_command = " ".join(command_args) if non_interactive else None
 
     while True:
@@ -174,9 +175,8 @@ def main(state_root: str | Path = "transactions", command_args=None):
 
         if not command:
             if non_interactive:
-                return
+                return exit_code
             continue
-
         parts = command.split(maxsplit=1)
         action = parts[0].lower()
 
@@ -187,8 +187,9 @@ def main(state_root: str | Path = "transactions", command_args=None):
             if action == "plan":
                 if len(parts) < 2:
                     print("Uso: plan <instrução>")
+                    if non_interactive:
+                        return 2
                     continue
-
                 result = gateway.create_task(parts[1])
 
                 print("\nTarefa criada.")
@@ -199,8 +200,9 @@ def main(state_root: str | Path = "transactions", command_args=None):
             elif action == "observe":
                 if len(parts) < 2:
                     print("Uso: observe <instrução>")
+                    if non_interactive:
+                        return 2
                     continue
-
                 observer.add(
                     Observation(
                         instruction=parts[1],
@@ -244,10 +246,9 @@ def main(state_root: str | Path = "transactions", command_args=None):
 
                                 )
 
+                                if non_interactive:
+                                    return 2
                                 continue
-
-
-
                         if len(autonomy_args) >= 3:
 
                             try:
@@ -262,10 +263,9 @@ def main(state_root: str | Path = "transactions", command_args=None):
 
                                 )
 
+                                if non_interactive:
+                                    return 2
                                 continue
-
-
-
                         try:
 
                             results = supervised_loop.run_continuous(
@@ -294,10 +294,9 @@ def main(state_root: str | Path = "transactions", command_args=None):
 
                             print("Uso: autonomy [iterações]")
 
+                            if non_interactive:
+                                return 2
                             continue
-
-
-
                         results = supervised_loop.run(
 
                             max_iterations=max_iterations
@@ -329,15 +328,17 @@ def main(state_root: str | Path = "transactions", command_args=None):
             elif action == "status":
                 if len(parts) < 2:
                     print("Uso: status <id>")
+                    if non_interactive:
+                        return 2
                     continue
-
                 print_task(gateway.get_task(parts[1]))
 
             elif action == "approve":
                 if len(parts) < 2:
                     print("Uso: approve <id>")
+                    if non_interactive:
+                        return 2
                     continue
-
                 result = supervised_loop.approve(parts[1])
 
                 print("\nResultado da aprovação:")
@@ -363,8 +364,9 @@ def main(state_root: str | Path = "transactions", command_args=None):
             elif action == "reject":
                 if len(parts) < 2:
                     print("Uso: reject <id>")
+                    if non_interactive:
+                        return 2
                     continue
-
                 result = gateway.reject(parts[1])
 
                 print(
@@ -373,6 +375,7 @@ def main(state_root: str | Path = "transactions", command_args=None):
                 )
 
             else:
+                exit_code = 2
                 print(
                     "Comando desconhecido. "
                     "Use: plan, observe, autonomy, tasks, "
@@ -380,18 +383,24 @@ def main(state_root: str | Path = "transactions", command_args=None):
                 )
 
         except KeyError as error:
+            exit_code = 1
             message = str(error).strip("'")
             print(f"\nErro: {message}")
         except ValueError as error:
+            exit_code = 1
             print(f"\nErro: {error}")
         except Exception as error:
+            exit_code = 1
             print(
                 f"\nErro: "
                 f"{type(error).__name__}: {error}"
             )
 
         if non_interactive:
-            return
+            return exit_code
+
+    if non_interactive:
+        return exit_code
 
 
 if __name__ == "__main__":
