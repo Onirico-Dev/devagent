@@ -405,7 +405,9 @@ def test_core_main_entrypoint_help(monkeypatch, capsys):
     monkeypatch.setattr(cli, "main", fake_main)
     monkeypatch.setattr(sys, "argv", ["devagent", "--help"])
 
-    runpy.run_module("core.__main__", run_name="__main__")
+    with pytest.raises(SystemExit) as exc_info:
+        runpy.run_module("core.__main__", run_name="__main__")
+    assert exc_info.value.code == 0
 
     output = capsys.readouterr().out
 
@@ -427,7 +429,9 @@ def test_core_main_entrypoint_version(monkeypatch, capsys):
     monkeypatch.setattr(cli, "main", fake_main)
     monkeypatch.setattr(sys, "argv", ["devagent", "--version"])
 
-    runpy.run_module("core.__main__", run_name="__main__")
+    with pytest.raises(SystemExit) as exc_info:
+        runpy.run_module("core.__main__", run_name="__main__")
+    assert exc_info.value.code == 0
 
     output = capsys.readouterr().out.strip()
 
@@ -448,7 +452,9 @@ def test_core_main_entrypoint_rejects_unknown_argument(monkeypatch, capsys):
     monkeypatch.setattr(cli, "main", fake_main)
     monkeypatch.setattr(sys, "argv", ["devagent", "--unknown"])
 
-    runpy.run_module("core.__main__", run_name="__main__")
+    with pytest.raises(SystemExit) as exc_info:
+        runpy.run_module("core.__main__", run_name="__main__")
+    assert exc_info.value.code == 2
 
     output = capsys.readouterr().out
 
@@ -470,7 +476,9 @@ def test_core_main_entrypoint_calls_cli_main(monkeypatch):
     monkeypatch.setattr(cli, "main", fake_main)
     monkeypatch.setattr(sys, "argv", ["devagent"])
 
-    runpy.run_module("core.__main__", run_name="__main__")
+    with pytest.raises(SystemExit) as exc_info:
+        runpy.run_module("core.__main__", run_name="__main__")
+    assert exc_info.value.code == 0
 
     assert called == [True]
 
@@ -496,7 +504,9 @@ def test_core_main_entrypoint_dispatches_command(monkeypatch):
         ["devagent", "autonomy", "3"],
     )
 
-    runpy.run_module("core.__main__", run_name="__main__")
+    with pytest.raises(SystemExit) as exc_info:
+        runpy.run_module("core.__main__", run_name="__main__")
+    assert exc_info.value.code == 0
 
     assert called == [["autonomy", "3"]]
 
@@ -524,7 +534,9 @@ def test_core_main_entrypoint_dispatches_command_without_arguments(
         ["devagent", "tasks"],
     )
 
-    runpy.run_module("core.__main__", run_name="__main__")
+    with pytest.raises(SystemExit) as exc_info:
+        runpy.run_module("core.__main__", run_name="__main__")
+    assert exc_info.value.code == 0
 
     assert called == [["tasks"]]
 
@@ -614,3 +626,39 @@ def test_entrypoint_propagates_cli_failure(monkeypatch):
     monkeypatch.setattr("cli.main", lambda command_args=None: 1)
 
     assert core_main.main() == 1
+
+
+@pytest.mark.parametrize(
+    "entrypoint",
+    ["module", "cli"],
+)
+def test_real_entrypoints_propagate_invalid_argument_exit_code(entrypoint):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    if entrypoint == "module":
+        command = [sys.executable, "-m", "core", "--argumento-invalido"]
+    else:
+        command = [sys.executable, "cli.py", "--argumento-invalido"]
+
+    result = subprocess.run(
+        command,
+        cwd=root,
+        env={**os.environ, "DEVAGENT_AI": "mock"},
+        input="",
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    expected_code = 2
+
+    assert result.returncode == expected_code, (
+        f"Comando: {command!r}\n"
+        f"Código esperado: {expected_code}\n"
+        f"Código recebido: {result.returncode}\n"
+        f"Saída padrão:\n{result.stdout}\n"
+        f"Erro padrão:\n{result.stderr}"
+    )

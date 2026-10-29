@@ -412,4 +412,4 @@ def main(state_root: str | Path = "transactions", command_args=None):
 if __name__ == "__main__":
     import sys
 
-    main(command_args=sys.argv[1:])
+    raise SystemExit(main(command_args=sys.argv[1:]))

@@ -337,15 +337,20 @@ def test_main_gateway_error(monkeypatch, capsys):
 
 
 def test_cli_module_entrypoint(monkeypatch):
+    import sys
+
     monkeypatch.setattr(
         builtins,
         "input",
         lambda _: "sair",
     )
+    monkeypatch.setattr(sys, "argv", ["cli.py"])
 
     import runpy
 
-    runpy.run_module("cli", run_name="__main__")
+    with pytest.raises(SystemExit) as exc_info:
+        runpy.run_module("cli", run_name="__main__")
+    assert exc_info.value.code in (None, 0)
 
 
 
