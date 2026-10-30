@@ -4565,7 +4565,7 @@ def test_safe_executor_modify_fsyncs_file_and_parent_directory(
 
     assert target.read_text(encoding="utf-8") == "new"
     assert len(file_fsyncs) == 1
-    assert len(directory_fsyncs) == 1
+    assert len(directory_fsyncs) == 2
 
 
 def test_safe_executor_modify_preserves_old_content_when_fsync_fails(

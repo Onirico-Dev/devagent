@@ -5487,3 +5487,83 @@ def test_restart_recovers_modified_file_when_execution_counter_is_stale(
     persisted = restarted_manager.load_manifest(transaction.transaction_id)
     assert persisted.status == TransactionStatus.ROLLED_BACK
     assert restarted_manager.list_recoverable_transactions() == []
+
+
+def test_restart_recovers_modified_file_after_post_replace_fsync_failure(
+    tmp_path,
+    monkeypatch,
+):
+    from core.executor.safe_executor import SafeExecutor
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import (
+        Change,
+        ChangeType,
+        Transaction,
+        TransactionStatus,
+    )
+
+    source = tmp_path / "modified.py"
+    source.write_text("ORIGINAL\n", encoding="utf-8")
+
+    manager = TransactionManager(
+        root=tmp_path,
+        backup_dir="transactions",
+    )
+    transaction = Transaction(
+        transaction_id="tx-modify-post-replace-fsync",
+        changes=[
+            Change(
+                change_type=ChangeType.MODIFY,
+                path="modified.py",
+                content="MODIFIED\n",
+            )
+        ],
+    )
+
+    manager.begin(transaction)
+    manager.backup_file(transaction, "modified.py")
+
+    transaction.metadata["execution"] = {
+        "phase": "executing",
+        "changes_applied": 0,
+    }
+    manager.persist_manifest(transaction)
+
+    executor = SafeExecutor(tmp_path)
+    fsync_calls = []
+
+    def fail_second_directory_fsync(parent_fd):
+        fsync_calls.append(parent_fd)
+        if len(fsync_calls) == 2:
+            raise OSError("simulated post-replace directory fsync failure")
+
+    monkeypatch.setattr(
+        executor,
+        "_fsync_directory",
+        fail_second_directory_fsync,
+    )
+
+    with pytest.raises(
+        OSError,
+        match="post-replace directory fsync failure",
+    ):
+        executor.execute(transaction)
+
+    assert len(fsync_calls) == 2
+    assert source.read_text(encoding="utf-8") == "MODIFIED\n"
+    assert transaction.metadata["execution"] == {
+        "phase": "executing",
+        "changes_applied": 0,
+    }
+
+    restarted_manager = TransactionManager(
+        root=tmp_path,
+        backup_dir="transactions",
+    )
+    recovered = restarted_manager.recover_incomplete_transactions()
+
+    assert len(recovered) == 1
+    assert recovered[0].transaction_id == transaction.transaction_id
+    assert recovered[0].status == TransactionStatus.ROLLED_BACK
+    assert source.read_text(encoding="utf-8") == "ORIGINAL\n"
+    assert restarted_manager.list_recoverable_transactions() == []

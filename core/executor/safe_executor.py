@@ -173,7 +173,11 @@ class SafeExecutor:
         content: str,
         temporary_fd: int,
         temporary_name: str,
+        *,
+        fsync_directory=None,
     ) -> None:
+        if fsync_directory is None:
+            fsync_directory = SafeExecutor._fsync_directory
         fd = temporary_fd
         try:
             handle = os.fdopen(
@@ -191,13 +195,15 @@ class SafeExecutor:
             handle.flush()
             os.fsync(handle.fileno())
 
+        fsync_directory(parent_fd)
+
         os.replace(
             temporary_name,
             filename,
             src_dir_fd=parent_fd,
             dst_dir_fd=parent_fd,
         )
-        SafeExecutor._fsync_directory(parent_fd)
+        fsync_directory(parent_fd)
 
     @staticmethod
     def _cleanup_temporary_file_in_parent(
@@ -223,6 +229,8 @@ class SafeExecutor:
         filename: str,
         content: str,
         display_path: str,
+        *,
+        fsync_directory=None,
     ) -> None:
         mode = SafeExecutor._open_file_mode_in_parent(
             parent_fd,
@@ -245,6 +253,7 @@ class SafeExecutor:
                 content,
                 temporary_fd,
                 temporary_name,
+                fsync_directory=fsync_directory,
             )
             temporary_name = None
         finally:
@@ -459,6 +468,7 @@ class SafeExecutor:
                 relative.name,
                 change.content or "",
                 change.path,
+                fsync_directory=self._fsync_directory,
             )
         finally:
             os.close(parent_fd)
