@@ -850,3 +850,224 @@ def test_replace_temporary_destination_preserves_quarantine_if_restore_fails(
     assert not dest.exists()
     assert len(quarantines) == 1
     assert quarantines[0].read_text(encoding="utf-8") == "original"
+
+
+def test_overwrite_keeps_original_fd_open_during_publication(
+    tmp_path, monkeypatch
+):
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    source_root.mkdir()
+    destination_root.mkdir()
+    (source_root / "source.txt").write_text("NEW")
+    destination = destination_root / "target.txt"
+    destination.write_text("ORIGINAL")
+
+    captured = {}
+    original_open_expected = SecureFileSystem._open_expected_destination
+    original_replace = SecureFileSystem._replace_temporary_destination
+
+    def tracked_open(cls, parent_fd, relative):
+        result = original_open_expected(parent_fd, relative)
+        captured["fd"] = result[0]
+        return result
+
+    def checked_replace(cls, parent_fd, relative, temporary, identity):
+        fd = captured["fd"]
+        assert fd is not None
+        os.fstat(fd)
+        captured["open_during_publication"] = True
+        return original_replace(parent_fd, relative, temporary, identity)
+
+    monkeypatch.setattr(
+        SecureFileSystem,
+        "_open_expected_destination",
+        classmethod(tracked_open),
+    )
+    monkeypatch.setattr(
+        SecureFileSystem,
+        "_replace_temporary_destination",
+        classmethod(checked_replace),
+    )
+
+    SecureFileSystem.copy_file_no_follow(
+        source_root, Path("source.txt"),
+        destination_root, Path("target.txt"),
+        overwrite=True,
+    )
+
+    assert captured["open_during_publication"] is True
+    assert destination.read_text() == "NEW"
+    with pytest.raises(OSError) as error:
+        os.fstat(captured["fd"])
+    assert error.value.errno == errno.EBADF
+
+
+def test_overwrite_closes_original_fd_after_publication_failure(
+    tmp_path, monkeypatch
+):
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    source_root.mkdir()
+    destination_root.mkdir()
+    (source_root / "source.txt").write_text("NEW")
+    destination = destination_root / "target.txt"
+    destination.write_text("ORIGINAL")
+
+    captured = {}
+    original_open_expected = SecureFileSystem._open_expected_destination
+
+    def tracked_open(cls, parent_fd, relative):
+        result = original_open_expected(parent_fd, relative)
+        captured["fd"] = result[0]
+        return result
+
+    def fail_publication(cls, *args):
+        os.fstat(captured["fd"])
+        raise OSError(errno.EIO, "falha injetada")
+
+    monkeypatch.setattr(
+        SecureFileSystem,
+        "_open_expected_destination",
+        classmethod(tracked_open),
+    )
+    monkeypatch.setattr(
+        SecureFileSystem,
+        "_replace_temporary_destination",
+        classmethod(fail_publication),
+    )
+
+    with pytest.raises(OSError, match="falha injetada"):
+        SecureFileSystem.copy_file_no_follow(
+            source_root, Path("source.txt"),
+            destination_root, Path("target.txt"),
+            overwrite=True,
+        )
+
+    with pytest.raises(OSError) as error:
+        os.fstat(captured["fd"])
+    assert error.value.errno == errno.EBADF
+
+
+def test_overwrite_closes_original_fd_if_temporary_open_fails(
+    tmp_path, monkeypatch
+):
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    source_root.mkdir()
+    destination_root.mkdir()
+    (source_root / "source.txt").write_text("NEW")
+    (destination_root / "target.txt").write_text("ORIGINAL")
+
+    captured = {}
+    original_open_expected = SecureFileSystem._open_expected_destination
+
+    def tracked_open(cls, parent_fd, relative):
+        result = original_open_expected(parent_fd, relative)
+        captured["fd"] = result[0]
+        return result
+
+    def fail_temporary(*args, **kwargs):
+        raise OSError(errno.EIO, "falha ao abrir temporário")
+
+    monkeypatch.setattr(
+        SecureFileSystem,
+        "_open_expected_destination",
+        classmethod(tracked_open),
+    )
+    monkeypatch.setattr(
+        SecureFileSystem,
+        "_open_destination_file",
+        fail_temporary,
+    )
+
+    with pytest.raises(OSError, match="temporário"):
+        SecureFileSystem.copy_file_no_follow(
+            source_root, Path("source.txt"),
+            destination_root, Path("target.txt"),
+            overwrite=True,
+        )
+
+    with pytest.raises(OSError) as error:
+        os.fstat(captured["fd"])
+    assert error.value.errno == errno.EBADF
+
+
+def test_overwrite_missing_destination_does_not_retain_original_fd(
+    tmp_path, monkeypatch
+):
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    source_root.mkdir()
+    destination_root.mkdir()
+    (source_root / "source.txt").write_text("NEW")
+
+    captured = {}
+    original_open_expected = SecureFileSystem._open_expected_destination
+
+    def tracked_open(cls, parent_fd, relative):
+        result = original_open_expected(parent_fd, relative)
+        captured["result"] = result
+        return result
+
+    monkeypatch.setattr(
+        SecureFileSystem,
+        "_open_expected_destination",
+        classmethod(tracked_open),
+    )
+
+    SecureFileSystem.copy_file_no_follow(
+        source_root, Path("source.txt"),
+        destination_root, Path("target.txt"),
+        overwrite=True,
+    )
+
+    assert captured["result"] == (None, None)
+    assert (destination_root / "target.txt").read_text() == "NEW"
+
+
+def test_expected_destination_identity_returns_identity_and_closes_fd(
+    tmp_path,
+):
+    destination = tmp_path / "destination.txt"
+    destination.write_text("ORIGINAL", encoding="utf-8")
+
+    parent_fd = os.open(
+        tmp_path,
+        os.O_RDONLY | os.O_DIRECTORY,
+    )
+
+    try:
+        expected = os.stat(destination)
+        identity = SecureFileSystem._get_expected_destination_identity(
+            parent_fd,
+            Path(destination.name),
+        )
+
+        assert identity == (expected.st_dev, expected.st_ino)
+    finally:
+        os.close(parent_fd)
+
+def test_open_directory_chain_reraises_unhandled_oserror(
+    tmp_path,
+    monkeypatch,
+):
+    import os
+    import pytest
+
+    from core.executor.secure_filesystem import SecureFileSystem
+
+    original_open = os.open
+
+    def fail_on_child(path, flags, *args, **kwargs):
+        if os.fspath(path) == "blocked":
+            raise PermissionError("acesso negado")
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", fail_on_child)
+
+    with pytest.raises(PermissionError, match="acesso negado"):
+        SecureFileSystem.open_directory_chain(
+            tmp_path,
+            ("blocked",),
+        )

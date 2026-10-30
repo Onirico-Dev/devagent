@@ -111,7 +111,7 @@ class SecureFileSystem:
             raise
 
     @classmethod
-    def _get_expected_destination_identity(
+    def _open_expected_destination(
         cls,
         destination_parent_fd,
         destination_relative,
@@ -123,7 +123,7 @@ class SecureFileSystem:
                 dir_fd=destination_parent_fd,
             )
         except FileNotFoundError:
-            return None
+            return None, None
         except OSError as error:
             if getattr(error, "errno", None) in (
                 errno.ELOOP,
@@ -134,25 +134,41 @@ class SecureFileSystem:
                     f"{destination_relative}"
                 ) from error
             raise
-        else:
-            try:
-                destination_stat = os.fstat(
-                    existing_destination_fd
+
+        try:
+            destination_stat = os.fstat(existing_destination_fd)
+
+            if not stat.S_ISREG(destination_stat.st_mode):
+                raise ValueError(
+                    "Caminho de destino não é um "
+                    "arquivo regular: "
+                    f"{destination_relative}"
                 )
 
-                if not stat.S_ISREG(destination_stat.st_mode):
-                    raise ValueError(
-                        "Caminho de destino não é um "
-                        "arquivo regular: "
-                        f"{destination_relative}"
-                    )
+            identity = (
+                destination_stat.st_dev,
+                destination_stat.st_ino,
+            )
+            return existing_destination_fd, identity
+        except BaseException:
+            os.close(existing_destination_fd)
+            raise
 
-                return (
-                    destination_stat.st_dev,
-                    destination_stat.st_ino,
-                )
-            finally:
-                os.close(existing_destination_fd)
+    @classmethod
+    def _get_expected_destination_identity(
+        cls,
+        destination_parent_fd,
+        destination_relative,
+    ):
+        existing_destination_fd, identity = (
+            cls._open_expected_destination(
+                destination_parent_fd,
+                destination_relative,
+            )
+        )
+        if existing_destination_fd is not None:
+            os.close(existing_destination_fd)
+        return identity
 
     @classmethod
     def _create_temporary_destination(
@@ -462,6 +478,7 @@ class SecureFileSystem:
 
         source_fd = None
         destination_fd = None
+        expected_destination_fd = None
         temporary_name = None
 
         try:
@@ -482,11 +499,12 @@ class SecureFileSystem:
             expected_destination_identity = None
 
             if overwrite:
-                expected_destination_identity = (
-                    cls._get_expected_destination_identity(
-                        destination_parent_fd,
-                        destination_relative,
-                    )
+                (
+                    expected_destination_fd,
+                    expected_destination_identity,
+                ) = cls._open_expected_destination(
+                    destination_parent_fd,
+                    destination_relative,
                 )
 
             (
@@ -534,6 +552,9 @@ class SecureFileSystem:
 
             if destination_fd is not None:
                 os.close(destination_fd)
+
+            if expected_destination_fd is not None:
+                os.close(expected_destination_fd)
 
             if temporary_name is not None:
                 try:
