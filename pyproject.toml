@@ -28,5 +28,6 @@ py-modules = ["agent", "api", "cli", "main"]
 include = ["core*"]
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
 norecursedirs = ["transactions", "ubuntu-fs", "build"]
 addopts = "--cov=core --cov=api --cov=agent --cov-report=term-missing --cov-fail-under=100"
