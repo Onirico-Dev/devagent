@@ -5434,3 +5434,56 @@ def test_recovery_survives_repeated_final_rollback_manifest_failures_after_resta
         transaction.transaction_id
     )
     assert persisted_after_restart.status == TransactionStatus.ROLLED_BACK
+
+
+def test_restart_recovers_modified_file_when_execution_counter_is_stale(
+    tmp_path,
+):
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import (
+        Change,
+        ChangeType,
+        Transaction,
+        TransactionStatus,
+    )
+
+    source = tmp_path / "stale-counter.py"
+    source.write_text("ORIGINAL\n", encoding="utf-8")
+
+    manager = TransactionManager(root=tmp_path)
+    transaction = Transaction(
+        transaction_id="tx-stale-execution-counter",
+        changes=[
+            Change(
+                change_type=ChangeType.MODIFY,
+                path="stale-counter.py",
+                content="MODIFIED\n",
+            )
+        ],
+    )
+
+    manager.begin(transaction)
+    manager.backup_file(transaction, "stale-counter.py")
+
+    transaction.metadata["execution"] = {
+        "phase": "executing",
+        "changes_applied": 0,
+    }
+    manager.persist_manifest(transaction)
+
+    source.write_text("MODIFIED\n", encoding="utf-8")
+
+    assert transaction.metadata["execution"]["changes_applied"] == 0
+    assert source.read_text(encoding="utf-8") == "MODIFIED\n"
+
+    restarted_manager = TransactionManager(root=tmp_path)
+    recovered = restarted_manager.recover_incomplete_transactions()
+
+    assert len(recovered) == 1
+    assert recovered[0].transaction_id == transaction.transaction_id
+    assert recovered[0].status == TransactionStatus.ROLLED_BACK
+    assert source.read_text(encoding="utf-8") == "ORIGINAL\n"
+
+    persisted = restarted_manager.load_manifest(transaction.transaction_id)
+    assert persisted.status == TransactionStatus.ROLLED_BACK
+    assert restarted_manager.list_recoverable_transactions() == []
