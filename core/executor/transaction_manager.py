@@ -1518,7 +1518,10 @@ class TransactionManager:
                 )
 
     def _restore_backup_files(self, backup_root):
-        for backup_file in backup_root.rglob("*"):
+        for backup_file in sorted(
+            backup_root.rglob("*"),
+            key=lambda item: item.relative_to(backup_root).as_posix(),
+        ):
             # Nunca seguir symlinks encontrados no backup.
             if backup_file.is_symlink():
                 raise ValueError(
