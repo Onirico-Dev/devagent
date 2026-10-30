@@ -1789,10 +1789,26 @@ def test_begin_rejects_backup_parent_that_is_not_directory(
 
     import core.executor.transaction_manager as module
 
+    original_fstat = module.os.fstat
+
+    class InvalidModeStat:
+        def __init__(self, result):
+            self._result = result
+
+        @property
+        def st_mode(self):
+            return 0
+
+        def __getattr__(self, name):
+            return getattr(self._result, name)
+
+    def invalid_mode_fstat(fd):
+        return InvalidModeStat(original_fstat(fd))
+
     monkeypatch.setattr(
         module.os,
         "fstat",
-        lambda fd: SimpleNamespace(st_mode=0),
+        invalid_mode_fstat,
     )
 
     with pytest.raises(
