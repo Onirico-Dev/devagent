@@ -11,3 +11,18 @@ workspace/*
 build/
 dist/
 *.egg-info/
+
+# DevAgent operational artifacts
+.devagent_artifacts/
+.devagent_artifacts_quarantine/
+.devagent_*.log
+
+# Local source and test backups
+*.bak
+*.bak_*
+*.pre_*
+
+# Python test and runtime artifacts
+.pytest_cache/
+__pycache__/
+htmlcov/
