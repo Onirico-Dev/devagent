@@ -5583,3 +5583,194 @@ def test_restart_recovers_modified_file_after_post_replace_fsync_failure(
     assert recovered[0].status == TransactionStatus.ROLLED_BACK
     assert source.read_text(encoding="utf-8") == "ORIGINAL\n"
     assert restarted_manager.list_recoverable_transactions() == []
+
+
+def _run_crash_child_and_kill(tmp_path, scenario):
+    import os
+    import select
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(tmp_path)
+    child_script = r"""
+import sys
+from pathlib import Path
+
+from core.executor.safe_executor import SafeExecutor
+from core.executor.transaction_manager import TransactionManager
+from core.schemas.models import Change, ChangeType, Transaction
+
+root = Path(sys.argv[1])
+scenario = sys.argv[2]
+manager = TransactionManager(root=root, backup_dir="transactions")
+
+if scenario == "modify":
+    target = root / "target-modify-crash.py"
+    target.write_text("ORIGINAL\n", encoding="utf-8")
+    transaction = Transaction(
+        transaction_id="",
+        changes=[
+            Change(
+                change_type=ChangeType.MODIFY,
+                path=target.name,
+                content="MODIFIED\n",
+            )
+        ],
+    )
+    manager.begin(transaction)
+    manager.backup_file(transaction, target.name)
+
+    def after_change():
+        print("MODIFY_APPLIED", flush=True)
+        sys.stdin.readline()
+
+    SafeExecutor(root).execute(
+        transaction,
+        on_change_applied=after_change,
+    )
+
+elif scenario == "create":
+    target_name = "target-create-crash.py"
+    transaction = Transaction(
+        transaction_id="",
+        changes=[
+            Change(
+                change_type=ChangeType.CREATE,
+                path=target_name,
+                content="CREATED\n",
+            )
+        ],
+    )
+    manager.begin(transaction)
+
+    def after_staging(change, temporary_path, device, inode):
+        manager.record_staged_created_identity(
+            transaction,
+            change.path,
+            temporary_path,
+            device,
+            inode,
+        )
+        print("CREATE_STAGED", flush=True)
+        sys.stdin.readline()
+
+    SafeExecutor(root).execute(
+        transaction,
+        on_create_prepared=after_staging,
+    )
+else:
+    raise SystemExit("unknown scenario")
+"""
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            child_script,
+            str(root),
+            scenario,
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=Path.cwd(),
+    )
+    try:
+        readable, _, _ = select.select([process.stdout], [], [], 30)
+        assert readable, f"Subprocesso não sinalizou o ponto de crash: {scenario}"
+        marker = process.stdout.readline().strip()
+        if marker not in ("MODIFY_APPLIED", "CREATE_STAGED"):
+            process.wait(timeout=10)
+            error = process.stderr.read()
+            raise AssertionError(
+                f"Subprocesso não alcançou o ponto de crash ({scenario}). "
+                f"Saída={marker!r}; stderr={error!r}; "
+                f"returncode={process.returncode}"
+            )
+        process.kill()
+        process.wait(timeout=10)
+        assert process.returncode != 0
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
+        if process.stdin:
+            process.stdin.close()
+        if process.stdout:
+            process.stdout.close()
+        if process.stderr:
+            process.stderr.close()
+
+
+def test_process_crash_during_modify_is_recovered_after_restart(tmp_path):
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import TransactionStatus
+
+    _run_crash_child_and_kill(tmp_path, "modify")
+
+    target = tmp_path / "target-modify-crash.py"
+    assert target.read_text(encoding="utf-8") == "MODIFIED\n"
+
+    restarted_manager = TransactionManager(
+        root=tmp_path,
+        backup_dir="transactions",
+    )
+    pending = restarted_manager.list_recoverable_transactions()
+    assert len(pending) == 1
+
+    recovered = restarted_manager.recover_incomplete_transactions()
+
+    assert len(recovered) == 1
+    assert recovered[0].status == TransactionStatus.ROLLED_BACK
+    assert target.read_text(encoding="utf-8") == "ORIGINAL\n"
+    assert (
+        restarted_manager.load_manifest(
+            recovered[0].transaction_id
+        ).status
+        == TransactionStatus.ROLLED_BACK
+    )
+    assert restarted_manager.list_recoverable_transactions() == []
+    assert restarted_manager.recover_incomplete_transactions() == []
+    assert target.read_text(encoding="utf-8") == "ORIGINAL\n"
+
+
+def test_process_crash_during_create_staging_is_recovered_after_restart(
+    tmp_path,
+):
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import TransactionStatus
+
+    _run_crash_child_and_kill(tmp_path, "create")
+
+    target = tmp_path / "target-create-crash.py"
+    assert not target.exists()
+
+    restarted_manager = TransactionManager(
+        root=tmp_path,
+        backup_dir="transactions",
+    )
+    pending = restarted_manager.list_recoverable_transactions()
+    assert len(pending) == 1
+
+    transaction_id = pending[0].transaction_id
+    persisted = restarted_manager.load_manifest(transaction_id)
+    identity = persisted.metadata["created_identity"]["target-create-crash.py"]
+    temporary_path = tmp_path / identity["temporary_path"]
+
+    assert temporary_path.is_file()
+
+    recovered = restarted_manager.recover_incomplete_transactions()
+
+    assert len(recovered) == 1
+    assert recovered[0].status == TransactionStatus.ROLLED_BACK
+    assert not target.exists()
+    assert not temporary_path.exists()
+    assert (
+        restarted_manager.load_manifest(transaction_id).status
+        == TransactionStatus.ROLLED_BACK
+    )
+    assert restarted_manager.list_recoverable_transactions() == []
+    assert restarted_manager.recover_incomplete_transactions() == []
+    assert not target.exists()
+    assert not temporary_path.exists()

@@ -5823,3 +5823,78 @@ def test_gateway_create_task_passes_nonempty_feedback_context(
         ("corrigir erro", {"feedback_context": context})
     ]
     assert result == expected
+
+
+def test_task_read_endpoints_hide_internal_metadata(monkeypatch):
+    internal_task = {
+        "task_id": "http-private-task",
+        "approval_id": "http-private-task",
+        "instruction": "consulta HTTP",
+        "plan": {"changes": []},
+        "status": "committed",
+        "transaction_id": "http-transaction",
+        "created_at": "2026-10-30T10:00:00",
+        "updated_at": "2026-10-30T10:01:00",
+        "tests": {"success": True},
+        "git": {"committed": True},
+        "repair_attempts": 0,
+        "metadata": {"backup_integrity": {"secret": "internal"}},
+        "repair_state": {"status": "internal"},
+        "backup_integrity": {"fingerprint": "internal"},
+        "created_identity": {"inode": 123},
+        "extra": {"private": True},
+    }
+
+    monkeypatch.setattr(
+        api.gateway,
+        "list_tasks",
+        lambda: [internal_task],
+    )
+    monkeypatch.setattr(
+        api.gateway,
+        "latest_task",
+        lambda: internal_task,
+    )
+    monkeypatch.setattr(
+        api.gateway,
+        "get_task",
+        lambda task_id: internal_task,
+    )
+
+    server, _ = start_server()
+
+    try:
+        responses = []
+
+        for path in (
+            "/tasks",
+            "/tasks/latest",
+            "/tasks/http-private-task",
+        ):
+            status, data = request(server, "GET", path)
+            assert status == 200
+
+            task = data["tasks"][0] if path == "/tasks" else data
+            responses.append(task)
+
+        for task in responses:
+            assert task["task_id"] == "http-private-task"
+            assert task["status"] == "committed"
+            assert task["tests"]["success"] is True
+            assert task["git"]["committed"] is True
+
+            for private_field in (
+                "metadata",
+                "repair_state",
+                "backup_integrity",
+                "created_identity",
+                "extra",
+            ):
+                assert private_field not in task
+
+        assert "metadata" in internal_task
+        assert "repair_state" in internal_task
+
+    finally:
+        server.shutdown()
+        server.server_close()
