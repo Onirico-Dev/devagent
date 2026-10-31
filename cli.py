@@ -39,27 +39,24 @@ def print_task(task):
                 f"{change.get('path')}"
             )
 
+    public_detail_fields = (
+        "tests",
+        "git",
+        "repair_attempts",
+        "repair",
+        "error",
+        "rollback_error",
+    )
     extra = {
-        key: value
-        for key, value in task.items()
-        if key not in {
-            "task_id",
-            "approval_id",
-            "instruction",
-            "plan",
-            "status",
-            "transaction_id",
-            "created_at",
-            "updated_at",
-        }
+        key: task[key]
+        for key in public_detail_fields
+        if key in task
     }
 
     if extra:
         print("Detalhes:")
         for key, value in extra.items():
             print(f"  {key}: {value}")
-
-
 def print_tasks(tasks):
     if not tasks:
         print("Nenhuma tarefa encontrada.")

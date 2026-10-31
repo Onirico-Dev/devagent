@@ -116,6 +116,11 @@ def test_print_task_full(capsys):
         },
         "created_at": "now",
         "updated_at": "now",
+        "tests": {"success": True},
+        "git": {"status": "committed"},
+        "repair_attempts": 0,
+        "metadata": {"backup_integrity": {"secret": "internal"}},
+        "repair_state": {"status": "committed"},
         "extra": "valor",
     }
 
@@ -130,7 +135,13 @@ def test_print_task_full(capsys):
     assert "CREATE: app.py" in output
     assert "MODIFY: config.py" in output
     assert "Detalhes:" in output
-    assert "extra: valor" in output
+    assert "tests:" in output
+    assert "git:" in output
+    assert "repair_attempts: 0" in output
+    assert "metadata:" not in output
+    assert "repair_state:" not in output
+    assert "backup_integrity" not in output
+    assert "extra: valor" not in output
 
 
 def test_print_task_change_type(capsys):

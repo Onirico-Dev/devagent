@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#10131b">
+  <meta name="description" content="Painel local de controle do DevAgent">
+  <title>DevAgent Studio</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="DevAgent Studio">
+        <span class="brand-mark">D</span>
+        <span>
+          <strong>DevAgent</strong>
+          <small>STUDIO</small>
+        </span>
+      </a>
+      <div class="connection">
+        <span id="health-indicator" class="indicator offline"></span>
+        <span id="health-label">Verificando serviço</span>
+      </div>
+    </header>
+
+    <main>
+      <section class="intro">
+        <div>
+          <p class="eyebrow">AMBIENTE LOCAL</p>
+          <h1>Centro de controle</h1>
+          <p class="muted">Planeje, revise e acompanhe as operações do agente.</p>
+        </div>
+        <button id="refresh-button" class="button button-secondary" type="button">
+          Atualizar
+        </button>
+      </section>
+
+      <section class="workspace">
+        <div class="main-column">
+          <section class="panel composer">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">NOVA OPERAÇÃO</p>
+                <h2>Instrução</h2>
+              </div>
+              <span class="step-number">01</span>
+            </div>
+
+            <form id="instruction-form">
+              <label for="instruction">O que o DevAgent deve fazer?</label>
+              <textarea
+                id="instruction"
+                name="instruction"
+                rows="5"
+                maxlength="12000"
+                placeholder="Ex.: Crie um módulo Python chamado exemplo.py com uma função que..."
+                required
+              ></textarea>
+              <div class="composer-footer">
+                <span class="muted">O plano será apresentado antes da execução.</span>
+                <button id="plan-button" class="button button-primary" type="submit">
+                  Gerar plano
+                </button>
+              </div>
+            </form>
+          </section>
+
+          <section id="plan-panel" class="panel plan-panel" hidden>
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">REVISÃO HUMANA</p>
+                <h2>Plano proposto</h2>
+              </div>
+              <span id="plan-status" class="status">PENDENTE</span>
+            </div>
+
+            <div id="plan-content"></div>
+
+            <div id="approval-actions" class="approval-actions" hidden>
+              <button id="reject-button" class="button button-danger" type="button">
+                Rejeitar
+              </button>
+              <button id="approve-button" class="button button-primary" type="button">
+                Aprovar e executar
+              </button>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">ACOMPANHAMENTO</p>
+                <h2>Detalhes da operação</h2>
+              </div>
+              <span class="step-number">02</span>
+            </div>
+            <div id="operation-details" class="empty-state">
+              Nenhuma operação selecionada.
+            </div>
+          </section>
+        </div>
+
+        <aside class="side-column">
+          <section class="panel system-panel">
+            <p class="eyebrow">SISTEMA</p>
+            <h2>Estado do serviço</h2>
+            <div class="system-row">
+              <span>API</span>
+              <strong id="api-status">Verificando</strong>
+            </div>
+            <div class="system-row">
+              <span>Endereço</span>
+              <strong>127.0.0.1:8765</strong>
+            </div>
+            <div class="system-row">
+              <span>Execução</span>
+              <strong>Local</strong>
+            </div>
+          </section>
+
+          <section class="panel history-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">REGISTROS</p>
+                <h2>Histórico</h2>
+              </div>
+              <span id="task-count" class="count">0</span>
+            </div>
+            <div id="task-list" class="task-list">
+              <p class="empty-state">Carregando tarefas...</p>
+            </div>
+          </section>
+        </aside>
+      </section>
+
+      <div id="notification" class="notification" role="status" aria-live="polite" hidden></div>
+    </main>
+
+    <footer>
+      DevAgent Studio <span>·</span> Interface local
+    </footer>
+  </div>
+</body>
+</html>
