@@ -1,5 +1,6 @@
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
+from pathlib import Path
 
 from agent import DevAgent
 from core.api.service import APIService
@@ -7,6 +8,16 @@ from core.gateway import (
     CommitTransactionError,
     DevAgentGateway,
 )
+
+
+WEB_ROOT = Path(__file__).resolve().parent / "web"
+
+# Allowlist: somente estes três recursos podem ser servidos.
+STATIC_FILES = {
+    "/": ("index.html", "text/html; charset=utf-8"),
+    "/app.js": ("app.js", "application/javascript; charset=utf-8"),
+    "/styles.css": ("styles.css", "text/css; charset=utf-8"),
+}
 
 
 agent = DevAgent(".")
@@ -79,7 +90,33 @@ class APIHandler(BaseHTTPRequestHandler):
             }
         )
 
+    def _serve_static(self, route):
+        filename, content_type = STATIC_FILES[route]
+
+        try:
+            body = (WEB_ROOT / filename).read_bytes()
+        except FileNotFoundError:
+            self.send_json(
+                404,
+                {
+                    "error": "Recurso estático não encontrado"
+                }
+            )
+            return
+
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
+        if self.path in STATIC_FILES:
+            self._serve_static(self.path)
+            return
+
         service = self._service()
 
         if self.path == "/health":

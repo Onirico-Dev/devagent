@@ -2658,12 +2658,12 @@ def test_mock_binary_operation_repair_returns_empty_when_current_file_has_no_mat
 
     assert result == ""
 
-def test_mock_legacy_create_content_continues_after_empty_marker():
+def test_mock_legacy_create_content_rejects_explanatory_text():
     adapter = MockAdapter()
 
     instruction = "crie arquivo exemplo.py com base contendo "
 
-    assert adapter._extract_legacy_create_content(instruction) == "base contendo"
+    assert adapter._extract_legacy_create_content(instruction) == ""
 
 
 def test_mock_compound_create_preserves_explicit_content_for_each_file():
@@ -2788,3 +2788,96 @@ def test_mock_compound_create_returns_empty_when_change_builder_fails(
     )
 
     assert result == []
+
+
+def test_mock_create_natural_function_removes_only_invalid_terminal_period():
+    instruction = (
+        'Crie o arquivo studio_ui_smoke.py contendo '
+        'uma função status() que retorne "DEVAGENT STUDIO OK".'
+    )
+
+    content = MockAdapter._extract_create_content(instruction)
+
+    assert content == (
+        "def status():\n"
+        '    return "DEVAGENT STUDIO OK"'
+    )
+    compile(content, "studio_ui_smoke.py", "exec")
+
+
+def test_mock_create_natural_function_preserves_period_inside_string():
+    instruction = (
+        'Crie o arquivo studio_ui_smoke.py contendo '
+        'uma função status() que retorne "DEVAGENT STUDIO OK."'
+    )
+
+    content = MockAdapter._extract_create_content(instruction)
+
+    assert content == (
+        "def status():\n"
+        '    return "DEVAGENT STUDIO OK."'
+    )
+    compile(content, "studio_ui_smoke.py", "exec")
+
+
+def test_mock_create_extracts_exact_content_after_explanation():
+    instruction = (
+        "Crie o arquivo studio_ui_smoke.py com exatamente este conteúdo, "
+        'sem acrescentar ou remover caracteres: '
+        'def status(): return "DEVAGENT STUDIO OK"'
+    )
+
+    content = MockAdapter._extract_create_content(instruction)
+
+    assert content == 'def status(): return "DEVAGENT STUDIO OK"'
+    compile(content, "studio_ui_smoke.py", "exec")
+
+
+def test_mock_legacy_create_content_rejects_explanatory_fallback():
+    adapter = MockAdapter()
+
+    instruction = (
+        "crie arquivo exemplo.py com exatamente este conteúdo, "
+        "sem acrescentar ou remover caracteres: texto explicativo"
+    )
+
+    assert adapter._extract_legacy_create_content(instruction) == ""
+
+
+def test_mock_legacy_create_content_accepts_python_without_marker():
+    adapter = MockAdapter()
+
+    assert (
+        adapter._extract_legacy_create_content("crie app.py print('ok')")
+        == "print('ok')"
+    )
+
+
+def test_mock_create_natural_function_returns_invalid_candidate_without_terminal_period():
+    import pytest
+
+    instruction = (
+        "Crie o arquivo exemplo.py contendo "
+        "uma função quebrada() que retorne a +"
+    )
+
+    content = MockAdapter._extract_create_content(instruction)
+
+    assert content == "def quebrada():\n    return a +"
+    with pytest.raises(SyntaxError):
+        compile(content, "exemplo.py", "exec")
+
+
+def test_mock_create_natural_function_returns_original_when_period_removal_is_invalid():
+    import pytest
+
+    instruction = (
+        "Crie o arquivo exemplo.py contendo "
+        "uma função quebrada() que retorne a +."
+    )
+
+    content = MockAdapter._extract_create_content(instruction)
+
+    assert content == "def quebrada():\n    return a +."
+    with pytest.raises(SyntaxError):
+        compile(content, "exemplo.py", "exec")
