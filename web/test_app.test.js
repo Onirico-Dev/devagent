@@ -99,12 +99,13 @@ function makeTask(id, updatedAt, extra = {}) {
   };
 }
 
-function createHarness(tasks) {
+function createHarness(tasks, harnessOptions = {}) {
   const elements = Object.fromEntries(
     ELEMENT_IDS.map((id) => [id, new FakeElement()])
   );
 
   const requests = [];
+  const pendingTaskRequests = new Map();
 
   const document = {
     getElementById(id) {
@@ -126,6 +127,42 @@ function createHarness(tasks) {
       data = { tasks: [...tasks] };
     } else if (url.startsWith("/tasks/")) {
       const id = decodeURIComponent(url.slice("/tasks/".length));
+
+      if (harnessOptions.deferTaskRequests) {
+        return await new Promise((resolve) => {
+          const queue = pendingTaskRequests.get(id) || [];
+
+          queue.push(() => {
+            const task = tasks.find(
+              (item) => item.approval_id === id
+            ) || {};
+
+            const failure = harnessOptions.taskRequestFailures?.[id];
+
+            if (failure) {
+              resolve({
+                ok: false,
+                status: failure.status || 500,
+                async text() {
+                  return JSON.stringify({ error: failure.message });
+                },
+              });
+              return;
+            }
+
+            resolve({
+              ok: true,
+              status: 200,
+              async text() {
+                return JSON.stringify(task);
+              },
+            });
+          });
+
+          pendingTaskRequests.set(id, queue);
+        });
+      }
+
       data = tasks.find((task) => task.approval_id === id) || {};
     } else {
       throw new Error(`Rota inesperada no teste: ${url}`);
@@ -181,6 +218,21 @@ function createHarness(tasks) {
     api: context.__devagentTest,
     elements,
     requests,
+    resolveTaskRequest(id) {
+      const key = String(id);
+      const queue = pendingTaskRequests.get(key) || [];
+      const resolve = queue.shift();
+
+      if (!resolve) {
+        throw new Error(`Não existe requisição pendente para ${key}.`);
+      }
+
+      if (queue.length === 0) {
+        pendingTaskRequests.delete(key);
+      }
+
+      resolve();
+    },
   };
 }
 
@@ -394,4 +446,108 @@ test("seleção visual acompanha o approval_id selecionado", async () => {
   assert.equal(selected.length, 1);
   assert.equal(selected[0].getAttribute("data-task-id"), "148");
   assert.equal(selected[0].getAttribute("aria-current"), "true");
+});
+
+
+test("selectTask ignora resposta antiga quando seleções terminam fora de ordem", async () => {
+  const tasks = [
+    makeTask("A", "2026-10-31T10:00:00Z", {
+      instruction: "Tarefa A antiga",
+      plan: { objective: "Plano A", changes: [], tests: [], risks: [] },
+    }),
+    makeTask("B", "2026-10-31T10:01:00Z", {
+      instruction: "Tarefa B mais recente",
+      plan: { objective: "Plano B", changes: [], tests: [], risks: [] },
+    }),
+  ];
+
+  const harness = createHarness(tasks, { deferTaskRequests: true });
+
+  // Aguarda a inicialização automática, que usa respostas imediatas
+  // para health e listagem, antes de iniciar as seleções concorrentes.
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const selectionA = harness.api.selectTask("A", false);
+  const selectionB = harness.api.selectTask("B", false);
+
+  // A seleção mais recente responde primeiro.
+  harness.resolveTaskRequest("B");
+  await selectionB;
+
+  // A seleção antiga responde por último.
+  harness.resolveTaskRequest("A");
+  await selectionA;
+
+  assert.equal(
+    harness.api.state.selectedTaskId,
+    "B",
+    "A seleção antiga não pode sobrescrever a seleção mais recente."
+  );
+
+  assert.equal(harness.api.state.selectedTask.approval_id, "B");
+  const renderedPlanText = [];
+
+  function collectText(node) {
+    if (node.textContent) {
+      renderedPlanText.push(node.textContent);
+    }
+
+    for (const child of node.children || []) {
+      collectText(child);
+    }
+  }
+
+  collectText(harness.elements["plan-content"]);
+
+  assert.ok(
+    renderedPlanText.includes("Plano B"),
+    "O conteúdo renderizado deve continuar correspondendo à seleção B."
+  );
+});
+
+
+test("selectTask ignora erro de uma seleção antiga", async () => {
+  const tasks = [
+    makeTask("A", "2026-10-31T10:00:00Z", {
+      plan: { objective: "Plano A", changes: [], tests: [], risks: [] },
+    }),
+    makeTask("B", "2026-10-31T10:01:00Z", {
+      plan: { objective: "Plano B", changes: [], tests: [], risks: [] },
+    }),
+  ];
+
+  const harness = createHarness(tasks, {
+    deferTaskRequests: true,
+    taskRequestFailures: {
+      A: { status: 500, message: "Falha antiga simulada." },
+    },
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const selectionA = harness.api.selectTask("A", false);
+  const selectionB = harness.api.selectTask("B", false);
+
+  harness.resolveTaskRequest("B");
+  await selectionB;
+
+  const notificationBeforeOldFailure =
+    harness.elements.notification.textContent;
+
+  harness.resolveTaskRequest("A");
+  await selectionA;
+
+  assert.equal(harness.api.state.selectedTaskId, "B");
+  assert.equal(harness.api.state.selectedTask.approval_id, "B");
+
+  assert.equal(
+    harness.elements.notification.textContent,
+    notificationBeforeOldFailure,
+    "Uma falha obsoleta não pode substituir a notificação atual."
+  );
+
+  assert.doesNotMatch(
+    harness.elements.notification.textContent,
+    /Falha antiga simulada/
+  );
 });
