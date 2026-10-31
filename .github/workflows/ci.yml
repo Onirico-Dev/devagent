@@ -19,11 +19,19 @@ jobs:
         with:
           python-version: "3.14"
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
       - name: Install dependencies
         run: python -m pip install --upgrade pip && python -m pip install ".[dev]"
 
       - name: Compile sources
         run: python -m py_compile api.py agent.py main.py $(find core -name "*.py" -print)
+
+      - name: Run frontend tests
+        run: bash scripts/test_frontend.sh
 
       - name: Run tests and verify production coverage
         run: pytest -q --cov=core --cov=api --cov=agent --cov-report=term-missing --cov-fail-under=100

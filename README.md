@@ -281,6 +281,16 @@ Instale as dependências de desenvolvimento:
 python -m pip install ".[dev]"
 ```
 
+Execute os testes do frontend (Node.js 24 ou compatível):
+
+```bash
+bash scripts/test_frontend.sh
+```
+
+Essa validação verifica a sintaxe JavaScript e executa os testes automatizados
+da interface DevAgent Studio. Ela é independente da suíte Python.
+
+
 Execute toda a suíte:
 
 ```bash
