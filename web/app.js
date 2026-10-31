@@ -29,6 +29,7 @@
     pendingApprovalId: null,
     busy: false,
     notificationTimer: null,
+    selectionSequence: 0,
   };
 
   const STATUS_LABELS = {
@@ -483,10 +484,16 @@
     renderOperation(null);
   }
   async function selectTask(taskId, updateList = true) {
+    const sequence = ++state.selectionSequence;
+
     try {
       const task = await request(
         `/tasks/${encodeURIComponent(taskId)}`
       );
+
+      if (sequence !== state.selectionSequence) {
+        return;
+      }
 
       if (!task || task.approval_id !== taskId) {
         throw new Error(
@@ -502,9 +509,18 @@
 
       if (updateList) {
         const result = await request("/tasks");
+
+        if (sequence !== state.selectionSequence) {
+          return;
+        }
+
         renderTaskList(Array.isArray(result.tasks) ? result.tasks : []);
       }
     } catch (error) {
+      if (sequence !== state.selectionSequence) {
+        return;
+      }
+
       showNotification(
         `Não foi possível carregar a tarefa: ${error.message}`,
         "error"
