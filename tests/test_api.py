@@ -5898,3 +5898,85 @@ def test_task_read_endpoints_hide_internal_metadata(monkeypatch):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_static_interface_resources():
+    expected = (
+        ("/", "text/html", b"DevAgent Studio"),
+        ("/app.js", "application/javascript", b"createPlan"),
+        ("/styles.css", "text/css", b".app-shell"),
+    )
+
+    server, _ = start_server()
+
+    try:
+        for path, expected_type, marker in expected:
+            connection = HTTPConnection(
+                "127.0.0.1",
+                server.server_port,
+            )
+
+            connection.request("GET", path)
+            response = connection.getresponse()
+            body = response.read()
+
+            assert response.status == 200
+            assert expected_type in response.getheader("Content-Type")
+            assert response.getheader("X-Content-Type-Options") == "nosniff"
+            assert marker in body
+
+            connection.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_static_interface_missing_file_returns_json_404(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        api,
+        "WEB_ROOT",
+        tmp_path / "missing-web-root",
+    )
+
+    server, _ = start_server()
+
+    try:
+        connection = HTTPConnection(
+            "127.0.0.1",
+            server.server_port,
+        )
+
+        connection.request("GET", "/app.js")
+        response = connection.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+
+        assert response.status == 404
+        assert body == {
+            "error": "Recurso estático não encontrado"
+        }
+
+        connection.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_static_interface_rejects_unlisted_paths():
+    server, _ = start_server()
+
+    try:
+        for path in ("/api.py", "/.env", "/../api.py", "/web/app.js"):
+            status, data = request(
+                server,
+                "GET",
+                path,
+            )
+
+            assert status == 404
+            assert data["error"] == "Endpoint não encontrado"
+    finally:
+        server.shutdown()
+        server.server_close()

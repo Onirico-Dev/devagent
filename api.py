@@ -1,5 +1,7 @@
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import urlsplit
 import json
+from pathlib import Path
 
 from agent import DevAgent
 from core.api.service import APIService
@@ -9,30 +11,53 @@ from core.gateway import (
 )
 
 
+WEB_ROOT = Path(__file__).resolve().parent / "web"
+
+MAX_REQUEST_BODY_BYTES = 1024 * 1024
+
+# Allowlist: somente estes três recursos podem ser servidos.
+STATIC_FILES = {
+    "/": ("index.html", "text/html; charset=utf-8"),
+    "/app.js": ("app.js", "application/javascript; charset=utf-8"),
+    "/styles.css": ("styles.css", "text/css; charset=utf-8"),
+}
+
+
 agent = DevAgent(".")
 gateway = DevAgentGateway(agent, ".")
 
 
 class APIHandler(BaseHTTPRequestHandler):
+
     def _service(self):
         return APIService(agent, gateway)
 
     def send_json(self, status, data):
         body = json.dumps(
             data,
-            ensure_ascii=False
+            ensure_ascii=False,
         ).encode("utf-8")
 
         self.send_response(status)
 
         self.send_header(
             "Content-Type",
-            "application/json; charset=utf-8"
+            "application/json; charset=utf-8",
         )
 
         self.send_header(
             "Content-Length",
-            str(len(body))
+            str(len(body)),
+        )
+
+        self.send_header(
+            "X-Content-Type-Options",
+            "nosniff",
+        )
+
+        self.send_header(
+            "Cache-Control",
+            "no-cache",
         )
 
         self.end_headers()
@@ -58,8 +83,8 @@ class APIHandler(BaseHTTPRequestHandler):
             self.send_json(
                 404,
                 {
-                    "error": str(error).strip("'")
-                }
+                    "error": str(error).strip("'"),
+                },
             )
             return
 
@@ -67,85 +92,135 @@ class APIHandler(BaseHTTPRequestHandler):
             self.send_json(
                 409,
                 {
-                    "error": str(error)
-                }
+                    "error": str(error),
+                },
             )
             return
 
         self.send_json(
             500,
             {
-                "error": str(error)
-            }
+                "error": str(error),
+            },
         )
+
+    def _serve_static(self, route):
+        filename, content_type = STATIC_FILES[route]
+
+        try:
+            body = (WEB_ROOT / filename).read_bytes()
+
+        except FileNotFoundError:
+            self.send_json(
+                404,
+                {
+                    "error": "Recurso estático não encontrado",
+                },
+            )
+            return
+
+        self.send_response(200)
+
+        self.send_header(
+            "Content-Type",
+            content_type,
+        )
+
+        self.send_header(
+            "Content-Length",
+            str(len(body)),
+        )
+
+        self.send_header(
+            "X-Content-Type-Options",
+            "nosniff",
+        )
+
+        self.send_header(
+            "Cache-Control",
+            "no-cache",
+        )
+
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_GET(self):
-        service = self._service()
+        try:
+            path = urlsplit(self.path).path
 
-        if self.path == "/health":
-            self.send_json(
-                200,
-                service.health(),
-            )
-            return
+            if path in STATIC_FILES:
+                self._serve_static(path)
+                return
 
-        if self.path == "/tasks":
+            service = self._service()
+
+            if path == "/health":
+                self.send_json(
+                    200,
+                    service.health(),
+                )
+                return
+
+            if path == "/tasks":
+                self.send_json(
+                    200,
+                    {
+                        "tasks": service.list_tasks(),
+                    },
+                )
+                return
+
+            if path == "/tasks/latest":
+                task = service.latest_task()
+
+                if task is None:
+                    self.send_json(
+                        404,
+                        {
+                            "error": "Nenhuma tarefa encontrada",
+                        },
+                    )
+                    return
+
+                self.send_json(200, task)
+                return
+
+            task_route = path.split("/")
+
+            if (
+                len(task_route) == 3
+                and task_route[1] == "tasks"
+                and task_route[2]
+            ):
+                task_id = task_route[2]
+                task = service.get_task(task_id)
+
+                if task is None:
+                    self.send_json(
+                        404,
+                        {
+                            "error": "Tarefa não encontrada",
+                        },
+                    )
+                    return
+
+                self.send_json(200, task)
+                return
+
             self.send_json(
-                200,
+                404,
                 {
-                    "tasks": service.list_tasks()
-                }
+                    "error": "Endpoint não encontrado",
+                },
             )
-            return
 
-        if self.path == "/tasks/latest":
-            task = service.latest_task()
-
-            if task is None:
-                self.send_json(
-                    404,
-                    {
-                        "error": "Nenhuma tarefa encontrada"
-                    }
-                )
-                return
-
-            self.send_json(200, task)
-            return
-
-        task_route = self.path.split("/")
-
-        if (
-            len(task_route) == 3
-            and task_route[1] == "tasks"
-            and task_route[2]
-        ):
-            task_id = task_route[2]
-            task = service.get_task(task_id)
-
-            if task is None:
-                self.send_json(
-                    404,
-                    {
-                        "error": "Tarefa não encontrada"
-                    }
-                )
-                return
-
-            self.send_json(200, task)
-            return
-
-        self.send_json(
-            404,
-            {
-                "error": "Endpoint não encontrado"
-            }
-        )
+        except Exception as error:
+            self.handle_error(error)
 
     def do_POST(self):
-        service = self._service()
+        path = urlsplit(self.path).path
 
-        if self.path == "/plan":
+        if path == "/plan":
             try:
                 content_length = self.headers.get(
                     "Content-Length"
@@ -153,35 +228,45 @@ class APIHandler(BaseHTTPRequestHandler):
 
                 if content_length is None:
                     length = 0
+
                 else:
-                    try:
-                        length = int(content_length)
-                    except (TypeError, ValueError):
+                    if not content_length.isdecimal():
                         self.send_json(
                             400,
                             {
-                                "error": (
-                                    "Content-Length inválido"
-                                )
-                            }
+                                "error": "Content-Length inválido",
+                            },
                         )
                         return
 
-                    if length < 0:
+                    length = int(content_length)
+
+                    if length > MAX_REQUEST_BODY_BYTES:
                         self.send_json(
-                            400,
+                            413,
                             {
                                 "error": (
-                                    "Content-Length inválido"
-                                )
-                            }
+                                    "Corpo da requisição excede "
+                                    "o limite de 1 MiB"
+                                ),
+                            },
                         )
                         return
 
                 raw = self.rfile.read(length)
 
+                if len(raw) != length:
+                    self.send_json(
+                        400,
+                        {
+                            "error": "JSON inválido",
+                        },
+                    )
+                    return
+
                 try:
                     data = json.loads(raw)
+
                 except (
                     json.JSONDecodeError,
                     UnicodeDecodeError,
@@ -189,8 +274,8 @@ class APIHandler(BaseHTTPRequestHandler):
                     self.send_json(
                         400,
                         {
-                            "error": "JSON inválido"
-                        }
+                            "error": "JSON inválido",
+                        },
                     )
                     return
 
@@ -201,8 +286,8 @@ class APIHandler(BaseHTTPRequestHandler):
                             "error": (
                                 "O corpo da requisição deve ser "
                                 "um objeto JSON"
-                            )
-                        }
+                            ),
+                        },
                     )
                     return
 
@@ -217,16 +302,17 @@ class APIHandler(BaseHTTPRequestHandler):
                         {
                             "error": (
                                 "Campo 'instruction' é obrigatório"
-                            )
-                        }
+                            ),
+                        },
                     )
                     return
 
+                service = self._service()
                 result = service.create_task(instruction)
 
                 self.send_json(
                     200,
-                    result
+                    result,
                 )
 
             except Exception as error:
@@ -234,7 +320,7 @@ class APIHandler(BaseHTTPRequestHandler):
 
             return
 
-        approval_route = self.path.split("/")
+        approval_route = path.split("/")
 
         if (
             len(approval_route) == 3
@@ -244,11 +330,12 @@ class APIHandler(BaseHTTPRequestHandler):
             approval_id = approval_route[2]
 
             try:
+                service = self._service()
                 result = service.approve(approval_id)
 
                 self.send_json(
                     200,
-                    result
+                    result,
                 )
 
             except Exception as error:
@@ -256,7 +343,7 @@ class APIHandler(BaseHTTPRequestHandler):
 
             return
 
-        reject_route = self.path.split("/")
+        reject_route = path.split("/")
 
         if (
             len(reject_route) == 3
@@ -266,11 +353,12 @@ class APIHandler(BaseHTTPRequestHandler):
             approval_id = reject_route[2]
 
             try:
+                service = self._service()
                 result = service.reject(approval_id)
 
                 self.send_json(
                     200,
-                    result
+                    result,
                 )
 
             except Exception as error:
@@ -281,32 +369,32 @@ class APIHandler(BaseHTTPRequestHandler):
         self.send_json(
             404,
             {
-                "error": "Endpoint não encontrado"
-            }
+                "error": "Endpoint não encontrado",
+            },
         )
 
     def do_PUT(self):
         self.send_json(
             405,
             {
-                "error": "Método não permitido"
-            }
+                "error": "Método não permitido",
+            },
         )
 
     def do_PATCH(self):
         self.send_json(
             405,
             {
-                "error": "Método não permitido"
-            }
+                "error": "Método não permitido",
+            },
         )
 
     def do_DELETE(self):
         self.send_json(
             405,
             {
-                "error": "Método não permitido"
-            }
+                "error": "Método não permitido",
+            },
         )
 
     def log_message(self, format, *args):
@@ -316,7 +404,7 @@ class APIHandler(BaseHTTPRequestHandler):
 def run():
     server = HTTPServer(
         ("127.0.0.1", 8765),
-        APIHandler
+        APIHandler,
     )
 
     print(
@@ -326,8 +414,10 @@ def run():
 
     try:
         server.serve_forever()
+
     except KeyboardInterrupt:
         print("\nServidor encerrado.")
+
     finally:
         server.server_close()
 

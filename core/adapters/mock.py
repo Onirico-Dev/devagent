@@ -1446,13 +1446,24 @@ class MockAdapter(AIAdapter):
     ) -> str:
         lower = instruction.lower()
 
+        code_prefix = re.compile(
+            r"^(?:"
+            r"async\s+def\b|def\b|class\b|"
+            r"from\b|import\b|"
+            r"print\s*\(|assert\b|"
+            r"raise\b|pass\b|return\b|"
+            r"@|#|"
+            r"[A-Za-z_]\w*\s*="
+            r")",
+            flags=re.IGNORECASE,
+        )
+
         markers = (
             " contendo ",
             " com conteúdo ",
             " com o conteúdo ",
             " com conteudo ",
             " com o conteudo ",
-            " com ",
         )
 
         for marker in markers:
@@ -1466,6 +1477,17 @@ class MockAdapter(AIAdapter):
                 if content:
                     return content
 
+        generic_marker = " com "
+        generic_index = lower.find(generic_marker)
+
+        if generic_index != -1:
+            candidate = instruction[
+                generic_index + len(generic_marker):
+            ].strip()
+
+            if code_prefix.match(candidate):
+                return candidate
+
         match = re.match(
             r"^\s*(?:crie|criar|criar arquivo|create)"
             r"\s+(?:um\s+arquivo\s+)?"
@@ -1477,7 +1499,10 @@ class MockAdapter(AIAdapter):
         )
 
         if match:
-            return match.group(1).strip()
+            candidate = match.group(1).strip()
+
+            if code_prefix.match(candidate):
+                return candidate
 
         return ""
 
@@ -1596,6 +1621,15 @@ class MockAdapter(AIAdapter):
                 f"    assert {function_name}({arguments}) == {expected}"
             )
 
+        exact_content_match = re.search(
+            r"\bcom exatamente este conteúdo,\s*"
+            r"sem acrescentar ou remover caracteres:\s*(.+?)\s*$",
+            instruction,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if exact_content_match:
+            return exact_content_match.group(1).strip()
+
         markers = (
             " contendo ",
             " com conteúdo ",
@@ -1633,10 +1667,34 @@ class MockAdapter(AIAdapter):
                             natural_function_pattern.group(3).strip()
                         )
 
-                        return (
+                        candidate = (
                             f"def {function_name}({arguments}):\n"
                             f"    return {expression}"
                         )
+
+                        try:
+                            compile(candidate, "<mock-create>", "exec")
+                        except SyntaxError:
+                            if not expression.endswith("."):
+                                return candidate
+
+                            corrected_expression = expression[:-1].rstrip()
+                            corrected_candidate = (
+                                f"def {function_name}({arguments}):\n"
+                                f"    return {corrected_expression}"
+                            )
+                            try:
+                                compile(
+                                    corrected_candidate,
+                                    "<mock-create>",
+                                    "exec",
+                                )
+                            except SyntaxError:
+                                return candidate
+
+                            return corrected_candidate
+
+                        return candidate
 
                     return content
 
