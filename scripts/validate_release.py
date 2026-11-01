@@ -36,6 +36,7 @@ STATIC_ROUTES = {
 
 RESULTS = {}
 ARTIFACT_DIR = None
+WORK_DIR = None
 
 
 def execute(command, *, cwd=ROOT, capture=False):
@@ -137,15 +138,47 @@ def python_tests():
     ])
 
 
-def build_wheel():
-    global ARTIFACT_DIR
+def configure_artifact_dirs(artifact_dir=None):
+    """Configura a saída distribuível e o workspace temporário."""
+    global ARTIFACT_DIR, WORK_DIR
 
-    ARTIFACT_DIR = Path(
-        tempfile.mkdtemp(prefix="devagent-release-")
+    if artifact_dir is None:
+        ARTIFACT_DIR = Path(
+            tempfile.mkdtemp(prefix="devagent-release-")
+        ).resolve()
+    else:
+        ARTIFACT_DIR = Path(artifact_dir).expanduser().resolve()
+        ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+
+    assert ARTIFACT_DIR.is_dir(), (
+        f"Diretório de artefatos inválido: {ARTIFACT_DIR}"
     )
 
+    WORK_DIR = Path(
+        tempfile.mkdtemp(prefix="devagent-validation-")
+    ).resolve()
+
     wheel_dir = ARTIFACT_DIR / "wheel"
-    wheel_dir.mkdir()
+    wheel_dir.mkdir(parents=True, exist_ok=True)
+
+    existing_wheels = list(wheel_dir.glob("devagent-*.whl"))
+    assert not existing_wheels, (
+        "O diretório de saída contém wheels antigos: "
+        + repr(existing_wheels)
+    )
+
+    assert WORK_DIR != ARTIFACT_DIR
+    assert ARTIFACT_DIR not in WORK_DIR.parents
+    assert WORK_DIR not in ARTIFACT_DIR.parents
+
+    print("Diretório de artefatos:", ARTIFACT_DIR)
+    print("Workspace temporário:", WORK_DIR)
+
+    return wheel_dir
+
+
+def build_wheel(artifact_dir=None):
+    wheel_dir = configure_artifact_dirs(artifact_dir)
 
     execute([
         sys.executable,
@@ -215,7 +248,10 @@ def audit_wheel(wheel):
 
 
 def isolated_install_and_http(wheel):
-    environment = ARTIFACT_DIR / "venv"
+    assert ARTIFACT_DIR is not None
+    assert WORK_DIR is not None
+
+    environment = WORK_DIR / "venv"
     venv.create(environment, with_pip=True)
 
     installed_python = environment / "bin" / "python"
@@ -258,7 +294,7 @@ for name in ("index.html", "app.js", "styles.css"):
         "-I",
         "-c",
         import_check,
-    ], cwd=ARTIFACT_DIR)
+    ], cwd=WORK_DIR)
 
     server_code = r'''
 import api
@@ -271,7 +307,7 @@ server.serve_forever()
 
     server = subprocess.Popen(
         [str(installed_python), "-I", "-c", server_code],
-        cwd=ARTIFACT_DIR,
+        cwd=WORK_DIR,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -311,9 +347,7 @@ server.serve_forever()
             assert headers.get("Cache-Control") == "no-cache"
             assert int(headers["Content-Length"]) == len(body)
 
-            installed_file = (
-                ARTIFACT_DIR / "venv" / "lib"
-            )
+            installed_file = environment / "lib"
 
             candidates = list(
                 installed_file.glob(
@@ -353,6 +387,15 @@ def main():
         action="store_true",
         help="Ignora as verificações locais de branch e sincronização remota.",
     )
+    parser.add_argument(
+        "--artifact-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Diretório dos artefatos distribuíveis. "
+            "Por padrão, usa um diretório temporário."
+        ),
+    )
     args = parser.parse_args()
 
     print("DEVAGENT RELEASE VALIDATOR")
@@ -384,7 +427,7 @@ def main():
 
     def build():
         nonlocal wheel
-        wheel = build_wheel()
+        wheel = build_wheel(args.artifact_dir)
 
     record("BUILD WHEEL", build)
 
@@ -408,7 +451,7 @@ def main():
         "version": version,
         "commit": commit,
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "wheel": str(wheel),
+        "wheel": wheel.relative_to(ARTIFACT_DIR).as_posix(),
         "wheel_size": wheel.stat().st_size,
         "sha256": audit_result["sha256"],
         "results": RESULTS,

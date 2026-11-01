@@ -28,4 +28,59 @@ jobs:
         run: python -m pip install --upgrade pip && python -m pip install ".[dev]"
 
       - name: Run complete release validation
-        run: python scripts/validate_release.py --skip-git-preflight
+        run: python scripts/validate_release.py --skip-git-preflight --artifact-dir "$RUNNER_TEMP/devagent-release-artifacts"
+
+      - name: Verify release artifacts
+        env:
+          EXPECTED_COMMIT: ${{ github.sha }}
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          artifact_dir = Path(os.environ["RUNNER_TEMP"]) / "devagent-release-artifacts"
+          report_path = artifact_dir / "release-report.json"
+          assert report_path.is_file(), f"Relatório ausente: {report_path}"
+
+          report = json.loads(report_path.read_text(encoding="utf-8"))
+          assert report["overall"] == "PASS", "Validação do release não passou."
+          assert report["commit"] == os.environ["EXPECTED_COMMIT"], (
+              "Commit do relatório diverge do commit do workflow."
+          )
+
+          wheel_relative = Path(report["wheel"])
+          assert (
+              not wheel_relative.is_absolute()
+              and ".." not in wheel_relative.parts
+          ), "Caminho do wheel inválido."
+
+          artifact_root = artifact_dir.resolve()
+          wheel_path = (artifact_root / wheel_relative).resolve()
+
+          assert wheel_path.is_relative_to(artifact_root), (
+              "Wheel fora do diretório de artefatos."
+          )
+          assert wheel_path.is_file(), f"Wheel ausente: {wheel_path}"
+
+          digest = hashlib.sha256(wheel_path.read_bytes()).hexdigest()
+          assert digest == report["sha256"], "SHA-256 do wheel diverge do relatório."
+          assert wheel_path.stat().st_size == report["wheel_size"], (
+              "Tamanho do wheel diverge do relatório."
+          )
+
+          print("Relatório, commit, wheel, tamanho e SHA-256 verificados.")
+          print("Wheel:", wheel_path.name)
+          print("SHA-256:", digest)
+          PY
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: devagent-release-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/devagent-release-artifacts/wheel/*.whl
+            ${{ runner.temp }}/devagent-release-artifacts/release-report.json
+          if-no-files-found: error
+          retention-days: 14
