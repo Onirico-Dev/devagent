@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Validação integral e local da distribuição DevAgent."""
 
+import argparse
 import hashlib
 import json
 import subprocess
@@ -152,7 +153,6 @@ def build_wheel():
         "pip",
         "wheel",
         "--no-deps",
-        "--no-build-isolation",
         "--wheel-dir",
         str(wheel_dir),
         str(ROOT),
@@ -345,6 +345,16 @@ server.serve_forever()
 
 
 def main():
+    parser = argparse.ArgumentParser(
+        description="Validação integral da distribuição DevAgent."
+    )
+    parser.add_argument(
+        "--skip-git-preflight",
+        action="store_true",
+        help="Ignora as verificações locais de branch e sincronização remota.",
+    )
+    args = parser.parse_args()
+
     print("DEVAGENT RELEASE VALIDATOR")
     print("Repositório:", ROOT)
 
@@ -353,8 +363,15 @@ def main():
     def preflight():
         commit_holder["commit"] = git_preflight()
 
-    record("GIT PREFLIGHT", preflight)
-    commit = commit_holder["commit"]
+    if args.skip_git_preflight:
+        commit = execute(
+            ["git", "rev-parse", "HEAD"], capture=True
+        ).stdout.strip()
+        RESULTS["GIT PREFLIGHT"] = "SKIPPED (CI mode)"
+        print("GIT PREFLIGHT: SKIPPED (CI mode)")
+    else:
+        record("GIT PREFLIGHT", preflight)
+        commit = commit_holder["commit"]
 
     with open(ROOT / "pyproject.toml", "rb") as file:
         version = tomllib.load(file)["project"]["version"]
