@@ -69,6 +69,62 @@ python -m core --help
 
 A versão esperada para este marco é `0.6.8`.
 
+### 4.1. Instalação de uma release oficial pelo GitHub Actions
+
+O projeto disponibiliza um instalador que valida e instala releases publicadas pelo workflow CI do GitHub Actions.
+
+**Requisitos:**
+
+- Python 3.14 ou superior.
+- GitHub CLI (`gh`) instalado.
+- Autenticação válida no GitHub CLI.
+- Acesso ao repositório oficial e à execução de CI que publicou a release.
+
+Confira a autenticação:
+
+```bash
+gh auth status
+```
+
+Caso ainda não esteja autenticado, execute:
+
+```bash
+gh auth login
+```
+
+**Instalar a release oficial mais recente:**
+
+```bash
+python scripts/install_release.py --latest --install-dir "$HOME/devagent-release-0.6.8"
+```
+
+O instalador identifica uma execução de CI bem-sucedida da branch `master`, valida os metadados e o artefato e instala o pacote em um ambiente virtual isolado.
+
+**Instalar uma release correspondente a um commit específico:**
+
+```bash
+python scripts/install_release.py --commit COMMIT_SHA --install-dir "$HOME/devagent-release-especifica"
+```
+
+Substitua `COMMIT_SHA` pelo identificador completo do commit desejado.
+
+**Validar uma release sem instalar:**
+
+```bash
+python scripts/install_release.py --commit COMMIT_SHA --verify-only
+```
+
+A opção `--verify-only` valida o artefato e seus metadados sem criar o ambiente de instalação.
+
+**Verificar a instalação:**
+
+```bash
+"$HOME/devagent-release-0.6.8/bin/devagent" --version
+"$HOME/devagent-release-0.6.8/bin/python" -m pip check
+```
+
+O diretório informado em `--install-dir` deve ainda não existir. Para instalar uma atualização, utilize um novo diretório e preserve a instalação anterior até concluir a validação.
+
 ## 5. Primeiro uso
 
 Execute o DevAgent a partir do diretório do projeto que deseja administrar.
