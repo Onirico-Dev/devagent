@@ -809,8 +809,8 @@ def test_latest_without_tasks(tmp_path):
         server.server_close()
 
 
-def test_plan_get_task_and_latest():
-    server, _ = start_server()
+def test_plan_get_task_and_latest(isolated_project):
+    server, _ = start_server(isolated_project)
 
     try:
         status, created = request(

@@ -11,7 +11,7 @@ from core.gateway import (
 )
 
 
-WEB_ROOT = Path(__file__).resolve().parent / "web"
+WEB_ROOT = Path(__file__).resolve().parent / "devagent_studio"
 
 MAX_REQUEST_BODY_BYTES = 1024 * 1024
 

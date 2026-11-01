@@ -21,11 +21,17 @@ dev = [
 devagent = "core.__main__:main"
 
 [tool.setuptools]
-include-package-data = true
+include-package-data = false
 py-modules = ["agent", "api", "cli", "main"]
 
 [tool.setuptools.packages.find]
-include = ["core*"]
+include = ["core*", "devagent_studio*"]
+
+[tool.setuptools.package-data]
+devagent_studio = ["*.html", "*.js", "*.css"]
+
+[tool.setuptools.exclude-package-data]
+"*" = ["__pycache__/*", "*.pyc", "*.pyo"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

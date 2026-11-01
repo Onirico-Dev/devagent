@@ -27,6 +27,7 @@
     selectedTaskId: null,
     selectedTask: null,
     pendingApprovalId: null,
+    uncertainApprovalId: null,
     busy: false,
     notificationTimer: null,
     selectionSequence: 0,
@@ -453,6 +454,20 @@
 
     renderTaskList(tasks);
 
+    // Uma operação de resultado incerto tem prioridade sobre a seleção
+    // visual e sobre a tarefa mais recente.
+    if (state.uncertainApprovalId) {
+      const recovered = await selectTask(state.uncertainApprovalId, false);
+
+      if (!recovered) {
+        throw new Error(
+          "Não foi possível recuperar a tarefa com resultado incerto."
+        );
+      }
+
+      return;
+    }
+
     const selectedTaskExists = tasks.some(
       (task) => task.approval_id === state.selectedTaskId
     );
@@ -492,7 +507,7 @@
       );
 
       if (sequence !== state.selectionSequence) {
-        return;
+        return false;
       }
 
       if (!task || task.approval_id !== taskId) {
@@ -511,20 +526,27 @@
         const result = await request("/tasks");
 
         if (sequence !== state.selectionSequence) {
-          return;
+          return false;
         }
 
         renderTaskList(Array.isArray(result.tasks) ? result.tasks : []);
       }
+
+      if (state.uncertainApprovalId === taskId) {
+        state.uncertainApprovalId = null;
+      }
+
+      return true;
     } catch (error) {
       if (sequence !== state.selectionSequence) {
-        return;
+        return false;
       }
 
       showNotification(
         `Não foi possível carregar a tarefa: ${error.message}`,
         "error"
       );
+      return false;
     }
   }
 
@@ -604,31 +626,107 @@
     setBusy(true);
 
     try {
-      const result = await request(
-        `/${action}/${encodeURIComponent(approvalId)}`,
-        { method: "POST" }
-      );
+      let result;
+
+      try {
+        result = await request(
+          `/${action}/${encodeURIComponent(approvalId)}`,
+          { method: "POST" }
+        );
+      } catch (error) {
+        // A resposta pode ter sido perdida depois de o servidor
+        // concluir a operação. Até reconciliar, o resultado é incerto.
+        state.uncertainApprovalId = approvalId;
+
+        if (
+          state.selectedTask &&
+          state.selectedTask.approval_id === approvalId
+        ) {
+          state.selectedTask = {
+            ...state.selectedTask,
+            status: "unknown",
+          };
+          renderPlanPanel(state.selectedTask);
+          renderOperation(state.selectedTask);
+        } else {
+          state.pendingApprovalId = null;
+          elements.approvalActions.hidden = true;
+        }
+
+        try {
+          // Uma resposta válida do GET pode confirmar que a tarefa
+          // continua pendente ou que a operação já foi processada.
+          await refreshTasks(false);
+          showNotification(
+            `Não foi possível ${action === "approve" ? "aprovar" : "rejeitar"}: ${error.message}`,
+            "error"
+          );
+        } catch (refreshError) {
+          showNotification(
+            `Não foi possível confirmar o resultado da operação: ${error.message}. A reconciliação também falhou: ${refreshError.message}. A operação permanece bloqueada.`,
+            "error"
+          );
+        }
+
+        return;
+      }
 
       const resultStatus = result.status || (
-        action === "reject" ? "rejected" : "executing"
+        action === "reject" ? "rejected" : "unknown"
       );
 
-      showNotification(
-        action === "approve"
-          ? `Operação finalizada: ${statusLabel(resultStatus)}.`
-          : "Plano rejeitado.",
-        resultStatus === "failed" ? "error" : "success"
-      );
+      // O servidor já confirmou a operação. Atualiza imediatamente
+      // a tarefa local para impedir estado visual obsoleto e repetição.
+      if (
+        state.selectedTask &&
+        state.selectedTask.approval_id === approvalId
+      ) {
+        state.selectedTask = {
+          ...state.selectedTask,
+          status: resultStatus,
+        };
+        renderPlanPanel(state.selectedTask);
+        renderOperation(state.selectedTask);
+      } else {
+        state.pendingApprovalId = null;
+        elements.approvalActions.hidden = true;
+      }
 
-      await refreshTasks(false);
-      await selectTask(approvalId);
-    } catch (error) {
-      showNotification(
-        `Não foi possível ${action === "approve" ? "aprovar" : "rejeitar"}: ${error.message}`,
-        "error"
-      );
+      if (action === "reject") {
+        showNotification("Plano rejeitado.", "success");
+      } else {
+        const approvalMessages = {
+          committed: {
+            message: "Aprovação concluída. As alterações foram aplicadas e o commit foi realizado.",
+            type: "success",
+          },
+          rolled_back: {
+            message: "A execução não foi concluída. As alterações foram revertidas.",
+            type: "error",
+          },
+          failed: {
+            message: "A aprovação falhou. A transação terminou em estado de falha.",
+            type: "error",
+          },
+        };
 
-      await refreshTasks(false);
+        const notification = approvalMessages[resultStatus] || {
+          message: `Aprovação processada, mas a API retornou um estado não reconhecido: ${statusLabel(resultStatus)}.`,
+          type: "error",
+        };
+
+        showNotification(notification.message, notification.type);
+      }
+
+      try {
+        await refreshTasks(false);
+        await selectTask(approvalId);
+      } catch (error) {
+        showNotification(
+          `${action === "approve" ? "A aprovação" : "A rejeição"} foi concluída, mas não foi possível sincronizar a interface: ${error.message}`,
+          "error"
+        );
+      }
     } finally {
       setBusy(false);
     }

@@ -12,7 +12,7 @@ fi
 echo "Node.js: $(node --version)"
 echo "Validando sintaxe do frontend..."
 
-node --check web/app.js
+node --check devagent_studio/app.js
 node --check web/test_app.test.js
 
 echo

@@ -26,3 +26,6 @@ dist/
 .pytest_cache/
 __pycache__/
 htmlcov/
+
+# Local development backups
+.devagent_backups/
