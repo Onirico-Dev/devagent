@@ -100,6 +100,12 @@ python scripts/install_release.py --latest --install-dir "$HOME/devagent-release
 
 O instalador identifica uma execução de CI bem-sucedida da branch `master`, valida os metadados e o artefato e instala o pacote em um ambiente virtual isolado.
 
+**Limites da seleção e disponibilidade:**
+
+- A opção `--latest` consulta até 100 execuções concluídas do workflow `CI` na branch `master` e seleciona a execução válida mais recente entre elas.
+- A opção `--commit` também depende de o commit solicitado estar entre as execuções retornadas nessa consulta.
+- Os artefatos publicados pelo workflow têm retenção de 14 dias. Após esse período, o GitHub pode não disponibilizar mais o artefato para download, mesmo que a execução de CI continue visível.
+
 **Instalar uma release correspondente a um commit específico:**
 
 ```bash

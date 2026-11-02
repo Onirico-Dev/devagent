@@ -470,3 +470,26 @@ def test_main_rejects_untrusted_repository_before_external_calls(
     assert result == 1
     assert calls == []
     assert not destination.exists()
+
+
+def test_run_enforces_timeout_and_reports_expiration(monkeypatch):
+    captured = {}
+
+    def fake_subprocess_run(command, **kwargs):
+        captured.update(kwargs)
+        raise INSTALLER.subprocess.TimeoutExpired(
+            command,
+            kwargs["timeout"],
+        )
+
+    monkeypatch.setattr(
+        INSTALLER.subprocess,
+        "run",
+        fake_subprocess_run,
+    )
+
+    with pytest.raises(RuntimeError, match="Tempo limite"):
+        INSTALLER.run(["comando-simulado"])
+
+    assert captured["timeout"] == INSTALLER.PROCESS_TIMEOUT_SECONDS
+    assert INSTALLER.PROCESS_TIMEOUT_SECONDS == 600

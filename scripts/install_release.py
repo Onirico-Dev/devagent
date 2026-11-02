@@ -22,6 +22,7 @@ from pathlib import Path
 DEFAULT_REPO = "Onirico-Dev/devagent"
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+PROCESS_TIMEOUT_SECONDS = 600
 
 
 def _parse_run_created_at(value):
@@ -245,7 +246,13 @@ def run(command, capture=True):
             text=True,
             stdout=subprocess.PIPE if capture else None,
             stderr=subprocess.PIPE if capture else None,
+            timeout=PROCESS_TIMEOUT_SECONDS,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"Tempo limite de {PROCESS_TIMEOUT_SECONDS} segundos excedido: "
+            f"{command[0]}"
+        ) from exc
     except FileNotFoundError as exc:
         raise RuntimeError(f"Comando não encontrado: {command[0]}") from exc
 
