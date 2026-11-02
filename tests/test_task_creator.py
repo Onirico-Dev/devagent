@@ -215,7 +215,9 @@ def test_create_or_reuse_creates_new_task(creator):
         "plan": plan,
     }
 
-    creator.supervisor.request_approval.assert_called_once_with(plan)
+    creator.supervisor.request_approval.assert_called_once_with(
+        plan, instruction="crie app.py"
+    )
     creator.history.create.assert_called_once_with(
         approval_id="123",
         instruction="crie app.py",
@@ -277,7 +279,7 @@ def test_create_or_reuse_does_not_reuse_different_plan(creator):
 
     assert result["approval_id"] == "43"
     creator.supervisor.request_approval.assert_called_once_with(
-        new_plan
+        new_plan, instruction="crie app.py"
     )
 
 
@@ -301,7 +303,7 @@ def test_create_or_reuse_does_not_reuse_different_instruction(creator):
 
     assert result["approval_id"] == "43"
     creator.supervisor.request_approval.assert_called_once_with(
-        plan
+        plan, instruction="crie app.py"
     )
 
 
@@ -382,6 +384,7 @@ def test_create_or_reuse_reconciles_orphan_pending_approval_after_history_crash(
     creator.supervisor.list_pending.return_value = {
         "123": {
             "status": "pending",
+            "instruction": "crie app.py",
             "plan": plan,
         }
     }
@@ -394,7 +397,9 @@ def test_create_or_reuse_reconciles_orphan_pending_approval_after_history_crash(
         "plan": plan,
     }
 
-    creator.supervisor.request_approval.assert_called_once_with(plan)
+    creator.supervisor.request_approval.assert_called_once_with(
+        plan, instruction="crie app.py"
+    )
     assert creator.history.create.call_count == 2
     creator.history.create.assert_called_with(
         approval_id="123",
@@ -425,7 +430,9 @@ def test_create_or_reuse_does_not_reuse_ambiguous_orphan_approval(creator):
         "plan": plan,
     }
 
-    creator.supervisor.request_approval.assert_called_once_with(plan)
+    creator.supervisor.request_approval.assert_called_once_with(
+        plan, instruction="crie app.py"
+    )
     creator.history.create.assert_called_once_with(
         approval_id="125",
         instruction="crie app.py",
@@ -453,12 +460,111 @@ def test_find_orphan_approval_skips_invalid_and_non_matching_requests(creator):
         },
         "approval-valid": {
             "status": "pending",
+            "instruction": "crie app.py",
             "plan": result,
         },
     }
 
-    assert creator._find_orphan_approval(result) == {
+    assert creator._find_orphan_approval(result, "crie app.py") == {
         "approval_id": "approval-valid",
         "status": "pending",
         "plan": result,
     }
+
+
+
+def test_orphan_approval_does_not_reuse_different_instruction(creator):
+    plan = make_plan()
+    creator.history.list_pending.return_value = []
+    creator.supervisor.list_pending.return_value = {
+        "123": {
+            "status": "pending",
+            "instruction": "crie outro arquivo",
+            "plan": plan,
+        }
+    }
+    creator.supervisor.request_approval.return_value = "124"
+
+    result = creator.create_or_reuse("crie app.py", plan)
+
+    assert result["approval_id"] == "124"
+    creator.supervisor.request_approval.assert_called_once_with(
+        plan,
+        instruction="crie app.py",
+    )
+
+
+def test_orphan_approval_does_not_reuse_legacy_request_without_instruction(
+    creator,
+):
+    plan = make_plan()
+    creator.history.list_pending.return_value = []
+    creator.supervisor.list_pending.return_value = {
+        "123": {
+            "status": "pending",
+            "plan": plan,
+        }
+    }
+    creator.supervisor.request_approval.return_value = "124"
+
+    result = creator.create_or_reuse("crie app.py", plan)
+
+    assert result["approval_id"] == "124"
+    creator.supervisor.request_approval.assert_called_once_with(
+        plan,
+        instruction="crie app.py",
+    )
+
+
+def test_orphan_approval_reuses_matching_normalized_instruction(creator):
+    plan = make_plan()
+    creator.history.list_pending.return_value = []
+    creator.supervisor.list_pending.return_value = {
+        "123": {
+            "status": "pending",
+            "instruction": "  crie    app.py  ",
+            "plan": plan,
+        }
+    }
+
+    result = creator.create_or_reuse("crie app.py", plan)
+
+    assert result["approval_id"] == "123"
+    creator.supervisor.request_approval.assert_not_called()
+
+
+def test_find_orphan_approval_rejects_empty_instruction(creator):
+    result = creator._find_orphan_approval(
+        make_plan(),
+        "  \n\t ",
+    )
+
+    assert result is None
+    creator.supervisor.list_pending.assert_not_called()
+
+
+def test_find_orphan_approval_rejects_different_plan(creator):
+    creator.supervisor.list_pending.return_value = {
+        "approval-1": {
+            "status": "pending",
+            "instruction": "crie app.py",
+            "plan": make_plan(path="other.py"),
+        }
+    }
+
+    result = creator._find_orphan_approval(
+        make_plan(path="app.py"),
+        "crie app.py",
+    )
+
+    assert result is None
+
+
+def test_create_or_reuse_rejects_empty_instruction(creator):
+    with pytest.raises(ValueError, match="Instrução inválida"):
+        creator.create_or_reuse(
+            "  \n\t ",
+            make_plan(),
+        )
+
+    creator.history._load.assert_not_called()

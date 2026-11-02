@@ -1008,3 +1008,42 @@ def test_supervisor_request_approval_rolls_back_loaded_state_on_save_failure(
         ApprovalStatus.PENDING.value
     )
     assert len(supervisor.pending) == 1
+
+
+
+def test_supervisor_persists_optional_instruction(tmp_path):
+    path = tmp_path / "approvals.json"
+    supervisor = Supervisor(path)
+
+    approval_id = supervisor.request_approval(
+        {"name": "approval"},
+        instruction="crie app.py",
+    )
+
+    reloaded = Supervisor(path)
+    request = reloaded.get(approval_id)
+
+    assert request["instruction"] == "crie app.py"
+    assert request["plan"] == {"name": "approval"}
+
+
+def test_supervisor_keeps_legacy_request_approval_compatibility(tmp_path):
+    path = tmp_path / "approvals.json"
+    supervisor = Supervisor(path)
+
+    approval_id = supervisor.request_approval({"name": "approval"})
+
+    request = supervisor.get(approval_id)
+
+    assert request["plan"] == {"name": "approval"}
+    assert "instruction" not in request
+
+
+def test_supervisor_rejects_non_string_optional_instruction(tmp_path):
+    supervisor = Supervisor(tmp_path / "approvals.json")
+
+    with pytest.raises(ValueError, match="Instrução de aprovação inválida"):
+        supervisor.request_approval(
+            {"name": "approval"},
+            instruction={"invalid": True},
+        )

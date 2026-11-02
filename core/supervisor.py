@@ -187,16 +187,21 @@ class Supervisor:
             max(numeric_ids, default=0) + 1
         )
 
-    def _build_approval_request(self, plan):
+    def _build_approval_request(self, plan, instruction=None):
         snapshot = copy.deepcopy(plan)
         now = self._now()
 
-        return {
+        request = {
             "status": ApprovalStatus.PENDING.value,
             "plan": snapshot,
             "created_at": now,
             "updated_at": now,
         }
+
+        if instruction is not None:
+            request["instruction"] = instruction
+
+        return request
 
     def _persist_approval_request(
         self,
@@ -216,31 +221,38 @@ class Supervisor:
             self.pending = previous_pending
             raise
 
-    def request_approval(self, plan):
+    def request_approval(self, plan, instruction=None):
+        if instruction is not None and not isinstance(instruction, str):
+            raise ValueError("Instrução de aprovação inválida.")
+
         process_lock = self._process_lock()
         try:
-                    self._validate_approval_plan(plan)
+            self._validate_approval_plan(plan)
 
-                    with self._lock:
-                        self._load()
-                        previous_pending = copy.deepcopy(self.pending)
+            with self._lock:
+                self._load()
+                previous_pending = copy.deepcopy(self.pending)
 
-                        approval_id = self._next_approval_id()
-                        request = self._build_approval_request(plan)
+                approval_id = self._next_approval_id()
+                request = self._build_approval_request(
+                    plan,
+                    instruction=instruction,
+                )
 
-                        self._persist_approval_request(
-                            approval_id,
-                            request,
-                            previous_pending,
-                        )
+                self._persist_approval_request(
+                    approval_id,
+                    request,
+                    previous_pending,
+                )
 
-                        return approval_id
+                return approval_id
         finally:
             fcntl.flock(
                 process_lock.fileno(),
                 fcntl.LOCK_UN,
             )
             process_lock.close()
+
     def prepare_approval(self, approval_id):
         process_lock = self._process_lock()
         try:

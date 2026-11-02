@@ -20,14 +20,12 @@ class TaskCreator:
                 raise ValueError("Alteração inválida no plano.")
 
             path = change.get("path")
-
             if not path:
                 raise ValueError("Alteração sem caminho.")
 
             self.security.validate_path(path)
 
             content = change.get("content")
-
             if change.get("change_type") != "delete":
                 if not isinstance(content, str):
                     raise ValueError(
@@ -35,6 +33,12 @@ class TaskCreator:
                     )
 
                 self.security.validate_content(content)
+
+    @staticmethod
+    def _normalize_instruction(instruction):
+        if not isinstance(instruction, str):
+            return None
+        return " ".join(instruction.split())
 
     @staticmethod
     def _plans_equal(left, right):
@@ -48,7 +52,13 @@ class TaskCreator:
             and left.get("changes", []) == right.get("changes", [])
         )
 
-    def _find_orphan_approval(self, result):
+    def _find_orphan_approval(self, result, instruction):
+        normalized_instruction = self._normalize_instruction(
+            instruction
+        )
+        if not normalized_instruction:
+            return None
+
         pending = self.supervisor.list_pending()
         if not isinstance(pending, dict):
             return None
@@ -57,6 +67,12 @@ class TaskCreator:
 
         for approval_id, request in pending.items():
             if not isinstance(request, dict):
+                continue
+
+            request_instruction = self._normalize_instruction(
+                request.get("instruction")
+            )
+            if request_instruction != normalized_instruction:
                 continue
 
             if not self._plans_equal(request.get("plan"), result):
@@ -76,17 +92,19 @@ class TaskCreator:
         }
 
     def create_or_reuse(self, instruction, result):
-        normalized_instruction = " ".join(instruction.split())
+        normalized_instruction = self._normalize_instruction(
+            instruction
+        )
+        if not normalized_instruction:
+            raise ValueError("Instrução inválida.")
 
         self.history._load()
 
         for task in self.history.list_pending():
-            task_instruction = task.get("instruction")
-
-            if not isinstance(task_instruction, str):
-                continue
-
-            if " ".join(task_instruction.split()) != normalized_instruction:
+            task_instruction = self._normalize_instruction(
+                task.get("instruction")
+            )
+            if task_instruction != normalized_instruction:
                 continue
 
             if not self._plans_equal(task.get("plan"), result):
@@ -98,7 +116,10 @@ class TaskCreator:
                 "plan": task["plan"],
             }
 
-        orphan = self._find_orphan_approval(result)
+        orphan = self._find_orphan_approval(
+            result,
+            instruction,
+        )
 
         if orphan is not None:
             self.history.create(
@@ -106,10 +127,12 @@ class TaskCreator:
                 instruction=instruction,
                 plan=result,
             )
-
             return orphan
 
-        approval_id = self.supervisor.request_approval(result)
+        approval_id = self.supervisor.request_approval(
+            result,
+            instruction=instruction,
+        )
 
         self.history.create(
             approval_id=approval_id,
