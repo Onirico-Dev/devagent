@@ -19,7 +19,8 @@ from core.engine.transaction_flow import TransactionFlow
 from core.memory.task_history import TaskHistory, TaskHistoryStatus
 from core.memory.recovery_reconciler import RecoveryReconciler
 from core.approval.approval_coordinator import ApprovalCoordinator
-from core.schemas.models import TransactionStatus
+from core.schemas.models import Plan, TransactionStatus
+from core.autonomy_policy import AutonomyDecision, AutonomyPolicy
 from core.task.task_creator import TaskCreator
 
 
@@ -356,6 +357,111 @@ class DevAgentGateway:
             return self._approve_locked(approval_id)
         finally:
             self.approval_coordinator.release(thread_lock, process_lock)
+
+    @staticmethod
+    def _is_valid_autonomy_plan_data(data):
+        """Valida o formato bruto antes da conversão do plano."""
+        if not isinstance(data, dict):
+            return False
+
+        if not isinstance(data.get("objective"), str):
+            return False
+
+        changes = data.get("changes")
+        if not isinstance(changes, list) or not changes:
+            return False
+
+        tests = data.get("tests", [])
+        risks = data.get("risks", [])
+
+        if not isinstance(tests, list):
+            return False
+
+        if not all(isinstance(item, str) for item in tests):
+            return False
+
+        if not isinstance(risks, list):
+            return False
+
+        if not all(isinstance(item, str) for item in risks):
+            return False
+
+        for change in changes:
+            if not isinstance(change, dict):
+                return False
+
+            change_type = change.get("change_type")
+            if change_type not in ("create", "modify", "delete"):
+                return False
+
+            if not isinstance(change.get("path"), str):
+                return False
+
+            if not change["path"].strip():
+                return False
+
+            content = change.get("content")
+            if content is not None and not isinstance(content, str):
+                return False
+
+            if change_type in ("create", "modify"):
+                if not isinstance(content, str):
+                    return False
+
+            reason = change.get("reason", "")
+            if not isinstance(reason, str):
+                return False
+
+        return True
+
+    def approve_autonomously(self, approval_id):
+        """Aprova somente planos persistidos considerados seguros.
+
+        A leitura da aprovação, a validação do formato, a avaliação
+        da política e a execução permanecem no mesmo bloqueio.
+        """
+        if not isinstance(approval_id, str) or not approval_id.strip():
+            raise ValueError("ID de aprovação inválido.")
+
+        thread_lock, process_lock = self.approval_coordinator.acquire(
+            approval_id
+        )
+        try:
+            request = self.supervisor.prepare_approval(approval_id)
+            plan_data = request.get("plan")
+
+            try:
+                if not self._is_valid_autonomy_plan_data(plan_data):
+                    raise ValueError("Plano persistido inválido.")
+
+                persisted_plan = Plan.from_dict(plan_data)
+                decision = AutonomyPolicy(
+                    security=self.security
+                ).evaluate(persisted_plan)
+            except (
+                TypeError,
+                ValueError,
+                KeyError,
+                AttributeError,
+                PermissionError,
+            ):
+                decision = AutonomyDecision.REQUIRE_HUMAN
+
+            if decision != AutonomyDecision.AUTO_APPROVE:
+                return {
+                    "approval_id": approval_id,
+                    "status": "pending",
+                    "autonomy_decision": (
+                        AutonomyDecision.REQUIRE_HUMAN.value
+                    ),
+                }
+
+            return self._approve_locked(approval_id)
+        finally:
+            self.approval_coordinator.release(
+                thread_lock,
+                process_lock,
+            )
 
     def _sync_flow_dependencies(self):
         self.transaction_flow.tests = self.tests

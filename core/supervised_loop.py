@@ -4,8 +4,7 @@ from typing import Any
 from core.loop_controller import LoopController
 from core.execution_feedback import ExecutionFeedback
 from core.observation import Observation
-from core.autonomy_policy import AutonomyDecision, AutonomyPolicy
-from core.schemas.models import Plan
+from core.autonomy_policy import AutonomyDecision
 
 
 @dataclass(frozen=True)
@@ -117,42 +116,22 @@ class SupervisedLoop(LoopController):
                     and status == "pending"
                     and approval_id is not None
                 ):
-                    plan_data = (
-                        proposal.get("plan")
-                        if isinstance(proposal, dict)
-                        else getattr(
-                            proposal,
-                            "plan",
-                            None,
-                        )
+                    result = self.gateway.approve_autonomously(
+                        approval_id
                     )
 
-                    try:
-                        plan = Plan.from_dict(
-                            dict(plan_data or {})
-                        )
-                        autonomy_policy = getattr(
-                            self.worker,
-                            "autonomy_policy",
-                            None,
-                        ) or AutonomyPolicy()
-                        decision = autonomy_policy.evaluate(plan)
-                    except (
-                        TypeError,
-                        ValueError,
-                        KeyError,
-                    ):
-                        decision = (
-                            AutonomyDecision.REQUIRE_HUMAN
-                        )
-
                     if (
-                        decision
-                        == AutonomyDecision.AUTO_APPROVE
+                        isinstance(result, dict)
+                        and (
+                            result.get("autonomy_decision")
+                            == AutonomyDecision.REQUIRE_HUMAN.value
+                            or result.get("status") == "pending"
+                        )
                     ):
-                        result = self.gateway.approve(approval_id)
-                        self._record_execution_feedback(result)
-                        auto_approved_count += 1
+                        continue
+
+                    self._record_execution_feedback(result)
+                    auto_approved_count += 1
 
             tasks = self.gateway.list_tasks()
             pending_count = sum(

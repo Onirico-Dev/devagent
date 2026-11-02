@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import sys
@@ -2208,3 +2209,98 @@ def test_real_transaction_feedback_is_recovered_after_restart(tmp_path):
     ]
 
     assert len(feedback_after_second_restart_cycle) == 2
+
+
+def test_gateway_rejects_tampered_persisted_destructive_plan(tmp_path):
+    gateway = DevAgentGateway(CreateAgent(), root=tmp_path)
+
+    created = gateway.create_task("criar arquivo autonomamente")
+    approval_id = created["approval_id"]
+
+    storage_path = gateway.supervisor.storage_path
+    persisted = json.loads(storage_path.read_text(encoding="utf-8"))
+
+    persisted[approval_id]["plan"]["changes"][0]["change_type"] = "delete"
+    persisted[approval_id]["plan"]["changes"][0]["content"] = None
+
+    storage_path.write_text(
+        json.dumps(persisted),
+        encoding="utf-8",
+    )
+
+    result = gateway.approve_autonomously(approval_id)
+
+    assert result["status"] == "pending"
+    assert result["autonomy_decision"] == "require_human"
+    assert gateway.supervisor.get(approval_id)["status"] == "pending"
+    assert not (tmp_path / "autonomous_smoke.py").exists()
+
+
+def test_gateway_rejects_malformed_persisted_test_and_risk_fields(tmp_path):
+    gateway = DevAgentGateway(CreateAgent(), root=tmp_path)
+
+    for field in ("tests", "risks"):
+        created = gateway.create_task(
+            f"criar arquivo com campo persistido inválido {field}"
+        )
+        approval_id = created["approval_id"]
+
+        storage_path = gateway.supervisor.storage_path
+        persisted = json.loads(storage_path.read_text(encoding="utf-8"))
+
+        persisted[approval_id]["plan"][field] = "not-a-list"
+
+        storage_path.write_text(
+            json.dumps(persisted),
+            encoding="utf-8",
+        )
+
+        result = gateway.approve_autonomously(approval_id)
+
+        assert result["status"] == "pending"
+        assert result["autonomy_decision"] == "require_human"
+        assert gateway.supervisor.get(approval_id)["status"] == "pending"
+        assert not (tmp_path / "autonomous_smoke.py").exists()
+
+
+def test_gateway_serializes_concurrent_autonomous_approvals(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    init_git(tmp_path)
+
+    gateway = DevAgentGateway(CreateAgent(), root=tmp_path)
+    created = gateway.create_task("criar arquivo autonomamente")
+    approval_id = created["approval_id"]
+
+    def approve():
+        try:
+            return ("success", gateway.approve_autonomously(approval_id))
+        except Exception as error:
+            return ("error", type(error).__name__, str(error))
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _: approve(), range(2)))
+
+    successful = [
+        result for result in results
+        if result[0] == "success"
+    ]
+    failed = [
+        result for result in results
+        if result[0] == "error"
+    ]
+
+    assert len(successful) == 1
+    assert len(failed) == 1
+    assert failed[0][1] == "ValueError"
+
+    assert successful[0][1]["status"] == "committed"
+
+    target = tmp_path / "autonomous_smoke.py"
+    assert target.read_text(encoding="utf-8") == "VALUE = 42\n"
+
+    approval = gateway.supervisor.get(approval_id)
+    assert approval["status"] == "approved"
+
+    task = gateway.get_task(approval_id)
+    assert task["status"] == "committed"
