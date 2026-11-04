@@ -105,6 +105,19 @@ function createHarness(tasks, harnessOptions = {}) {
   );
 
   const requests = [];
+  const timers = new Map();
+  let nextTimerId = 1;
+
+  function fakeSetTimeout(callback, delay) {
+    const id = nextTimerId++;
+    timers.set(id, { callback, delay });
+    return id;
+  }
+
+  function fakeClearTimeout(id) {
+    timers.delete(id);
+  }
+
   const pendingTaskRequests = new Map();
   const pendingPostRequests = new Map();
   let taskListFailureArmed = false;
@@ -182,11 +195,16 @@ function createHarness(tasks, harnessOptions = {}) {
   }
 
   const document = {
+    hidden: false,
+    listeners: {},
     getElementById(id) {
       return elements[id] || null;
     },
     createElement(tagName) {
       return new FakeElement(tagName);
+    },
+    addEventListener(name, callback) {
+      this.listeners[name] = callback;
     },
   };
 
@@ -306,6 +324,10 @@ function createHarness(tasks, harnessOptions = {}) {
     refreshTasks,
     selectTask,
     initialize,
+    startPolling,
+    pollTasks,
+    schedulePolling,
+    handleVisibilityChange,
     state,
     elements
   };
@@ -317,8 +339,8 @@ function createHarness(tasks, harnessOptions = {}) {
     fetch: harnessOptions.fetchImpl || fetchMock,
     window: {
       confirm: () => harnessOptions.confirmResult ?? true,
-      setTimeout: () => 1,
-      clearTimeout: () => {},
+      setTimeout: fakeSetTimeout,
+      clearTimeout: fakeClearTimeout,
     },
     console,
   });
@@ -327,10 +349,33 @@ function createHarness(tasks, harnessOptions = {}) {
     filename: APP_PATH,
   });
 
+  const api = context.__devagentTest;
+
   return {
-    api: context.__devagentTest,
+    api,
     elements,
     requests,
+    async runPollingTimer() {
+      const id = api.state.pollingTimer;
+      if (id === null || !timers.has(id)) {
+        throw new Error("Não existe temporizador de polling pendente.");
+      }
+
+      const timer = timers.get(id);
+      timers.delete(id);
+      await timer.callback();
+    },
+    pendingPollingTimers() {
+      const id = api.state.pollingTimer;
+      return id !== null && timers.has(id) ? 1 : 0;
+    },
+    setDocumentHidden(hidden) {
+      document.hidden = Boolean(hidden);
+      const listener = document.listeners.visibilitychange;
+      if (listener) {
+        listener();
+      }
+    },
     resolvePostRequest(url) {
       const queue = pendingPostRequests.get(url) || [];
       const resolve = queue.shift();
@@ -449,6 +494,134 @@ test("renderTaskList não utiliza task_id como substituto de approval_id", () =>
   );
 
   assert.equal(harness.elements["task-count"].textContent, "1");
+});
+
+
+test("polling inicia, consulta tarefas e reagenda após sucesso", async () => {
+  const harness = createHarness([
+    makeTask("poll-1", "2026-10-31T10:00:00Z"),
+  ]);
+
+  harness.api.startPolling();
+
+  assert.equal(harness.pendingPollingTimers(), 1);
+
+  await harness.runPollingTimer();
+
+  assert.ok(
+    harness.requests.some((request) => request.url === "/tasks")
+  );
+  assert.equal(harness.pendingPollingTimers(), 1);
+  assert.equal(harness.api.state.pollingInFlight, false);
+});
+
+test("polling pausa com a página oculta e sincroniza ao retornar", async () => {
+  const harness = createHarness([
+    makeTask("visible-1", "2026-10-31T10:00:00Z"),
+  ]);
+
+  harness.api.startPolling();
+  harness.setDocumentHidden(true);
+
+  assert.equal(harness.pendingPollingTimers(), 0);
+
+  const before = harness.requests.filter(
+    (request) => request.url === "/tasks"
+  ).length;
+
+  harness.setDocumentHidden(false);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const after = harness.requests.filter(
+    (request) => request.url === "/tasks"
+  ).length;
+
+  assert.ok(after > before);
+  assert.equal(harness.pendingPollingTimers(), 1);
+});
+
+test("polling não consulta enquanto uma operação estiver ocupada", async () => {
+  const harness = createHarness([
+    makeTask("busy-1", "2026-10-31T10:00:00Z"),
+  ]);
+
+  harness.api.startPolling();
+  harness.api.state.busy = true;
+
+  const before = harness.requests.filter(
+    (request) => request.url === "/tasks"
+  ).length;
+
+  await harness.runPollingTimer();
+
+  const after = harness.requests.filter(
+    (request) => request.url === "/tasks"
+  ).length;
+
+  assert.equal(after, before);
+  assert.equal(harness.pendingPollingTimers(), 1);
+
+  harness.api.state.busy = false;
+  await harness.runPollingTimer();
+
+  assert.ok(
+    harness.requests.some((request) => request.url === "/tasks")
+  );
+});
+
+test("polling recupera aprovação incerta antes da seleção anterior", async () => {
+  const harness = createHarness([
+    makeTask("target", "2026-10-31T10:00:00Z", {
+      status: "executing",
+    }),
+    makeTask("other", "2026-10-31T11:00:00Z"),
+  ]);
+
+  harness.api.state.selectedTaskId = "other";
+  harness.api.state.uncertainApprovalId = "target";
+
+  harness.api.startPolling();
+  await harness.runPollingTimer();
+
+  assert.equal(harness.api.state.selectedTaskId, "target");
+  assert.equal(harness.api.state.uncertainApprovalId, null);
+
+  assert.ok(
+    harness.requests.some(
+      (request) => request.url === "/tasks/target"
+    )
+  );
+
+  assert.equal(
+    harness.requests.filter(
+      (request) => request.options.method === "POST"
+    ).length,
+    0
+  );
+});
+
+test("polling não inicia ciclos concorrentes", async () => {
+  const harness = createHarness([
+    makeTask("concurrent-1", "2026-10-31T10:00:00Z"),
+  ]);
+
+  harness.api.startPolling();
+  harness.api.state.pollingInFlight = true;
+
+  const before = harness.requests.filter(
+    (request) => request.url === "/tasks"
+  ).length;
+
+  await harness.runPollingTimer();
+
+  const after = harness.requests.filter(
+    (request) => request.url === "/tasks"
+  ).length;
+
+  assert.equal(after, before);
+  assert.equal(harness.pendingPollingTimers(), 1);
+
+  harness.api.state.pollingInFlight = false;
 });
 
 test("inicialização seleciona automaticamente a tarefa mais recente", async () => {

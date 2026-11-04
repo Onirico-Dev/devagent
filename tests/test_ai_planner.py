@@ -809,3 +809,28 @@ def test_preserve_modify_target_context_does_not_invent_missing_test():
     assert "=== ARQUIVO: modify_smoke.py ===" in preserved
     assert "=== ARQUIVO: test_modify_smoke.py ===" not in preserved
     assert preserved.count("=== ARQUIVO:") == 1
+
+
+def test_ai_planner_accepts_change_type_field_alias():
+    response = {
+        "objective": "Modificar configuração",
+        "changes": [
+            {
+                "change_type": "modify",
+                "path": "config.py",
+                "content": "VALUE = 2\n",
+                "reason": "Atualizar configuração",
+            }
+        ],
+        "tests": [],
+        "risks": [],
+    }
+
+    plan = AIPlanner(
+        FixedAdapter(json.dumps(response))
+    ).create_plan("apenas analisar")
+
+    assert len(plan.changes) == 1
+    assert plan.changes[0].change_type == ChangeType.MODIFY
+    assert plan.changes[0].path == "config.py"
+    assert plan.changes[0].content == "VALUE = 2\n"

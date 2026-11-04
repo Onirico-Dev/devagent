@@ -5980,3 +5980,248 @@ def test_static_interface_rejects_unlisted_paths():
     finally:
         server.shutdown()
         server.server_close()
+
+# GATEWAY_IDEMPOTENCY_INTEGRATION_TESTS
+
+def _gateway_idempotency_test_plan(instruction):
+    return {
+        "instruction": instruction,
+        "objective": "Criar arquivo de teste",
+        "changes": [
+            {
+                "change_type": "create",
+                "path": "gateway_idempotency_smoke.py",
+                "content": "VALUE = 1\n",
+                "reason": "Teste de idempotência",
+            }
+        ],
+        "tests": [],
+        "risks": [],
+    }
+
+
+def test_gateway_idempotency_repeated_key_calls_agent_once(
+    isolated_project,
+):
+    from core.gateway import DevAgentGateway
+
+    calls = []
+
+    class FakeAgent:
+        ai = None
+
+        def process(self, instruction):
+            calls.append(instruction)
+            return _gateway_idempotency_test_plan(instruction)
+
+    gateway = DevAgentGateway(FakeAgent(), root=str(isolated_project))
+
+    first = gateway.create_task(
+        "criar arquivo de teste",
+        idempotency_key="observation-001",
+    )
+    second = gateway.create_task(
+        "criar arquivo de teste",
+        idempotency_key="observation-001",
+    )
+
+    assert len(calls) == 1
+    assert first == second
+    assert first["status"] == "pending"
+
+
+def test_gateway_idempotency_rejects_instruction_conflict_before_agent(
+    isolated_project,
+):
+    from core.gateway import DevAgentGateway
+
+    calls = []
+
+    class FakeAgent:
+        ai = None
+
+        def process(self, instruction):
+            calls.append(instruction)
+            return _gateway_idempotency_test_plan(instruction)
+
+    gateway = DevAgentGateway(FakeAgent(), root=str(isolated_project))
+
+    gateway.create_task(
+        "criar arquivo de teste",
+        idempotency_key="observation-conflict",
+    )
+
+    with pytest.raises(ValueError, match="dados diferentes"):
+        gateway.create_task(
+            "excluir arquivo importante",
+            idempotency_key="observation-conflict",
+        )
+
+    assert calls == ["criar arquivo de teste"]
+
+
+def test_gateway_idempotency_different_keys_create_distinct_tasks(
+    isolated_project,
+):
+    from core.gateway import DevAgentGateway
+
+    calls = []
+
+    class FakeAgent:
+        ai = None
+
+        def process(self, instruction):
+            calls.append(instruction)
+            return _gateway_idempotency_test_plan(instruction)
+
+    gateway = DevAgentGateway(FakeAgent(), root=str(isolated_project))
+
+    first = gateway.create_task(
+        "criar arquivo de teste",
+        idempotency_key="observation-101",
+    )
+    second = gateway.create_task(
+        "criar arquivo de teste",
+        idempotency_key="observation-102",
+    )
+
+    assert len(calls) == 2
+    assert first["approval_id"] != second["approval_id"]
+    assert first["status"] == "pending"
+    assert second["status"] == "pending"
+
+
+def test_gateway_idempotency_recovers_orphan_approval_without_agent(
+    isolated_project,
+):
+    from core.gateway import DevAgentGateway
+
+    instruction = "recuperar aprovação órfã"
+    key = "orphan-observation-001"
+    plan = _gateway_idempotency_test_plan(instruction)
+
+    class FakeAgent:
+        ai = None
+
+        def process(self, instruction):
+            raise AssertionError("A IA não deveria ser chamada.")
+
+    gateway = DevAgentGateway(FakeAgent(), root=str(isolated_project))
+
+    approval_id = gateway.supervisor.request_approval(
+        plan,
+        instruction=instruction,
+        idempotency_key=key,
+    )
+
+    result = gateway.create_task(
+        instruction,
+        idempotency_key=key,
+    )
+
+    assert result["approval_id"] == approval_id
+    assert result["status"] == "pending"
+
+    gateway.history._load()
+    tasks = gateway.history.list_all()
+
+    recovered = [
+        task for task in tasks
+        if task.get("idempotency_key") == key
+    ]
+
+    assert len(recovered) == 1
+    assert recovered[0]["approval_id"] == approval_id
+
+
+def test_gateway_idempotency_rejects_invalid_key_before_agent(
+    isolated_project,
+):
+    from core.gateway import DevAgentGateway
+
+    calls = []
+
+    class FakeAgent:
+        ai = None
+
+        def process(self, instruction):
+            calls.append(instruction)
+            return _gateway_idempotency_test_plan(instruction)
+
+    gateway = DevAgentGateway(FakeAgent(), root=str(isolated_project))
+
+    with pytest.raises(ValueError, match="Chave de idempotência inválida"):
+        gateway.create_task(
+            "criar arquivo de teste",
+            idempotency_key="   ",
+        )
+
+    assert calls == []
+
+
+def test_gateway_idempotency_serializes_two_gateway_instances(
+    isolated_project,
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event, Lock
+
+    from core.gateway import DevAgentGateway
+
+    calls = []
+    calls_lock = Lock()
+    agent_started = Event()
+    release_agent = Event()
+
+    class BlockingAgent:
+        ai = None
+
+        def process(self, instruction):
+            with calls_lock:
+                calls.append(instruction)
+
+            agent_started.set()
+
+            if not release_agent.wait(timeout=10):
+                raise TimeoutError("Liberação da IA não recebida.")
+
+            return _gateway_idempotency_test_plan(instruction)
+
+    root = str(isolated_project)
+
+    gateway_one = DevAgentGateway(BlockingAgent(), root=root)
+    gateway_two = DevAgentGateway(BlockingAgent(), root=root)
+
+    instruction = "criar arquivo concorrente"
+    key = "concurrent-observation-001"
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first_future = executor.submit(
+                gateway_one.create_task,
+                instruction,
+                None,
+                key,
+            )
+
+            assert agent_started.wait(timeout=5), (
+                "A primeira instância não iniciou a IA."
+            )
+
+            second_future = executor.submit(
+                gateway_two.create_task,
+                instruction,
+                None,
+                key,
+            )
+
+            release_agent.set()
+
+            first = first_future.result(timeout=15)
+            second = second_future.result(timeout=15)
+
+        assert len(calls) == 1
+        assert first == second
+        assert first["approval_id"] == second["approval_id"]
+
+    finally:
+        release_agent.set()

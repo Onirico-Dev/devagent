@@ -180,7 +180,7 @@ def test_mock_modify_addition_without_context_returns_none():
     assert adapter._build_modify_change(instruction, "") is None
 
 
-def test_mock_modify_addition_without_context_returns_none():
+def test_mock_modify_addition_with_literal_newline_without_context_returns_none():
     adapter = MockAdapter()
     instruction = (
         "modifique tests/test_worker.py adicionando "
@@ -2328,32 +2328,6 @@ def test_mock_compound_create_function_pytest_supports_binary_expression():
     assert "assert dividir(2, 3) == 0.6666666666666666" in test_change["content"]
 
 
-def test_mock_compound_create_function_pytest_supports_binary_expression():
-    adapter = MockAdapter()
-    instruction = (
-        "adicione uma função dividir(a, b) em um novo arquivo "
-        "divide_expression_smoke.py que retorne a / b, "
-        "e crie um teste pytest correspondente"
-    )
-
-    changes = adapter._build_compound_create_changes(instruction)
-
-    assert len(changes) == 2
-
-    module_change = next(
-        item for item in changes
-        if item["path"] == "divide_expression_smoke.py"
-    )
-    test_change = next(
-        item for item in changes
-        if item["path"] == "test_divide_expression_smoke.py"
-    )
-
-    assert module_change["content"] == (
-        "def dividir(a, b):\n"
-        "    return a / b\n"
-    )
-    assert "assert dividir(2, 3) == 0.6666666666666666" in test_change["content"]
 
 
 def test_mock_generate_modify_discovers_existing_corresponding_test():
@@ -2881,3 +2855,124 @@ def test_mock_create_natural_function_returns_original_when_period_removal_is_in
     assert content == "def quebrada():\n    return a +."
     with pytest.raises(SyntaxError):
         compile(content, "exemplo.py", "exec")
+
+
+def test_mock_function_pytest_handles_constant_parameter_return_regressions():
+    adapter = MockAdapter()
+
+    cases = [
+        (
+            "adicione uma função calcular(a, b) em um novo arquivo constante.py "
+            "que retorne 10, e crie um teste pytest correspondente",
+            "return 10",
+            "assert calcular(2, 3) == 10",
+        ),
+        (
+            "adicione uma função obter(a) em um novo arquivo parametro.py "
+            "que retorne a, e crie um teste pytest correspondente",
+            "return a",
+            "assert obter(2) == 2",
+        ),
+        (
+            "adicione uma função calcular(a=2, b=3) em um novo arquivo padrao.py "
+            "que retorne a + b, e crie um teste pytest correspondente",
+            "return a + b",
+            "assert calcular() == 5",
+        ),
+    ]
+
+    for instruction, expected_return, expected_assertion in cases:
+        changes = adapter._build_function_pytest_changes(instruction)
+
+        assert len(changes) == 2
+        assert expected_return in changes[0]["content"]
+        assert expected_assertion in changes[1]["content"]
+
+
+def test_mock_function_pytest_preserves_string_literal_returns():
+    adapter = MockAdapter()
+
+    changes = adapter._build_function_pytest_changes(
+        "adicione uma função saudacao() em um novo arquivo saudacao.py "
+        "que retorne 'Olá', e crie um teste pytest correspondente"
+    )
+
+    assert len(changes) == 2
+    assert "return 'Olá'" in changes[0]["content"]
+    assert "assert saudacao() == 'Olá'" in changes[1]["content"]
+
+
+def test_mock_function_pytest_rejects_unsupported_return_expressions():
+    adapter = MockAdapter()
+
+    changes = adapter._build_function_pytest_changes(
+        "adicione uma função calcular(a) em um novo arquivo inseguro.py "
+        "que retorne executar(a), e crie um teste pytest correspondente"
+    )
+
+    assert changes == []
+
+
+def test_mock_function_pytest_covers_remaining_validation_paths():
+    adapter = MockAdapter()
+
+    invalid_signatures = [
+        "a, *args",
+        "a, **kwargs",
+        "*, a",
+        "a, /",
+        "a, a",
+        "a=object()",
+        "a=",
+        "a, b, c, d, e, f, g",
+    ]
+
+    for parameters in invalid_signatures:
+        instruction = (
+            "adicione uma função calcular("
+            f"{parameters}"
+            ") em um novo arquivo cobertura.py "
+            "que retorne 42, e crie um teste pytest correspondente"
+        )
+        assert adapter._build_function_pytest_changes(instruction) == [], (
+            f"Assinatura deveria ser rejeitada: {parameters!r}"
+        )
+
+    unsupported_expressions = [
+        "a +",
+        "...",
+        "(...)",
+        "a + desconhecido",
+        "a // 2",
+        "~a",
+        "a.real",
+    ]
+
+    for expression in unsupported_expressions:
+        instruction = (
+            "adicione uma função calcular(a) em um novo arquivo cobertura.py "
+            f"que retorne {expression}, e crie um teste pytest correspondente"
+        )
+        assert adapter._build_function_pytest_changes(instruction) == [], (
+            f"Expressão deveria ser rejeitada: {expression!r}"
+        )
+
+    # Exercita a normalização de um resultado float integral.
+    changes = adapter._build_function_pytest_changes(
+        "adicione uma função calcular(a) em um novo arquivo cobertura.py "
+        "que retorne a / 2, e crie um teste pytest correspondente"
+    )
+
+    assert len(changes) == 2
+    assert "return a / 2" in changes[0]["content"]
+    assert "assert calcular(2) == 1" in changes[1]["content"]
+
+    # Exercita o ramo de avaliação de operador unário suportado.
+    unary_changes = adapter._build_function_pytest_changes(
+        "adicione uma função calcular(a) em um novo arquivo cobertura.py "
+        "que retorne -a, e crie um teste pytest correspondente"
+    )
+
+    assert len(unary_changes) == 2
+    assert "return -a" in unary_changes[0]["content"]
+    assert "assert calcular(2) == -2" in unary_changes[1]["content"]

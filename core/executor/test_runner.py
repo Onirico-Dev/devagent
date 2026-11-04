@@ -1,3 +1,4 @@
+import importlib.util
 import py_compile
 import subprocess
 import sys
@@ -110,6 +111,7 @@ class TestRunner:
                 "-m",
                 "pytest",
                 "-q",
+                *(["--no-cov"] if importlib.util.find_spec("pytest_cov") else []),
                 *safe_files,
             ],
             cwd=str(self.root),
@@ -191,6 +193,7 @@ class TestRunner:
                 "-m",
                 "pytest",
                 "-q",
+                *(["--no-cov"] if importlib.util.find_spec("pytest_cov") else []),
                 *safe_files,
             ],
             cwd=str(self.root),

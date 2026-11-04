@@ -914,3 +914,101 @@ def test_repair_executor_rejects_physical_mismatch(tmp_path):
     assert result["status"] == RepairExecutorStatus.REPAIR_FAILED.value
     assert result["verification"]["success"] is False
     assert result["verification"]["status"] == "content_mismatch"
+
+
+def test_execute_repair_modifies_previously_registered_created_file(
+    tmp_path,
+):
+    target = tmp_path / "novo.py"
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+
+    original_change = SimpleNamespace(
+        change_type=ChangeType.CREATE,
+        path="novo.py",
+        content="VALUE = 1\n",
+        reason="Criação original",
+    )
+    transaction = make_transaction(
+        tmp_path,
+        changes=[original_change],
+    )
+
+    fake_executor = FakeExecutor()
+    repair_executor = make_executor(
+        tmp_path,
+        executor=fake_executor,
+    )
+
+    repair_executor.transaction_manager.register_created(
+        transaction,
+        "novo.py",
+    )
+
+    result = repair_executor.execute_repair(
+        repair={
+            "action": "modify",
+            "path": "novo.py",
+            "content": "VALUE = 2\n",
+            "risk": "baixo",
+        },
+        instruction="corrigir arquivo criado",
+        transaction=transaction,
+    )
+
+    assert result["success"] is True
+    assert len(fake_executor.executed) == 1
+    assert fake_executor.executed[0].change_type == ChangeType.MODIFY
+    assert len(transaction.changes) == 2
+    assert transaction.metadata["created"] == ["novo.py"]
+    assert transaction.metadata["created_identity"]["novo.py"]["st_ino"] == (
+        target.stat().st_ino
+    )
+
+
+def test_execute_repair_continues_after_successful_post_execution_verification(
+    tmp_path,
+):
+    class SuccessfulVerifier:
+        def __init__(self):
+            self.received = []
+
+        def verify_change(self, change):
+            self.received.append(change)
+            return {"success": True}
+
+    target = tmp_path / "existente.py"
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+
+    test_runner = FakeTestRunner({
+        "success": True,
+        "stdout": "testes aprovados",
+        "stderr": "",
+    })
+    fake_executor = FakeExecutor()
+    verifier = SuccessfulVerifier()
+
+    repair_executor = make_executor(
+        tmp_path,
+        test_runner=test_runner,
+        executor=fake_executor,
+    )
+    repair_executor.post_execution_verifier = verifier
+
+    transaction = make_transaction(tmp_path)
+
+    result = repair_executor.execute_repair(
+        repair={
+            "action": "modify",
+            "path": "existente.py",
+            "content": "VALUE = 2\n",
+            "risk": "baixo",
+        },
+        instruction="corrigir arquivo existente",
+        transaction=transaction,
+    )
+
+    assert result["success"] is True
+    assert len(verifier.received) == 1
+    assert verifier.received[0].path == "existente.py"
+    assert len(fake_executor.executed) == 1
+    assert len(test_runner.received) == 1

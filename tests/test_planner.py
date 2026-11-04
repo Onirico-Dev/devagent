@@ -192,3 +192,16 @@ def test_planner_preserves_natural_language_instruction():
     assert plan.changes[0].path == "smoke_test.py"
     assert plan.changes[0].content == instruction
     assert plan.changes[0].reason == instruction
+
+
+def test_planner_rejects_non_command_input(planner):
+    with pytest.raises(TypeError, match="Planner exige uma instância de Command"):
+        planner.create_plan(object())
+
+
+@pytest.mark.parametrize("target", ["", None])
+def test_planner_rejects_invalid_target(planner, target):
+    command = make_command("create", target=target)
+
+    with pytest.raises(ValueError, match="Operação exige um alvo textual"):
+        planner.create_plan(command)

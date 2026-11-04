@@ -31,7 +31,13 @@
     busy: false,
     notificationTimer: null,
     selectionSequence: 0,
+    pollingTimer: null,
+    pollingStarted: false,
+    pollingInFlight: false,
+    lastSelectionError: null,
   };
+
+  const POLL_INTERVAL_MS = 5000;
 
   const STATUS_LABELS = {
     pending: "Pendente",
@@ -43,6 +49,8 @@
     rolled_back: "Revertida",
     failed: "Falhou",
     running: "Em execução",
+    repairing: "Em reparo",
+    unknown: "Resultado incerto",
   };
 
   function text(value, fallback = "—") {
@@ -85,6 +93,11 @@
     state.notificationTimer = window.setTimeout(() => {
       notification.hidden = true;
     }, 5000);
+  }
+
+  const serverAddress = document.getElementById("server-address");
+  if (serverAddress) {
+    serverAddress.textContent = window.location.host;
   }
 
   async function request(path, options = {}) {
@@ -477,7 +490,15 @@
       state.selectedTaskId &&
       selectedTaskExists
     ) {
-      await selectTask(state.selectedTaskId, false);
+      const selected = await selectTask(state.selectedTaskId, false);
+      if (!selected) {
+        if (state.lastSelectionError) {
+          throw new Error(
+            `Não foi possível carregar a tarefa: ${state.lastSelectionError}`
+          );
+        }
+        return;
+      }
       return;
     }
 
@@ -486,7 +507,15 @@
     );
 
     if (mostRecentTask) {
-      await selectTask(mostRecentTask.approval_id, false);
+      const selected = await selectTask(mostRecentTask.approval_id, false);
+      if (!selected) {
+        if (state.lastSelectionError) {
+          throw new Error(
+            `Não foi possível carregar a tarefa: ${state.lastSelectionError}`
+          );
+        }
+        return;
+      }
       return;
     }
 
@@ -499,6 +528,7 @@
     renderOperation(null);
   }
   async function selectTask(taskId, updateList = true) {
+    state.lastSelectionError = null;
     const sequence = ++state.selectionSequence;
 
     try {
@@ -529,7 +559,11 @@
           return false;
         }
 
-        renderTaskList(Array.isArray(result.tasks) ? result.tasks : []);
+        renderTaskList(
+          sortTasksByUpdatedAt(
+            Array.isArray(result.tasks) ? result.tasks : []
+          )
+        );
       }
 
       if (state.uncertainApprovalId === taskId) {
@@ -542,6 +576,7 @@
         return false;
       }
 
+      state.lastSelectionError = error.message;
       showNotification(
         `Não foi possível carregar a tarefa: ${error.message}`,
         "error"
@@ -755,6 +790,74 @@
     }
   }
 
+  function stopPollingTimer() {
+    if (state.pollingTimer !== null) {
+      window.clearTimeout(state.pollingTimer);
+      state.pollingTimer = null;
+    }
+  }
+
+  function schedulePolling() {
+    if (
+      !state.pollingStarted ||
+      document.hidden ||
+      state.pollingTimer !== null
+    ) {
+      return;
+    }
+
+    state.pollingTimer = window.setTimeout(async () => {
+      state.pollingTimer = null;
+      await pollTasks();
+    }, POLL_INTERVAL_MS);
+  }
+
+  async function pollTasks() {
+    if (!state.pollingStarted || document.hidden) {
+      return;
+    }
+
+    if (state.busy || state.pollingInFlight) {
+      schedulePolling();
+      return;
+    }
+
+    state.pollingInFlight = true;
+
+    try {
+      await refreshTasks(true);
+      setHealth(true, "Serviço conectado");
+    } catch (error) {
+      setHealth(false, "Falha ao sincronizar");
+    } finally {
+      state.pollingInFlight = false;
+      schedulePolling();
+    }
+  }
+
+  function handleVisibilityChange() {
+    if (document.hidden) {
+      stopPollingTimer();
+      return;
+    }
+
+    if (state.pollingStarted) {
+      stopPollingTimer();
+      void pollTasks();
+    }
+  }
+
+  function startPolling() {
+    if (state.pollingStarted) {
+      return;
+    }
+
+    state.pollingStarted = true;
+    schedulePolling();
+  }
+
+  document.addEventListener("visibilitychange", handleVisibilityChange);
+
   elements.instructionForm.addEventListener("submit", createPlan);
 
   elements.approveButton.addEventListener("click", () => {
@@ -768,6 +871,7 @@
   elements.refreshButton.addEventListener("click", refreshAll);
 
   async function initialize() {
+    startPolling();
     const online = await checkHealth();
 
     if (!online) {

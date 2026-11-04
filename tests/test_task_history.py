@@ -769,3 +769,182 @@ def test_task_history_reads_shared_store_across_instances(tmp_path):
     assert first.get("shared-approval")["status"] == "committed"
     assert first.list_pending() == []
     assert first.list_all()[0]["transaction_id"] == "shared-transaction"
+
+def test_task_history_persists_idempotency_key_after_restart(tmp_path):
+    path = tmp_path / "tasks.json"
+    history = TaskHistory(path)
+
+    task = history.create(
+        "approval-key-1",
+        "criar arquivo",
+        {"changes": []},
+        idempotency_key="operation-001",
+    )
+
+    assert task["idempotency_key"] == "operation-001"
+
+    reloaded = TaskHistory(path)
+    assert reloaded.get("approval-key-1")["idempotency_key"] == "operation-001"
+
+
+@pytest.mark.parametrize("invalid_key", ["", "   ", 123, [], {}])
+def test_task_history_rejects_invalid_idempotency_key(tmp_path, invalid_key):
+    history = TaskHistory(tmp_path / "tasks.json")
+
+    with pytest.raises(ValueError, match="Chave de idempotência inválida"):
+        history.create(
+            "approval-invalid",
+            "teste",
+            {},
+            idempotency_key=invalid_key,
+        )
+
+
+def test_task_history_rejects_idempotency_key_in_update_extra(tmp_path):
+    history = TaskHistory(tmp_path / "tasks.json")
+    history.create("approval-1", "teste", {})
+
+    with pytest.raises(ValueError, match="Campos estruturais"):
+        history.update(
+            "approval-1",
+            extra={"idempotency_key": "replacement"},
+        )
+
+def test_task_history_rejects_duplicate_idempotency_key(tmp_path):
+    history = TaskHistory(tmp_path / "tasks.json")
+
+    first = history.create(
+        "approval-1",
+        "primeira instrução",
+        {"changes": []},
+        idempotency_key="operation-001",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Chave de idempotência já utilizada",
+    ):
+        history.create(
+            "approval-2",
+            "segunda instrução",
+            {"changes": []},
+            idempotency_key="operation-001",
+        )
+
+    reloaded = TaskHistory(tmp_path / "tasks.json")
+    assert reloaded.list_all() == [first]
+
+
+def test_task_history_serializes_concurrent_duplicate_idempotency_keys(
+    tmp_path,
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    path = tmp_path / "tasks.json"
+    histories = [
+        TaskHistory(path),
+        TaskHistory(path),
+    ]
+    barrier = Barrier(8)
+
+    def create_task(index):
+        history = histories[index % len(histories)]
+        barrier.wait()
+        try:
+            return (
+                "created",
+                history.create(
+                    f"approval-{index}",
+                    f"instruction-{index}",
+                    {"index": index},
+                    idempotency_key="shared-operation",
+                ),
+            )
+        except ValueError as exc:
+            return ("rejected", str(exc))
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(create_task, range(8)))
+
+    created = [result for result in results if result[0] == "created"]
+    rejected = [result for result in results if result[0] == "rejected"]
+
+    assert len(created) == 1
+    assert len(rejected) == 7
+    assert all(
+        "Chave de idempotência já utilizada" in result[1]
+        for result in rejected
+    )
+
+    reloaded = TaskHistory(path)
+    assert len(reloaded.tasks) == 1
+    assert (
+        next(iter(reloaded.tasks.values()))["idempotency_key"]
+        == "shared-operation"
+    )
+
+def test_task_history_ignores_persisted_invalid_idempotency_key(tmp_path):
+    path = tmp_path / "tasks.json"
+    task = {
+        "task_id": "approval-1",
+        "approval_id": "approval-1",
+        "instruction": "teste",
+        "plan": {},
+        "status": "pending",
+        "transaction_id": None,
+        "created_at": "2026-09-02T00:00:00+00:00",
+        "updated_at": "2026-09-02T00:00:00+00:00",
+        "idempotency_key": "",
+    }
+    path.write_text(json.dumps({"approval-1": task}), encoding="utf-8")
+    assert TaskHistory(path).tasks == {}
+
+
+def test_task_history_ignores_non_string_persisted_idempotency_key(tmp_path):
+    path = tmp_path / "tasks.json"
+    task = {
+        "task_id": "approval-1",
+        "approval_id": "approval-1",
+        "instruction": "teste",
+        "plan": {},
+        "status": "pending",
+        "transaction_id": None,
+        "created_at": "2026-09-02T00:00:00+00:00",
+        "updated_at": "2026-09-02T00:00:00+00:00",
+        "idempotency_key": 123,
+    }
+    path.write_text(json.dumps({"approval-1": task}), encoding="utf-8")
+    assert TaskHistory(path).tasks == {}
+
+
+def test_task_history_duplicate_key_search_continues_after_nonmatching_task(
+    tmp_path,
+):
+    history = TaskHistory(tmp_path / "tasks.json")
+
+    first = history.create(
+        "approval-1",
+        "primeira instrução",
+        {"changes": []},
+        idempotency_key="operation-001",
+    )
+    second = history.create(
+        "approval-2",
+        "segunda instrução",
+        {"changes": []},
+        idempotency_key="operation-002",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Chave de idempotência já utilizada",
+    ):
+        history.create(
+            "approval-3",
+            "terceira instrução",
+            {"changes": []},
+            idempotency_key="operation-002",
+        )
+
+    assert history.list_all() == [first, second]

@@ -1071,3 +1071,42 @@ def test_open_directory_chain_reraises_unhandled_oserror(
             tmp_path,
             ("blocked",),
         )
+
+
+def test_expected_destination_identity_returns_none_when_missing(
+    tmp_path,
+):
+    parent_fd = os.open(
+        tmp_path,
+        os.O_RDONLY | os.O_DIRECTORY,
+    )
+
+    try:
+        identity = SecureFileSystem._get_expected_destination_identity(
+            parent_fd,
+            Path("missing.txt"),
+        )
+
+        assert identity is None
+        os.fstat(parent_fd)
+    finally:
+        os.close(parent_fd)
+
+
+def test_copy_missing_source_skips_unopened_descriptor_cleanup(
+    tmp_path,
+):
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    source_root.mkdir()
+    destination_root.mkdir()
+
+    with pytest.raises(FileNotFoundError):
+        SecureFileSystem.copy_file_no_follow(
+            source_root,
+            Path("missing.txt"),
+            destination_root,
+            Path("destination.txt"),
+        )
+
+    assert list(destination_root.iterdir()) == []

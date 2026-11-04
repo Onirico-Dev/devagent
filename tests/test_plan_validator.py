@@ -543,3 +543,27 @@ def test_validate_project_coherence_accepts_existing_file(tmp_path):
     ])
 
     assert validator.validate_project_coherence(plan) is True
+
+
+def test_plan_validator_accepts_valid_pytest_filename(tmp_path):
+    validator = make_validator(tmp_path)
+    plan = Plan(
+        objective="Executar testes",
+        changes=[],
+        tests=["test_example.py"],
+        risks=[],
+    )
+
+    assert validator.validate(plan) is True
+
+
+def test_plan_validator_accepts_string_risks(tmp_path):
+    validator = make_validator(tmp_path)
+    plan = Plan(
+        objective="Validar plano",
+        changes=[],
+        tests=[],
+        risks=["Alteração de baixo risco"],
+    )
+
+    assert validator.validate(plan) is True

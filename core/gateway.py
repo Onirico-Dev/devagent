@@ -219,7 +219,12 @@ class DevAgentGateway:
     # TASK CREATION
     # ------------------------------------------------------------------
 
-    def create_task(self, instruction, context=None):
+    def create_task(
+        self,
+        instruction,
+        context=None,
+        idempotency_key=None,
+    ):
         if not isinstance(instruction, str) or not instruction.strip():
             raise ValueError("Instrução inválida.")
 
@@ -229,22 +234,50 @@ class DevAgentGateway:
         if not isinstance(context, dict):
             raise ValueError("Contexto da tarefa inválido.")
 
-        if context:
-            result = self.agent.process(
-                instruction,
-                feedback_context=context,
-            )
-        else:
-            result = self.agent.process(instruction)
-        self.task_creator.validate_plan(result)
+        if idempotency_key is not None:
+            if (
+                not isinstance(idempotency_key, str)
+                or not idempotency_key.strip()
+            ):
+                raise ValueError("Chave de idempotência inválida.")
+
+            idempotency_key = idempotency_key.strip()
 
         with self._task_creation_guard:
             with self._task_creation_lock_path.open("a+") as lock_file:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
                 try:
+                    if idempotency_key is not None:
+                        existing = (
+                            self.task_creator.find_existing_by_idempotency_key(
+                                instruction,
+                                idempotency_key,
+                            )
+                        )
+
+                        if existing is not None:
+                            return existing
+
+                    if context:
+                        result = self.agent.process(
+                            instruction,
+                            feedback_context=context,
+                        )
+                    else:
+                        result = self.agent.process(instruction)
+
+                    self.task_creator.validate_plan(result)
+
+                    if idempotency_key is None:
+                        return self.task_creator.create_or_reuse(
+                            instruction,
+                            result,
+                        )
+
                     return self.task_creator.create_or_reuse(
                         instruction,
                         result,
+                        idempotency_key=idempotency_key,
                     )
                 finally:
                     fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)

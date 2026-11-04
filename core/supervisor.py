@@ -65,39 +65,40 @@ class Supervisor:
         ).isoformat()
 
     def _load(self):
-        if not self.storage_path.exists():
+        try:
+            raw = self.storage_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
             self.pending = {}
             return
 
         try:
-            data = json.loads(
-                self.storage_path.read_text(
-                    encoding="utf-8"
-                )
+            data = json.loads(raw)
+        except json.JSONDecodeError as error:
+            raise ValueError(
+                f"Arquivo de aprovações contém JSON inválido: "
+                f"{self.storage_path}"
+            ) from error
+
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"Estrutura do arquivo de aprovações inválida: "
+                f"{self.storage_path}"
             )
 
-            if isinstance(data, dict):
-                valid_statuses = {
-                    ApprovalStatus.PENDING.value,
-                    ApprovalStatus.APPROVED.value,
-                    ApprovalStatus.REJECTED.value,
-                }
+        valid_statuses = {
+            ApprovalStatus.PENDING.value,
+            ApprovalStatus.APPROVED.value,
+            ApprovalStatus.REJECTED.value,
+        }
 
-                self.pending = {
-                    approval_id: request
-                    for approval_id, request in data.items()
-                    if isinstance(request, dict)
-                    and request.get("status") in valid_statuses
-                }
-            else:
-                self.pending = {}
+        loaded_pending = {
+            approval_id: request
+            for approval_id, request in data.items()
+            if isinstance(request, dict)
+            and request.get("status") in valid_statuses
+        }
 
-        except (
-            OSError,
-            json.JSONDecodeError,
-            UnicodeDecodeError,
-        ):
-            self.pending = {}
+        self.pending = loaded_pending
 
     def _write_pending_to_temporary(self):
         fd, temporary_name = tempfile.mkstemp(
@@ -187,7 +188,12 @@ class Supervisor:
             max(numeric_ids, default=0) + 1
         )
 
-    def _build_approval_request(self, plan, instruction=None):
+    def _build_approval_request(
+        self,
+        plan,
+        instruction=None,
+        idempotency_key=None,
+    ):
         snapshot = copy.deepcopy(plan)
         now = self._now()
 
@@ -200,6 +206,9 @@ class Supervisor:
 
         if instruction is not None:
             request["instruction"] = instruction
+
+        if idempotency_key is not None:
+            request["idempotency_key"] = idempotency_key
 
         return request
 
@@ -221,9 +230,22 @@ class Supervisor:
             self.pending = previous_pending
             raise
 
-    def request_approval(self, plan, instruction=None):
+    def request_approval(
+        self,
+        plan,
+        instruction=None,
+        idempotency_key=None,
+    ):
         if instruction is not None and not isinstance(instruction, str):
             raise ValueError("Instrução de aprovação inválida.")
+
+        if idempotency_key is not None:
+            if (
+                not isinstance(idempotency_key, str)
+                or not idempotency_key.strip()
+            ):
+                raise ValueError("Chave de idempotência inválida.")
+            idempotency_key = idempotency_key.strip()
 
         process_lock = self._process_lock()
         try:
@@ -233,10 +255,42 @@ class Supervisor:
                 self._load()
                 previous_pending = copy.deepcopy(self.pending)
 
+                if idempotency_key is not None:
+                    matches = [
+                        (approval_id, request)
+                        for approval_id, request in self.pending.items()
+                        if (
+                            isinstance(request, dict)
+                            and request.get("idempotency_key")
+                            == idempotency_key
+                        )
+                    ]
+
+                    if matches:
+                        if len(matches) > 1:
+                            raise RuntimeError(
+                                "Chave de idempotência associada "
+                                "a múltiplas aprovações."
+                            )
+
+                        existing_id, existing_request = matches[0]
+
+                        if (
+                            existing_request.get("instruction")
+                            != instruction
+                        ):
+                            raise ValueError(
+                                "Chave de idempotência reutilizada "
+                                "com dados diferentes."
+                            )
+
+                        return existing_id
+
                 approval_id = self._next_approval_id()
                 request = self._build_approval_request(
                     plan,
                     instruction=instruction,
+                    idempotency_key=idempotency_key,
                 )
 
                 self._persist_approval_request(

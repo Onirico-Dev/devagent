@@ -5774,3 +5774,231 @@ def test_process_crash_during_create_staging_is_recovered_after_restart(
     assert restarted_manager.recover_incomplete_transactions() == []
     assert not target.exists()
     assert not temporary_path.exists()
+
+def test_recovery_lock_acquisition_failure_does_not_attempt_release(
+    tmp_path, monkeypatch,
+):
+    import fcntl
+    from core.schemas.models import Transaction
+
+    manager = TransactionManager(root=tmp_path)
+    transaction = Transaction(transaction_id="tx-lock-acquisition-failure")
+    manager.begin(transaction)
+
+    lock_attempts = []
+    flock_calls = []
+
+    def fail_lock(transaction_id):
+        lock_attempts.append(transaction_id)
+        raise OSError("simulated recovery lock acquisition failure")
+
+    original_flock = fcntl.flock
+
+    def track_flock(fd, operation):
+        flock_calls.append(operation)
+        return original_flock(fd, operation)
+
+    monkeypatch.setattr(manager, "_recovery_lock", fail_lock)
+    monkeypatch.setattr(
+        "core.executor.transaction_manager.fcntl.flock",
+        track_flock,
+    )
+
+    with pytest.raises(
+        OSError,
+        match="simulated recovery lock acquisition failure",
+    ):
+        manager.recover_incomplete_transactions()
+
+    assert lock_attempts == [transaction.transaction_id]
+    assert flock_calls == []
+    assert manager.load_manifest(
+        transaction.transaction_id
+    ).status == TransactionStatus.EXECUTING
+
+
+def test_backup_file_preserves_published_backup_after_persist_error(
+    tmp_path, monkeypatch,
+):
+    manager, transaction = make_started_transaction(tmp_path)
+    source = tmp_path / "published-backup.py"
+    source.write_text("ORIGINAL CONTENT\n", encoding="utf-8")
+
+    original_persist = manager.persist_manifest
+    calls = []
+
+    def persist_then_fail(item):
+        original_persist(item)
+        calls.append(item.transaction_id)
+        raise OSError("simulated failure after manifest publication")
+
+    monkeypatch.setattr(manager, "persist_manifest", persist_then_fail)
+
+    with pytest.raises(
+        OSError,
+        match="failure after manifest publication",
+    ):
+        manager.backup_file(transaction, source.name)
+
+    backup = (
+        Path(transaction.metadata["backup"]) / source.name
+    )
+    persisted = manager.load_manifest(transaction.transaction_id)
+    expected_fingerprint = transaction.metadata["backup_integrity"][source.name]
+
+    assert calls == [transaction.transaction_id]
+    assert backup.is_file()
+    assert backup.read_text(encoding="utf-8") == "ORIGINAL CONTENT\n"
+    assert persisted.metadata["backup_integrity"][source.name] == (
+        expected_fingerprint
+    )
+    assert manager._fingerprint_backup(backup) == expected_fingerprint
+
+
+def test_recovery_lock_failure_before_handle_creation_preserves_error(
+    tmp_path,
+    monkeypatch,
+):
+    from core.executor.transaction_manager import TransactionManager
+    from core.schemas.models import Transaction
+
+    manager = TransactionManager(root=tmp_path)
+    transaction = Transaction(transaction_id="tx-lock-creation-failure")
+    manager.begin(transaction)
+
+    def fail_lock_creation(transaction_id):
+        assert transaction_id == "tx-lock-creation-failure"
+        raise OSError("simulated recovery lock creation failure")
+
+    monkeypatch.setattr(manager, "_recovery_lock", fail_lock_creation)
+
+    with pytest.raises(
+        OSError,
+        match="simulated recovery lock creation failure",
+    ):
+        manager.recover_incomplete_transactions()
+
+
+def test_backup_file_preserves_published_backup_after_post_publish_error(
+    tmp_path,
+    monkeypatch,
+):
+    manager, transaction = make_started_transaction(tmp_path)
+
+    source = tmp_path / "arquivo.py"
+    source.write_text("conteúdo original\n", encoding="utf-8")
+
+    original_persist = manager.persist_manifest
+
+    def persist_then_raise(item):
+        original_persist(item)
+        raise OSError("simulated post-publication persistence failure")
+
+    monkeypatch.setattr(manager, "persist_manifest", persist_then_raise)
+
+    with pytest.raises(
+        OSError,
+        match="simulated post-publication persistence failure",
+    ):
+        manager.backup_file(transaction, "arquivo.py")
+
+    backup_directory = manager._resolve_transaction_backup_directory(
+        transaction
+    )
+    backup_file = backup_directory / "arquivo.py"
+
+    assert backup_file.is_file()
+    assert backup_file.read_text(encoding="utf-8") == "conteúdo original\n"
+
+    record = transaction.metadata["backup_integrity"]["arquivo.py"]
+    assert isinstance(record, dict)
+    assert record.get("exists") is not False
+
+    persisted = manager._read_manifest_data(
+        manager._manifest_path(transaction.transaction_id)
+    )
+    persisted_records = persisted["metadata"]["backup_integrity"]
+
+    assert persisted_records["arquivo.py"] == record
+
+def test_coverage_validate_backup_integrity_preparing_with_zero_changes(
+    tmp_path,
+):
+    manager, transaction = make_started_transaction(tmp_path)
+    transaction.changes = [
+        Change(
+            change_type=ChangeType.CREATE,
+            path="new.py",
+            content="x",
+        )
+    ]
+    transaction.metadata["execution"] = {
+        "phase": "preparing",
+        "changes_applied": 0,
+    }
+
+    manager._validate_backup_integrity(
+        transaction,
+        Path(transaction.metadata["backup"]),
+    )
+
+
+def test_coverage_validate_backup_integrity_accepts_created_change(
+    tmp_path,
+):
+    manager, transaction = make_started_transaction(tmp_path)
+    transaction.changes = [
+        Change(
+            change_type=ChangeType.CREATE,
+            path="new.py",
+            content="x",
+        )
+    ]
+    transaction.metadata["execution"] = {
+        "phase": "executing",
+        "changes_applied": 1,
+    }
+    transaction.metadata["created"] = ["new.py"]
+
+    manager._validate_backup_integrity(
+        transaction,
+        Path(transaction.metadata["backup"]),
+    )
+
+
+def test_coverage_validate_backup_integrity_accepts_absent_file_record(
+    tmp_path,
+):
+    manager, transaction = make_started_transaction(tmp_path)
+    transaction.metadata["backup_integrity"] = {
+        "missing.py": {"exists": False}
+    }
+
+    manager._validate_backup_integrity(
+        transaction,
+        Path(transaction.metadata["backup"]),
+    )
+
+
+def test_restore_backup_files_rejects_destination_symlink_directly(
+    tmp_path,
+):
+    manager, transaction = make_started_transaction(tmp_path)
+
+    backup_root = Path(transaction.metadata["backup"])
+    backup_file = backup_root / "linked.py"
+    backup_file.write_text("ORIGINAL\n", encoding="utf-8")
+
+    real_destination = tmp_path / "real.py"
+    real_destination.write_text("REAL\n", encoding="utf-8")
+
+    destination_link = tmp_path / "linked.py"
+    destination_link.symlink_to(real_destination)
+
+    with pytest.raises(
+        ValueError,
+        match="Destino de rollback é um symlink",
+    ):
+        manager._restore_backup_files(backup_root)
+
+    assert real_destination.read_text(encoding="utf-8") == "REAL\n"

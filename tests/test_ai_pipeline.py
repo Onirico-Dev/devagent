@@ -529,3 +529,193 @@ def test_pipeline_ignores_invalid_transaction_changes_type(tmp_path):
 
     assert len(plan.changes) == 1
     assert plan.changes[0].path == "new.py"
+
+
+def test_pipeline_does_not_infer_python_test_for_non_python_target(
+    tmp_path,
+):
+    target = tmp_path / "config.txt"
+    target.write_text("mode=development\n", encoding="utf-8")
+
+    class ContextAdapter:
+        def __init__(self):
+            self.prompt = None
+
+        def generate(self, prompt):
+            self.prompt = prompt
+            return json.dumps({
+                "objective": "Modificar config.txt",
+                "changes": [
+                    {
+                        "type": "modify",
+                        "path": "config.txt",
+                        "content": "mode=production\n",
+                        "reason": "Atualizar ambiente",
+                    }
+                ],
+                "tests": [],
+                "risks": [],
+            })
+
+    adapter = ContextAdapter()
+    pipeline = DevAgentPipeline(
+        root=str(tmp_path),
+        ai_adapter=adapter,
+    )
+
+    plan = pipeline.process("Modifique arquivo chamado config.txt Atualizar ambiente")
+
+    assert len(plan.changes) == 1
+    assert plan.changes[0].path == "config.txt"
+    assert plan.changes[0].content == "mode=production\n"
+    assert "=== ARQUIVO: config.txt ===" in adapter.prompt
+    assert "mode=development" in adapter.prompt
+    assert "test_config.txt" not in adapter.prompt
+
+
+def test_pipeline_rejects_non_dict_feedback_context(tmp_path):
+    class UnusedAdapter:
+        def generate(self, prompt):
+            raise AssertionError(
+                "O adaptador não deveria ser chamado."
+            )
+
+    pipeline = DevAgentPipeline(
+        root=str(tmp_path),
+        ai_adapter=UnusedAdapter(),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Contexto de feedback inválido",
+    ):
+        pipeline.process("Analise o projeto", feedback_context=[])
+
+
+def test_pipeline_prioritizes_existing_python_test_target(tmp_path):
+    target = tmp_path / "target.py"
+    test_target = tmp_path / "test_target.py"
+
+    target.write_text(
+        "def target():\n    return 'old'\n",
+        encoding="utf-8",
+    )
+    test_target.write_text(
+        "def test_target():\n    assert True\n",
+        encoding="utf-8",
+    )
+
+    class ContextAdapter:
+        def __init__(self):
+            self.prompt = None
+
+        def generate(self, prompt):
+            self.prompt = prompt
+            return json.dumps({
+                "objective": "Modificar target.py",
+                "changes": [
+                    {
+                        "type": "modify",
+                        "path": "target.py",
+                        "content": "def target():\n    return 'new'\n",
+                        "reason": "Atualizar função",
+                    }
+                ],
+                "tests": [],
+                "risks": [],
+            })
+
+    adapter = ContextAdapter()
+    pipeline = DevAgentPipeline(
+        root=str(tmp_path),
+        ai_adapter=adapter,
+    )
+
+    plan = pipeline.process(
+        "Modifique arquivo chamado target.py Atualizar função"
+    )
+
+    assert len(plan.changes) == 1
+    assert plan.changes[0].path == "target.py"
+
+    target_position = adapter.prompt.index(
+        "=== ARQUIVO: target.py ==="
+    )
+    test_position = adapter.prompt.index(
+        "=== ARQUIVO: test_target.py ==="
+    )
+
+    assert target_position < test_position
+    assert "assert True" in adapter.prompt
+
+
+def test_pipeline_filters_and_deduplicates_transaction_change_paths(
+    tmp_path,
+):
+    extra = tmp_path / "extra.txt"
+    other = tmp_path / "other.txt"
+
+    extra.write_text("extra content\n", encoding="utf-8")
+    other.write_text("other content\n", encoding="utf-8")
+
+    class ContextAdapter:
+        def __init__(self):
+            self.prompt = None
+
+        def generate(self, prompt):
+            self.prompt = prompt
+            return json.dumps({
+                "objective": "Criar novo arquivo",
+                "changes": [
+                    {
+                        "type": "create",
+                        "path": "new.py",
+                        "content": "print('new')",
+                        "reason": "Novo arquivo",
+                    }
+                ],
+                "tests": [],
+                "risks": [],
+            })
+
+    adapter = ContextAdapter()
+    pipeline = DevAgentPipeline(
+        root=str(tmp_path),
+        ai_adapter=adapter,
+    )
+
+    metadata = {
+        "changes": [
+            None,
+            {"path": 123},
+            {"path": ""},
+            {"path": "   "},
+            {"path": "extra.txt"},
+            {"path": "extra.txt"},
+            {"path": "other.txt"},
+        ],
+    }
+
+    plan = pipeline.process(
+        "Analise o projeto",
+        feedback_context={
+            "transaction_metadata": metadata,
+        },
+    )
+
+    assert len(plan.changes) == 1
+    assert plan.changes[0].path == "new.py"
+
+    extra_position = adapter.prompt.index(
+        "=== ARQUIVO: extra.txt ==="
+    )
+    other_position = adapter.prompt.index(
+        "=== ARQUIVO: other.txt ==="
+    )
+
+    assert extra_position < other_position
+    assert adapter.prompt.count(
+        "=== ARQUIVO: extra.txt ==="
+    ) == 1
+    assert "extra content" in adapter.prompt
+    assert "other content" in adapter.prompt

@@ -10,20 +10,20 @@ from core.supervisor import ApprovalStatus, Supervisor
 
 def test_supervisor_loads_non_dict_json_as_empty(tmp_path):
     path = tmp_path / "approvals.json"
-    path.write_text("[]", encoding="utf-8")
-
-    supervisor = Supervisor(path)
-
-    assert supervisor.list_all() == {}
+    original = '[]'
+    path.write_text(original, encoding="utf-8")
+    with pytest.raises(ValueError):
+        Supervisor(path)
+    assert path.read_text(encoding="utf-8") == original
 
 
 def test_supervisor_recovers_from_invalid_json(tmp_path):
     path = tmp_path / "approvals.json"
-    path.write_text("not json", encoding="utf-8")
-
-    supervisor = Supervisor(path)
-
-    assert supervisor.list_all() == {}
+    original = 'not json'
+    path.write_text(original, encoding="utf-8")
+    with pytest.raises(ValueError):
+        Supervisor(path)
+    assert path.read_text(encoding="utf-8") == original
 
 
 def test_supervisor_request_approval_rejects_invalid_plan(tmp_path):
@@ -109,20 +109,20 @@ from core.supervisor import ApprovalStatus, Supervisor
 
 def test_supervisor_recovers_non_dict_json(tmp_path):
     path = tmp_path / "approvals.json"
-    path.write_text('["invalid"]', encoding="utf-8")
-
-    supervisor = Supervisor(path)
-
-    assert supervisor.list_all() == {}
+    original = '["invalid"]'
+    path.write_text(original, encoding="utf-8")
+    with pytest.raises(ValueError):
+        Supervisor(path)
+    assert path.read_text(encoding="utf-8") == original
 
 
 def test_supervisor_recovers_invalid_json(tmp_path):
     path = tmp_path / "approvals.json"
-    path.write_text("not json", encoding="utf-8")
-
-    supervisor = Supervisor(path)
-
-    assert supervisor.list_all() == {}
+    original = 'not json'
+    path.write_text(original, encoding="utf-8")
+    with pytest.raises(ValueError):
+        Supervisor(path)
+    assert path.read_text(encoding="utf-8") == original
 
 
 def test_supervisor_rejects_invalid_plan(tmp_path):
@@ -204,20 +204,20 @@ from core.supervisor import ApprovalStatus, Supervisor
 
 def test_supervisor_recovers_from_non_dict_json(tmp_path):
     path = tmp_path / "approvals.json"
-    path.write_text("[]", encoding="utf-8")
-
-    supervisor = Supervisor(path)
-
-    assert supervisor.list_all() == {}
+    original = '[]'
+    path.write_text(original, encoding="utf-8")
+    with pytest.raises(ValueError):
+        Supervisor(path)
+    assert path.read_text(encoding="utf-8") == original
 
 
 def test_supervisor_recovers_from_invalid_json(tmp_path):
     path = tmp_path / "approvals.json"
-    path.write_text("not json", encoding="utf-8")
-
-    supervisor = Supervisor(path)
-
-    assert supervisor.list_all() == {}
+    original = 'not json'
+    path.write_text(original, encoding="utf-8")
+    with pytest.raises(ValueError):
+        Supervisor(path)
+    assert path.read_text(encoding="utf-8") == original
 
 
 def test_supervisor_rejects_invalid_plan(tmp_path):
@@ -1047,3 +1047,351 @@ def test_supervisor_rejects_non_string_optional_instruction(tmp_path):
             {"name": "approval"},
             instruction={"invalid": True},
         )
+
+
+
+def test_supervisor_idempotency_key_persists_and_reuses_after_restart(
+    tmp_path,
+):
+    path = tmp_path / "approvals.json"
+    supervisor = Supervisor(path)
+    plan = {"objective": "Criar app", "changes": [{"path": "app.py"}]}
+
+    first_id = supervisor.request_approval(
+        plan,
+        instruction="Criar app",
+        idempotency_key="operation-001",
+    )
+
+    reloaded = Supervisor(path)
+    second_id = reloaded.request_approval(
+        plan,
+        instruction="Criar app",
+        idempotency_key="operation-001",
+    )
+
+    assert second_id == first_id
+    assert len(reloaded.list_all()) == 1
+    assert (
+        reloaded.get(first_id)["idempotency_key"]
+        == "operation-001"
+    )
+
+
+def test_supervisor_idempotency_key_rejects_different_payload(tmp_path):
+    supervisor = Supervisor(tmp_path / "approvals.json")
+
+    supervisor.request_approval(
+        {"changes": [{"path": "app.py"}]},
+        instruction="Criar app",
+        idempotency_key="operation-002",
+    )
+
+    with pytest.raises(ValueError, match="dados diferentes"):
+        supervisor.request_approval(
+            {"changes": [{"path": "other.py"}]},
+            instruction="Criar outro arquivo",
+            idempotency_key="operation-002",
+        )
+
+    assert len(supervisor.list_all()) == 1
+
+
+def test_supervisor_idempotency_key_serializes_concurrent_instances(
+    tmp_path,
+):
+    path = tmp_path / "approvals.json"
+    supervisors = [Supervisor(path), Supervisor(path)]
+    plan = {"objective": "Criar app", "changes": [{"path": "app.py"}]}
+
+    def create_approval(index):
+        return supervisors[index % 2].request_approval(
+            plan,
+            instruction="Criar app",
+            idempotency_key="operation-concurrent",
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        approval_ids = list(
+            executor.map(create_approval, range(32))
+        )
+
+    assert len(set(approval_ids)) == 1
+    assert len(Supervisor(path).list_all()) == 1
+
+
+@pytest.mark.parametrize("invalid_key", ["", "   ", 123, [], {}])
+def test_supervisor_rejects_invalid_idempotency_key(
+    tmp_path,
+    invalid_key,
+):
+    supervisor = Supervisor(tmp_path / "approvals.json")
+
+    with pytest.raises(
+        ValueError,
+        match="Chave de idempotência inválida",
+    ):
+        supervisor.request_approval(
+            {"changes": []},
+            idempotency_key=invalid_key,
+        )
+
+    assert supervisor.list_all() == {}
+
+
+def test_supervisor_without_idempotency_key_preserves_legacy_behavior(
+    tmp_path,
+):
+    supervisor = Supervisor(tmp_path / "approvals.json")
+
+    first_id = supervisor.request_approval(
+        {"changes": []},
+        instruction="Criar app",
+    )
+    second_id = supervisor.request_approval(
+        {"changes": []},
+        instruction="Criar app",
+    )
+
+    assert first_id != second_id
+    assert len(supervisor.list_all()) == 2
+    assert "idempotency_key" not in supervisor.get(first_id)
+
+def test_supervisor_rejects_multiple_persisted_approvals_with_same_key(tmp_path):
+    path = tmp_path / "approvals.json"
+    plan = {
+        "objective": "Criar app",
+        "changes": [{"path": "app.py"}],
+    }
+    request = {
+        "status": ApprovalStatus.PENDING.value,
+        "plan": plan,
+        "instruction": "Criar app",
+        "idempotency_key": "operation-duplicate",
+    }
+    path.write_text(json.dumps({
+        "approval-1": request,
+        "approval-2": request,
+    }), encoding="utf-8")
+    supervisor = Supervisor(path)
+    with pytest.raises(RuntimeError, match="múltiplas aprovações"):
+        supervisor.request_approval(
+            plan,
+            instruction="Criar app",
+            idempotency_key="operation-duplicate",
+        )
+
+
+def test_supervisor_propagates_read_oserror_on_initial_load(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "approvals.json"
+    path.write_text("{}", encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def failing_read_text(self, *args, **kwargs):
+        if self == path:
+            raise OSError("simulated read failure")
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", failing_read_text)
+
+    with pytest.raises(OSError, match="simulated read failure"):
+        Supervisor(path)
+
+
+def test_supervisor_propagates_unicode_error_on_initial_load(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "approvals.json"
+    path.write_text("{}", encoding="utf-8")
+
+    def failing_read_text(self, *args, **kwargs):
+        if self == path:
+            raise UnicodeDecodeError(
+                "utf-8", b"\xff", 0, 1, "invalid start byte"
+            )
+        return Path.read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", failing_read_text)
+
+    with pytest.raises(UnicodeDecodeError):
+        Supervisor(path)
+
+
+def test_supervisor_preserves_memory_when_reload_finds_invalid_json(
+    tmp_path,
+):
+    path = tmp_path / "approvals.json"
+    supervisor = Supervisor(path)
+    approval_id = supervisor.request_approval({"name": "preserved"})
+    previous_pending = copy.deepcopy(supervisor.pending)
+
+    path.write_text("not json", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="JSON inválido"):
+        supervisor.list_all()
+
+    assert supervisor.pending == previous_pending
+    assert approval_id in supervisor.pending
+    assert path.read_text(encoding="utf-8") == "not json"
+
+
+def test_supervisor_preserves_memory_when_reload_fails_with_oserror(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "approvals.json"
+    supervisor = Supervisor(path)
+    approval_id = supervisor.request_approval({"name": "preserved"})
+    previous_pending = copy.deepcopy(supervisor.pending)
+    original_read_text = Path.read_text
+
+    def failing_read_text(self, *args, **kwargs):
+        if self == path:
+            raise OSError("simulated reload failure")
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", failing_read_text)
+
+    with pytest.raises(OSError, match="simulated reload failure"):
+        supervisor.list_all()
+
+    assert supervisor.pending == previous_pending
+    assert approval_id in supervisor.pending
+
+def test_supervisor_recovers_idempotent_approval_after_directory_fsync_failure(
+    tmp_path,
+    monkeypatch,
+):
+    import os
+
+    path = tmp_path / "approvals.json"
+    supervisor = Supervisor(path)
+
+    plan = {
+        "objective": "Criar app",
+        "changes": [{"path": "app.py"}],
+    }
+    instruction = "Criar app"
+    idempotency_key = "operation-post-replace"
+
+    original_fsync = os.fsync
+    calls = {"count": 0}
+
+    def failing_directory_fsync(fd):
+        calls["count"] += 1
+
+        if calls["count"] == 2:
+            raise OSError("simulated directory fsync failure")
+
+        return original_fsync(fd)
+
+    monkeypatch.setattr(
+        "core.supervisor.os.fsync",
+        failing_directory_fsync,
+    )
+
+    with pytest.raises(
+        OSError,
+        match="simulated directory fsync failure",
+    ):
+        supervisor.request_approval(
+            plan,
+            instruction=instruction,
+            idempotency_key=idempotency_key,
+        )
+
+    assert supervisor.pending == {}
+
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert len(persisted) == 1
+
+    original_id = next(iter(persisted))
+    assert persisted[original_id]["idempotency_key"] == idempotency_key
+
+    recovered_id = supervisor.request_approval(
+        plan,
+        instruction=instruction,
+        idempotency_key=idempotency_key,
+    )
+
+    assert recovered_id == original_id
+    assert len(supervisor.list_all()) == 1
+
+
+def test_supervisor_idempotency_preserves_original_plan_on_retry(
+    tmp_path,
+):
+    supervisor = Supervisor(tmp_path / "approvals.json")
+
+    original_plan = {
+        "objective": "Plano original",
+        "changes": [{"path": "app.py"}],
+    }
+    regenerated_plan = {
+        "objective": "Plano regenerado",
+        "changes": [{"path": "app.py"}, {"path": "config.py"}],
+    }
+
+    first_id = supervisor.request_approval(
+        original_plan,
+        instruction="Criar aplicação",
+        idempotency_key="observation-plan-retry",
+    )
+
+    second_id = supervisor.request_approval(
+        regenerated_plan,
+        instruction="Criar aplicação",
+        idempotency_key="observation-plan-retry",
+    )
+
+    assert second_id == first_id
+    assert supervisor.get(first_id)["plan"] == original_plan
+    assert len(supervisor.list_all()) == 1
+
+
+@pytest.mark.parametrize(
+    ("terminal_action", "expected_status"),
+    [
+        ("approve", ApprovalStatus.APPROVED.value),
+        ("reject", ApprovalStatus.REJECTED.value),
+    ],
+)
+def test_supervisor_idempotency_reuses_terminal_approval_after_retry(
+    tmp_path,
+    terminal_action,
+    expected_status,
+):
+    supervisor = Supervisor(tmp_path / "approvals.json")
+
+    original_plan = {
+        "objective": "Operação original",
+        "changes": [{"path": "app.py"}],
+    }
+
+    regenerated_plan = {
+        "objective": "Operação regenerada",
+        "changes": [{"path": "other.py"}],
+    }
+
+    approval_id = supervisor.request_approval(
+        original_plan,
+        instruction="Executar operação",
+        idempotency_key="observation-terminal-retry",
+    )
+
+    getattr(supervisor, terminal_action)(approval_id)
+
+    repeated_id = supervisor.request_approval(
+        regenerated_plan,
+        instruction="Executar operação",
+        idempotency_key="observation-terminal-retry",
+    )
+
+    assert repeated_id == approval_id
+    assert supervisor.get(approval_id)["status"] == expected_status
+    assert supervisor.get(approval_id)["plan"] == original_plan
+    assert len(supervisor.list_all()) == 1

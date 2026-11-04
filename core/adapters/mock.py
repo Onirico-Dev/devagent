@@ -761,11 +761,13 @@ class MockAdapter(AIAdapter):
                 r"(?:[.!]?\s+inclua\s+um\s+teste\s+pytest"
                 r"\s+para\s+essa\s+função[.!]?)?$"
             )
+
             create_match = re.search(
                 create_pattern,
                 instruction.strip(),
                 flags=re.IGNORECASE | re.DOTALL,
             )
+
             if not create_match:
                 return []
 
@@ -774,77 +776,139 @@ class MockAdapter(AIAdapter):
             parameters = create_match.group(3).strip()
             return_expression = create_match.group(4).strip()
 
-        # Remove pontuação residual introduzida antes da cláusula "e crie".
         return_expression = return_expression.rstrip(" ,.")
 
-        # O valor pode ser uma expressão binária entre os próprios parâmetros,
-        # um número, um identificador ou uma string entre aspas.
-        parameter_names = [
-            item.strip()
-            for item in parameters.split(",")
-            if item.strip()
-        ]
+        # Analisa a assinatura sem executar código.
+        try:
+            signature_tree = ast.parse(
+                f"def _generated({parameters}):\n    pass\n"
+            )
+            signature = signature_tree.body[0]
+            arguments = signature.args
 
-        binary_match = re.fullmatch(
-            r"([A-Za-z_][A-Za-z0-9_]*)\s*([+\-*/])\s*"
-            r"([A-Za-z_][A-Za-z0-9_]*)",
-            return_expression,
+            if (
+                arguments.vararg
+                or arguments.kwarg
+                or arguments.kwonlyargs
+                or arguments.posonlyargs
+            ):
+                return []
+
+            parameter_nodes = arguments.args
+            parameter_names = [item.arg for item in parameter_nodes]
+
+            if len(parameter_names) != len(set(parameter_names)):
+                return []
+
+            defaults = {}
+            default_nodes = arguments.defaults
+            first_default = len(parameter_nodes) - len(default_nodes)
+
+            for index, default_node in enumerate(default_nodes):
+                defaults[parameter_names[first_default + index]] = (
+                    ast.literal_eval(default_node)
+                )
+
+        except (SyntaxError, ValueError, TypeError):
+            return []
+
+        # Valores determinísticos para os parâmetros obrigatórios.
+        sample_values = [2, 3, 5, 7, 11, 13]
+        required_names = parameter_names[:first_default]
+
+        if len(required_names) > len(sample_values):
+            return []
+
+        environment = dict(defaults)
+        call_arguments = []
+
+        for index, name in enumerate(required_names):
+            value = sample_values[index]
+            environment[name] = value
+            call_arguments.append(repr(value))
+
+        # Interpreta a expressão de retorno como sintaxe Python.
+        try:
+            expression_tree = ast.parse(
+                return_expression,
+                mode="eval",
+            ).body
+        except SyntaxError:
+            return []
+
+        binary_operations = {
+            ast.Add: lambda left, right: left + right,
+            ast.Sub: lambda left, right: left - right,
+            ast.Mult: lambda left, right: left * right,
+            ast.Div: lambda left, right: left / right,
+            ast.Mod: lambda left, right: left % right,
+            ast.Pow: lambda left, right: left ** right,
+        }
+
+        unary_operations = {
+            ast.UAdd: lambda value: +value,
+            ast.USub: lambda value: -value,
+        }
+
+        def evaluate(node):
+            if isinstance(node, ast.Constant):
+                if isinstance(node.value, (str, int, float, bool, type(None))):
+                    return node.value
+                raise ValueError("Literal não suportado.")
+
+            if isinstance(node, ast.Name):
+                if node.id not in environment:
+                    raise ValueError("Identificador desconhecido.")
+                return environment[node.id]
+
+            if isinstance(node, ast.BinOp):
+                operation = binary_operations.get(type(node.op))
+                if operation is None:
+                    raise ValueError("Operador não suportado.")
+                return operation(evaluate(node.left), evaluate(node.right))
+
+            if isinstance(node, ast.UnaryOp):
+                operation = unary_operations.get(type(node.op))
+                if operation is None:
+                    raise ValueError("Operador unário não suportado.")
+                return operation(evaluate(node.operand))
+
+            raise ValueError("Expressão não suportada.")
+
+        preserve_string_literal = (
+            isinstance(expression_tree, ast.Constant)
+            and isinstance(expression_tree.value, str)
         )
 
-        test_left = "2"
-        test_right = "3"
-        test_expected = None
+        normalized_return_expression = return_expression
 
-        if (
-            len(parameter_names) == 2
-            and binary_match
-            and binary_match.group(1) == parameter_names[0]
-            and binary_match.group(3) == parameter_names[1]
-        ):
-            operator = binary_match.group(2)
-
-            def apply_operation(first, second, operation):
-                if operation == "+":
-                    return first + second
-                if operation == "-":
-                    return first - second
-                if operation == "*":
-                    return first * second
-                if operation == "/":
-                    return first / second
-
-            test_expected = apply_operation(
-                float(test_left),
-                float(test_right),
-                operator,
-            )
-
-            if test_expected.is_integer():
-                test_expected = str(int(test_expected))
+        try:
+            if (
+                isinstance(expression_tree, ast.Name)
+                and expression_tree.id not in environment
+            ):
+                # Compatibilidade histórica: identificador isolado
+                # desconhecido representa um texto literal.
+                expected_value = expression_tree.id
+                normalized_return_expression = repr(expression_tree.id)
             else:
-                test_expected = repr(test_expected)
+                expected_value = evaluate(expression_tree)
+        except (ValueError, TypeError, ZeroDivisionError, OverflowError):
+            return []
 
-            normalized_return = return_expression
+        if isinstance(expected_value, float) and expected_value.is_integer():
+            expected_value = int(expected_value)
 
-        elif (
-            len(return_expression) >= 2
-            and return_expression[0] in {"'", '"'}
-            and return_expression[-1] == return_expression[0]
-        ):
-            normalized_return = return_expression
-        elif re.fullmatch(r"-?\d+(?:\.\d+)?", return_expression):
-            normalized_return = return_expression
-        else:
-            normalized_return = repr(return_expression)
+        # Preserva as aspas originais de strings literais no teste.
+        test_expected = (
+            return_expression
+            if preserve_string_literal
+            else repr(expected_value)
+        )
+        test_call = f"{function_name}({', '.join(call_arguments)})"
 
         module_name = module_path.rsplit(".", 1)[0].replace("/", ".")
         test_path = f"test_{module_path}"
-
-        if test_expected is None:
-            test_call = f"{function_name}()"
-            test_expected = normalized_return
-        else:
-            test_call = f"{function_name}({test_left}, {test_right})"
 
         return [
             {
@@ -852,7 +916,7 @@ class MockAdapter(AIAdapter):
                 "path": module_path,
                 "content": (
                     f"def {function_name}({parameters}):\n"
-                    f"    return {normalized_return}\n"
+                    f"    return {normalized_return_expression}\n"
                 ),
                 "reason": instruction,
             },

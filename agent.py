@@ -4,6 +4,7 @@ from pathlib import Path
 from core.pipeline import DevAgentPipeline
 from core.adapters.mock import MockAdapter
 from core.adapters.groq import GroqAdapter
+from core.adapters.codex_adapter import CodexAdapter
 from core.memory.session import Session
 from core.schemas.models import Change, ChangeType, Transaction
 
@@ -23,6 +24,9 @@ class DevAgent:
             "DEVAGENT_AI",
             "mock",
         ).strip().lower()
+
+        if provider == "codex":
+            return CodexAdapter()
 
         if provider == "groq":
             api_key = os.getenv("GROQ_API_KEY")

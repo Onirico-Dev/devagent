@@ -1482,3 +1482,107 @@ def test_create_change_closes_fd_when_initial_fstat_fails(
     staged_files = list(tmp_path.glob(".created.txt.devagent-*.tmp"))
     assert len(staged_files) == 1
     assert staged_files[0].is_file()
+
+
+def test_staged_cleanup_does_not_restore_already_removed_quarantine(
+    tmp_path,
+    monkeypatch,
+):
+    import os
+    import pytest
+    from core.executor.safe_executor import SafeExecutor
+
+    staged = tmp_path / "staged.tmp"
+    staged.write_text("temporary content", encoding="utf-8")
+    info = staged.stat()
+
+    parent_fd = os.open(
+        tmp_path,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+    )
+
+    original_rename = SafeExecutor._rename_noreplace_in_parent
+    rename_calls = []
+
+    def track_rename(parent_fd, source, destination):
+        rename_calls.append((source, destination))
+        return original_rename(parent_fd, source, destination)
+
+    def fail_fsync(parent_fd):
+        raise OSError("simulated fsync failure after quarantine removal")
+
+    monkeypatch.setattr(
+        SafeExecutor,
+        "_rename_noreplace_in_parent",
+        staticmethod(track_rename),
+    )
+    monkeypatch.setattr(
+        SafeExecutor,
+        "_fsync_directory",
+        staticmethod(fail_fsync),
+    )
+
+    try:
+        with pytest.raises(
+            OSError,
+            match="simulated fsync failure after quarantine removal",
+        ):
+            SafeExecutor._cleanup_staged_file(
+                parent_fd,
+                "staged.tmp",
+                info.st_dev,
+                info.st_ino,
+            )
+
+        assert len(rename_calls) == 1
+        assert rename_calls[0][0] == "staged.tmp"
+        assert not staged.exists()
+        assert not list(tmp_path.glob(".devagent-cleanup-*"))
+    finally:
+        os.close(parent_fd)
+
+
+def test_execute_create_uses_prepared_callback_without_progress_callback(
+    tmp_path,
+):
+    from core.executor.safe_executor import SafeExecutor
+    from core.schemas.models import Change, ChangeType, Transaction
+
+    executor = SafeExecutor(root=tmp_path)
+    transaction = Transaction(
+        transaction_id="tx-prepared-callback",
+        changes=[
+            Change(
+                change_type=ChangeType.CREATE,
+                path="created.txt",
+                content="prepared content",
+            ),
+        ],
+    )
+
+    prepared = []
+
+    def on_create_prepared(change, temporary_path, device, inode):
+        temporary = tmp_path / temporary_path
+
+        assert change.path == "created.txt"
+        assert temporary.is_file()
+        assert not (tmp_path / "created.txt").exists()
+
+        info = temporary.stat()
+        assert (info.st_dev, info.st_ino) == (device, inode)
+
+        prepared.append(temporary_path)
+
+    result = executor.execute(
+        transaction,
+        on_create_prepared=on_create_prepared,
+    )
+
+    target = tmp_path / "created.txt"
+
+    assert result is transaction
+    assert len(prepared) == 1
+    assert target.read_text(encoding="utf-8") == "prepared content"
+    assert transaction.metadata["execution"]["phase"] == "completed"
+    assert transaction.metadata["execution"]["changes_applied"] == 1
