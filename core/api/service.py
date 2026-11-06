@@ -1,3 +1,8 @@
+from core.adapters.codex_adapter import CodexAdapter
+from core.adapters.mock import MockAdapter
+from core.adapters.groq import GroqAdapter
+
+
 class APIService:
     """Application-facing operations exposed by the HTTP API."""
 
@@ -34,9 +39,19 @@ class APIService:
         }
 
     def health(self):
+        adapter = getattr(self.agent, "ai", None)
+        if isinstance(adapter, CodexAdapter):
+            provider = "Codex"
+        elif isinstance(adapter, MockAdapter):
+            provider = "Mock"
+        elif isinstance(adapter, GroqAdapter):
+            provider = "Groq"
+        else:
+            provider = "Desconhecido"
         return {
             "status": "ok",
             "service": "devagent",
+            "ai_provider": provider,
         }
 
     def list_tasks(self):

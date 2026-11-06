@@ -49,6 +49,7 @@ def test_health_returns_service_health_contract():
     assert result == {
         "status": "ok",
         "service": "devagent",
+        "ai_provider": "Desconhecido",
     }
     assert gateway.calls == []
 
