@@ -114,14 +114,14 @@ class TaskInvestigations:
     def _view(job):
         return {key: job[key] for key in ("job_id", "approval_id", "status", "provider", "report", "error")}
 
-    def start(self, task, adapter, owner):
+    def start(self, task, adapter, owner, *, prepared_facts=None, prompt_builder=build_prompt, report_parser=parse_report):
         if isinstance(adapter, CodexAdapter):
             provider = "Codex"
         elif isinstance(adapter, GroqAdapter):
             provider = "Groq"
         else:
             raise ValueError("A investigação exige um adaptador Codex ou Groq.")
-        facts = investigation_facts(task)
+        facts = investigation_facts(task) if prepared_facts is None else prepared_facts
         key = fingerprint(facts)
         with self.lock:
             for job in self.jobs.values():
@@ -138,7 +138,7 @@ class TaskInvestigations:
                    "report": None, "error": None}
             self.jobs[job["job_id"]] = job
         try:
-            Thread(target=self._run, args=(job, adapter, facts), daemon=True).start()
+            Thread(target=self._run, args=(job, adapter, facts, prompt_builder, report_parser), daemon=True).start()
         except Exception:
             self._fail(job)
         with self.lock:
@@ -149,23 +149,30 @@ class TaskInvestigations:
             job["status"] = "failed"
             job["error"] = "A investigação não foi concluída. Confira a conexão com a IA e tente novamente."
 
-    def _run(self, job, adapter, facts):
+    def _run(self, job, adapter, facts, prompt_builder, report_parser):
         try:
-            report = parse_report(adapter.generate(build_prompt(facts)), facts)
+            report = report_parser(adapter.generate(prompt_builder(facts)), facts)
             with self.lock:
                 job["report"] = report
                 job["status"] = "completed"
         except Exception:
             self._fail(job)
 
-    def get(self, task, job_id, owner):
-        key = fingerprint(investigation_facts(task))
+    def get(self, task, job_id, owner, *, prepared_facts=None):
+        key = fingerprint(investigation_facts(task) if prepared_facts is None else prepared_facts)
         with self.lock:
             job = self.jobs.get(job_id)
             if job is None or job["owner"] is not owner or job["approval_id"] != task["approval_id"]:
                 return None
             if job["key"] != key:
                 raise ValueError("Os dados da operação mudaram. Inicie outra investigação.")
+            return self._view(job)
+
+    def get_consultation(self, job_id, owner):
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if job is None or job["owner"] is not owner or not job["approval_id"].startswith("consultation:"):
+                return None
             return self._view(job)
 
 

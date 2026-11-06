@@ -3,6 +3,7 @@ import re
 from pathlib import Path
 
 from core.planner.local_edits import content_hash, copy_sources, expand_local_edits
+from core.planner.request_intent import has_requested_changes, is_read_only_request
 
 from core.schemas.models import (
     Change,
@@ -109,6 +110,8 @@ class AIPlanner:
         feedback_context: dict | None = None,
         source_files: dict | None = None,
     ) -> Plan:
+        if is_read_only_request(instruction):
+            raise ValueError("Consulta somente de leitura: use Consultar sem alterar no Studio.")
         sources = copy_sources(source_files)
         if not isinstance(context, str):
             context = ""
@@ -457,29 +460,4 @@ MANIFESTO SHA256 DAS FONTES UTF-8:
         self,
         instruction: str,
     ) -> bool:
-        operational_terms = (
-            "criar",
-            "crie",
-            "create",
-            "adicionar",
-            "adicione",
-            "alterar",
-            "altere",
-            "modificar",
-            "modifique",
-            "editar",
-            "edite",
-            "corrigir",
-            "corrija",
-            "remover",
-            "remova",
-            "deletar",
-            "delete",
-        )
-
-        text = instruction.lower()
-
-        return any(
-            term in text
-            for term in operational_terms
-        )
+        return has_requested_changes(instruction)

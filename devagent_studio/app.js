@@ -38,6 +38,7 @@
     lastSelectionError: null,
     diagnosticContext: null,
     investigationContext: null,
+    consultationContext: null,
   };
 
   const POLL_INTERVAL_MS = 5000;
@@ -154,6 +155,9 @@
     elements.approveButton.disabled = busy;
     elements.rejectButton.disabled = busy;
     elements.instruction.disabled = busy;
+    if (elements.consultButton) {
+      elements.consultButton.disabled = busy || Boolean(state.consultationContext?.running);
+    }
 
     if (message) {
       showNotification(message);
@@ -890,6 +894,125 @@
     }
   }
 
+  function renderConsultation(context) {
+    const panel = elements.consultationPanel;
+    clearNode(panel);
+    panel.hidden = false;
+    panel.append(element("h3", "", "Consulta técnica — somente leitura"));
+    panel.append(element("p", "muted", context.instruction));
+    if (!context.report) {
+      panel.append(element("p", "", context.running ? "Consultando a IA…" : "A consulta não foi concluída."));
+      return;
+    }
+    const report = context.report;
+    panel.append(element("p", "muted", `IA: ${context.provider}. Operação de contexto: ${report.operation_id || "nenhuma"}.`));
+    panel.append(element("p", "", report.summary));
+    const refs = values => values.map(value => value === "request" ? "Relato do usuário" : value === "operation" ? "Operação selecionada" : value).join(", ");
+    const lines = ["Consulta técnica — somente leitura", `IA: ${context.provider}. Operação de contexto: ${report.operation_id || "nenhuma"}.`, context.instruction, report.summary];
+    const sections = [
+      ["Achados apresentados pela IA", report.findings.map(f => `${f.text} Evidências: ${refs(f.evidence)}.`)],
+      ["Hipóteses", report.hypotheses.map(h => `${h.cause} Confiança: ${h.confidence}. Evidências: ${refs(h.evidence)}.`)],
+      ["Informações adicionais necessárias", report.missing_information],
+      ["Próximos passos", report.next_steps],
+      ["Proposta para revisão humana", report.correction_proposal ? [report.correction_proposal] : ["Nenhuma proposta justificada pelos dados disponíveis."]],
+      ["Fontes consultadas na abertura da consulta", report.sources.map(source => `${source.path} — SHA256 ${source.sha256}`)],
+    ];
+    for (const [title, values] of sections) {
+      panel.append(element("strong", "", title));
+      const list = document.createElement("ul");
+      (values.length ? values : ["Não informado."]).forEach(value => list.append(element("li", "", value)));
+      panel.append(list);
+      lines.push(title, ...values);
+    }
+    const note = "Análise baseada nas fontes atuais selecionadas e no contexto fornecido. Registros históricos adicionais podem ser necessários. A consulta não aplica alterações nem gera aprovação.";
+    panel.append(element("p", "muted", note));
+    lines.push(note);
+    const copy = element("button", "button button-secondary", "Copiar consulta");
+    copy.type = "button";
+    copy.addEventListener("click", async () => {
+      if (copy.disabled) return;
+      copy.disabled = true;
+      try {
+        await copyProposedContent(lines.join("\n"));
+        showNotification("Consulta copiada.", "success");
+      } catch {
+        showNotification("Não foi possível copiar a consulta. Tente novamente.", "error");
+      } finally { copy.disabled = false; }
+    });
+    panel.append(copy);
+  }
+
+  function acceptConsultation(job, context) {
+    const textOk = (value, limit) => typeof value === "string" && value.trim().length > 0 && value.length <= limit;
+    if (!job || job.kind !== "consultation" || !/^[a-f0-9]{32}$/.test(job.job_id) ||
+        (context.jobId && job.job_id !== context.jobId) || !["Codex", "Groq"].includes(job.provider) ||
+        !["running", "completed", "failed"].includes(job.status)) throw new Error("Resposta de consulta inválida.");
+    context.jobId = job.job_id;
+    if (job.status === "failed") throw new Error("A consulta não foi concluída. Tente novamente.");
+    if (job.status === "completed") {
+      const r = job.report;
+      if (!r || !textOk(r.summary, 1200) || !Array.isArray(r.sources) || r.sources.length > 16 ||
+          !r.sources.every(s => s && textOk(s.path, 240) && /^[a-f0-9]{64}$/.test(s.sha256)) ||
+          !(r.operation_id === null || textOk(r.operation_id, 100))) throw new Error("Fontes da consulta inválidas.");
+      const allowed = new Set(["request", ...r.sources.map(s => s.path), ...(r.operation_id ? ["operation"] : [])]);
+      const evidenceOk = values => Array.isArray(values) && values.length > 0 && values.length <= 4 && values.every(v => allowed.has(v));
+      const listOk = (values, min, max) => Array.isArray(values) && values.length >= min && values.length <= max;
+      if (!listOk(r.findings, 0, 8) || !r.findings.every(f => f && textOk(f.text, 1000) && evidenceOk(f.evidence)) ||
+          !listOk(r.hypotheses, 1, 4) || !r.hypotheses.every(h => h && textOk(h.cause, 800) &&
+            ["baixa", "média", "alta"].includes(h.confidence) && evidenceOk(h.evidence)) ||
+          !listOk(r.next_steps, 1, 6) || !r.next_steps.every(v => textOk(v, 600)) ||
+          !listOk(r.missing_information, 0, 8) || !r.missing_information.every(v => textOk(v, 600)) ||
+          !(r.correction_proposal === null || textOk(r.correction_proposal, 1200))) throw new Error("Relatório de consulta inválido.");
+      context.report = r;
+      context.provider = job.provider;
+    }
+    context.running = job.status === "running";
+    renderConsultation(context);
+    elements.consultButton.disabled = state.busy || context.running;
+  }
+
+  async function startConsultation() {
+    if (state.busy || state.consultationContext?.running) return;
+    const instruction = elements.instruction.value.trim();
+    if (!instruction) { showNotification("Informe uma consulta.", "error"); return; }
+    const context = { instruction, running: true, report: null, jobId: null };
+    state.consultationContext = context;
+    elements.consultButton.disabled = true;
+    renderConsultation(context);
+    try {
+      const job = await request("/consultations", { method: "POST", body: JSON.stringify({ instruction,
+        ...(state.selectedTaskId ? { context_task_id: state.selectedTaskId } : {}) }) });
+      if (context === state.consultationContext) acceptConsultation(job, context);
+    } catch (error) {
+      if (context === state.consultationContext) {
+        context.running = false;
+        renderConsultation(context);
+        showNotification(`Não foi possível consultar: ${error.message}`, "error");
+      }
+    } finally {
+      if (context === state.consultationContext) elements.consultButton.disabled = state.busy || context.running;
+    }
+  }
+
+  async function refreshConsultation() {
+    const context = state.consultationContext;
+    if (!context?.running || !context.jobId || context.polling) return;
+    context.polling = true;
+    try {
+      const job = await request(`/consultations/${context.jobId}`);
+      if (context === state.consultationContext) acceptConsultation(job, context);
+    } catch (error) {
+      if (context === state.consultationContext) {
+        context.running = false;
+        renderConsultation(context);
+        showNotification(`Não foi possível atualizar a consulta: ${error.message}`, "error");
+      }
+    } finally {
+      context.polling = false;
+      if (context === state.consultationContext) elements.consultButton.disabled = state.busy || context.running;
+    }
+  }
+
   async function createPlan(event) {
     event.preventDefault();
 
@@ -909,8 +1032,16 @@
     try {
       const result = await request("/plan", {
         method: "POST",
-        body: JSON.stringify({ instruction }),
+        body: JSON.stringify({ instruction, ...(state.selectedTaskId ? { context_task_id: state.selectedTaskId } : {}) }),
       });
+
+      if (result.kind === "consultation") {
+        const context = { instruction, running: false, report: null, jobId: null };
+        state.consultationContext = context;
+        acceptConsultation(result, context);
+        showNotification("Pedido encaminhado à consulta somente de leitura.");
+        return;
+      }
 
       const approvalId = result.approval_id;
 
@@ -1133,6 +1264,7 @@
       await refreshTasks(true);
       await checkHealth();
       await refreshInvestigation();
+      await refreshConsultation();
     } catch (error) {
       setHealth(false, "Falha ao sincronizar");
     } finally {
@@ -1165,6 +1297,18 @@
   document.addEventListener("visibilitychange", handleVisibilityChange);
 
   elements.instructionForm.addEventListener("submit", createPlan);
+
+  const consultationActions = element("div", "operation-actions");
+  elements.consultButton = element("button", "button button-secondary", "Consultar sem alterar");
+  elements.consultButton.type = "button";
+  elements.consultButton.addEventListener("click", startConsultation);
+  consultationActions.append(elements.consultButton);
+  elements.consultationPanel = element("section", "diagnostic-panel consultation-panel");
+  elements.consultationPanel.hidden = true;
+  elements.consultationPanel.setAttribute("aria-live", "polite");
+  elements.instructionForm.append(consultationActions,
+    element("p", "muted", "A consulta envia à IA fontes permitidas do projeto e dados públicos da operação selecionada. O relatório é apresentado sem executar alterações."),
+    elements.consultationPanel);
 
   elements.approveButton.addEventListener("click", () => {
     decideTask("approve");

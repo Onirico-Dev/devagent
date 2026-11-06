@@ -5,6 +5,7 @@ from pathlib import Path
 
 from agent import DevAgent
 from core.api.service import APIService
+from core.planner.request_intent import is_read_only_request
 from core.gateway import (
     CommitTransactionError,
     DevAgentGateway,
@@ -187,6 +188,14 @@ class APIHandler(BaseHTTPRequestHandler):
 
             task_route = path.split("/")
 
+            if len(task_route) == 3 and task_route[1] == "consultations" and task_route[2]:
+                result = service.get_consultation(task_route[2])
+                if result is None:
+                    self.send_json(404, {"error": "Consulta não encontrada"})
+                else:
+                    self.send_json(200, result)
+                return
+
             if (
                 len(task_route) == 5 and task_route[1] == "tasks"
                 and task_route[2] and task_route[3] == "investigation" and task_route[4]
@@ -270,8 +279,11 @@ class APIHandler(BaseHTTPRequestHandler):
                 self.handle_error(error)
             return
 
-        if path == "/plan":
+        if path in ("/plan", "/consultations"):
             try:
+                if path == "/consultations" and self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json":
+                    self.send_json(415, {"error": "Use Content-Type application/json"})
+                    return
                 content_length = self.headers.get(
                     "Content-Length"
                 )
@@ -358,10 +370,13 @@ class APIHandler(BaseHTTPRequestHandler):
                     return
 
                 service = self._service()
-                result = service.create_task(instruction)
+                if path == "/consultations" or is_read_only_request(instruction):
+                    result = service.start_consultation(instruction, data.get("context_task_id"))
+                else:
+                    result = service.create_task(instruction)
 
                 self.send_json(
-                    200,
+                    202 if result.get("kind") == "consultation" and result.get("status") == "running" else 200,
                     result,
                 )
 

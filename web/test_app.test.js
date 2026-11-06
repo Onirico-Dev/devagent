@@ -230,6 +230,11 @@ function createHarness(tasks, harnessOptions = {}) {
     const request = { url, options };
     requests.push(request);
 
+    if (url === "/consultations" || url.startsWith("/consultations/")) {
+      if (harnessOptions.consultationResponse) return await harnessOptions.consultationResponse(url, options);
+      return reportResponse(harnessOptions.consultationData);
+    }
+
     if (url.startsWith("/tasks/") && url.includes("/investigation")) {
       if (harnessOptions.investigationResponse) return await harnessOptions.investigationResponse(url, options);
       return reportResponse(harnessOptions.investigationData);
@@ -2513,4 +2518,163 @@ test('relatório da IA usa texto literal e cópia reaproveita alternativa com fo
   h.api.renderOperation(null);
   assert.equal(h.api.state.investigationContext, null);
   assert.equal(investigationButton(h), null);
+});
+
+function consultationJob(status = 'completed', extra = {}) {
+  return { kind: 'consultation', job_id: 'c'.repeat(32), status, provider: 'Codex', error: null,
+    report: status === 'completed' ? {
+      summary: 'A fonte atual não comprova quem enviou o sinal histórico.',
+      findings: [{ text: 'O relato informa -15.', evidence: ['request'] }],
+      hypotheses: [{ cause: 'Uma interrupção é possível.', confidence: 'baixa', evidence: ['request'] }],
+      next_steps: ['Obtenha o registro histórico.'], missing_information: ['Emissor do sinal.'],
+      correction_proposal: null, operation_id: '163',
+      sources: [{ path: 'core/executor/test_runner.py', sha256: 'd'.repeat(64) }],
+    } : null, ...extra };
+}
+function consultationCopy(h) {
+  return findSummaryNode(h.api.elements.consultationPanel, n => n.tagName === 'BUTTON' && n.textContent === 'Copiar consulta');
+}
+
+test('consulta explícita usa fontes e contexto selecionado sem criar plano ou mudar aprovação', async () => {
+  const task = summaryTask({ status: 'pending', plan: { objective: 'Plano', changes: [
+    { path: 'example.py', change_type: 'create', content: 'VALUE = 1\n' }], tests: [], risks: [] } });
+  const h = createHarness([task], { consultationData: consultationJob() });
+  await h.api.selectTask('163');
+  const preview = findSummaryNode(h.elements['plan-content'], n => n.tagName === 'DETAILS');
+  preview.open = true;
+  h.elements.instruction.value = 'Investigue. Não modificar arquivos. Não criar commits.';
+  assert.equal(h.api.elements.consultButton.type, 'button');
+  await h.api.elements.consultButton.listeners.click();
+  const posts = h.requests.filter(r => r.options.method === 'POST');
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].url, '/consultations');
+  assert.deepEqual(JSON.parse(posts[0].options.body), { instruction: h.elements.instruction.value, context_task_id: '163' });
+  assert.equal(h.api.state.busy, false);
+  assert.equal(h.api.state.pendingApprovalId, '163');
+  assert.equal(h.api.state.selectedTaskId, '163');
+  assert.equal(h.elements['approval-actions'].hidden, false);
+  assert.equal(preview.open, true);
+  assert.equal(h.api.elements.consultationPanel.hidden, false);
+  assert.match(allText(h.api.elements.consultationPanel), /Informações adicionais necessárias/);
+  await consultationCopy(h).listeners.click();
+  assert.match(h.copied[0], /Emissor do sinal/);
+  assert.match(h.copied[0], /Operação de contexto: 163/);
+  assert.match(h.copied[0], /SHA256/);
+  assert.equal(h.elements.notification.textContent, 'Consulta copiada.');
+});
+
+test('Gerar plano encaminha resultado de leitura sem exigir approval_id ou substituir plano aberto', async () => {
+  const h = createHarness([summaryTask({ status: 'pending' })], {
+    postResponses: { '/plan': { data: consultationJob() } },
+  });
+  await h.api.selectTask('163');
+  const plan = h.elements['plan-content'].firstChild;
+  h.elements.instruction.value = 'Investigue; não modificar arquivos.';
+  await h.elements['instruction-form'].listeners.submit({ preventDefault() {} });
+  assert.equal(h.api.state.selectedTaskId, '163');
+  assert.equal(h.api.state.pendingApprovalId, '163');
+  assert.equal(h.elements['plan-content'].firstChild, plan);
+  assert.equal(h.api.elements.consultationPanel.hidden, false);
+  assert.match(h.elements.notification.textContent, /encaminhado à consulta/);
+  assert.equal(h.api.state.busy, false);
+});
+
+test('consulta pendente usa polling existente e preserva o contexto original ao trocar seleção', async () => {
+  let current = consultationJob('running');
+  const h = createHarness([summaryTask(), summaryTask({ approval_id: '164' })], {
+    consultationResponse: async () => reportResponse(current),
+  });
+  await h.api.selectTask('163');
+  h.elements.instruction.value = 'Pergunta original';
+  h.api.startPolling();
+  await h.api.elements.consultButton.listeners.click();
+  assert.equal(h.api.elements.consultButton.disabled, true);
+  await h.api.elements.consultButton.listeners.click();
+  assert.equal(h.requests.filter(r => r.url === '/consultations').length, 1);
+  h.elements.instruction.value = 'Rascunho novo';
+  await h.api.selectTask('164');
+  current = consultationJob();
+  await h.runPollingTimer();
+  assert.equal(h.api.elements.consultButton.disabled, false);
+  assert.equal(h.pendingPollingTimers(), 1);
+  assert.equal(h.api.state.selectedTaskId, '164');
+  assert.equal(h.elements.instruction.value, 'Rascunho novo');
+  assert.match(allText(h.api.elements.consultationPanel), /Pergunta original/);
+  assert.match(allText(h.api.elements.consultationPanel), /Operação de contexto: 163/);
+  const before = h.requests.filter(r => r.url.startsWith('/consultations/')).length;
+  await h.runPollingTimer();
+  assert.equal(h.requests.filter(r => r.url.startsWith('/consultations/')).length, before);
+});
+
+test('consulta vazia informa erro persistente sem chamar API', async () => {
+  const h = createHarness([]);
+  h.elements.instruction.value = '  ';
+  await h.api.elements.consultButton.listeners.click();
+  assert.equal(h.requests.length, 0);
+  assert.equal(h.elements.notification.textContent, 'Informe uma consulta.');
+  assert.equal(h.api.state.notificationTimer, null);
+});
+
+for (const job of [null, consultationJob('failed'), consultationJob('unknown'),
+  consultationJob('completed', { job_id: '../wrong' }),
+  consultationJob('completed', { report: {} }),
+  consultationJob('completed', { report: { ...consultationJob().report, findings: [{ text: 'x', evidence: ['private.py'] }] } }),
+  consultationJob('completed', { report: { ...consultationJob().report, hypotheses: [] } }),
+  consultationJob('completed', { report: { ...consultationJob().report, correction_proposal: {} } })]) {
+  test(`consulta recusa resposta inválida: ${JSON.stringify(job).slice(0, 60)}`, async () => {
+    const h = createHarness([], { consultationData: job });
+    h.elements.instruction.value = 'Analise somente de leitura.';
+    await h.api.elements.consultButton.listeners.click();
+    assert.equal(h.elements.notification.className, 'notification error');
+    assert.equal(h.api.elements.consultButton.disabled, false);
+    assert.equal(h.api.state.busy, false);
+  });
+}
+
+test('falha na atualização de consulta mantém polling e libera nova tentativa', async () => {
+  const options = { consultationData: consultationJob('running') };
+  const h = createHarness([], options);
+  h.elements.instruction.value = 'Consulta de teste';
+  await h.api.elements.consultButton.listeners.click();
+  options.consultationResponse = async () => { throw new TypeError('Conexão interrompida.'); };
+  h.api.startPolling();
+  await h.runPollingTimer();
+  assert.equal(h.api.elements.consultButton.disabled, false);
+  assert.equal(h.pendingPollingTimers(), 1);
+  assert.equal(h.elements['api-status'].textContent, 'Online');
+  assert.match(h.elements.notification.textContent, /atualizar a consulta/);
+  options.consultationResponse = async () => reportResponse(consultationJob());
+  await h.api.elements.consultButton.listeners.click();
+  assert.equal(h.api.state.consultationContext.report.summary, consultationJob().report.summary);
+});
+
+test('falha ao iniciar consulta não desabilita os controles existentes', async () => {
+  const h = createHarness([], { consultationResponse: async () => { throw new TypeError('Sem conexão.'); } });
+  h.elements.instruction.value = 'Consulta';
+  await h.api.elements.consultButton.listeners.click();
+  assert.equal(h.api.elements.consultButton.disabled, false);
+  assert.equal(h.elements['plan-button'].disabled, false);
+  assert.equal(h.elements['approve-button'].disabled, false);
+  assert.match(h.elements.notification.textContent, /Não foi possível consultar/);
+});
+
+test('consulta exibe texto literal e copia com alternativa e recuperação de foco', async () => {
+  const job = consultationJob();
+  job.report.summary = '<img src=x onerror=alert(1)>';
+  job.report.correction_proposal = 'Revisar a hipótese antes de propor mudança.';
+  const options = { noClipboard: true, consultationData: job };
+  const h = createHarness([], options);
+  let focused = false;
+  h.document.activeElement.focus = () => { focused = true; };
+  h.elements.instruction.value = 'Consulta';
+  await h.api.elements.consultButton.listeners.click();
+  assert.equal(findSummaryNode(h.api.elements.consultationPanel, n => n.tagName === 'IMG'), null);
+  await consultationCopy(h).listeners.click();
+  assert.equal(focused, true);
+  assert.equal(h.document.body.children.length, 0);
+  assert.match(h.copied[0], /<img/);
+  options.fallbackFails = true;
+  await consultationCopy(h).listeners.click();
+  assert.equal(h.elements.notification.className, 'notification error');
+  assert.equal(consultationCopy(h).disabled, false);
 });
