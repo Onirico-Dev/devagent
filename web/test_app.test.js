@@ -2821,3 +2821,221 @@ test('contexto visível acompanha seleção e identifica a operação enviada du
   await h.api.refreshTasks(true);
   assert.equal(h.api.elements.consultationContextLabel.textContent, 'Contexto da próxima consulta: operação 164.');
 });
+
+function preparationButton(h) {
+  return findSummaryNode(h.api.elements.consultationPanel, n => n.tagName === 'BUTTON' && n.textContent === 'Preparar instrução');
+}
+function preparationEditor(h) {
+  return findSummaryNode(h.api.elements.consultationPanel, n => n.className === 'instruction-preparation');
+}
+function preparationControl(h, name) {
+  return findSummaryNode(preparationEditor(h), n => n.tagName === 'BUTTON' && n.textContent === name);
+}
+function preparationObjective(h) {
+  return findSummaryNode(preparationEditor(h), n => n.tagName === 'TEXTAREA');
+}
+async function completedConsultation(options = {}) {
+  if (!Object.hasOwn(options, 'consultationData')) options.consultationData = consultationJob();
+  const h = createHarness([summaryTask({ status: 'pending' })], options);
+  await h.api.selectTask('163');
+  editInstruction(h, 'Analise a operação, sem escrita ou commits.');
+  await h.api.elements.consultButton.listeners.click();
+  assert.equal(h.elements.instruction.value, '');
+  return h;
+}
+
+test('Preparar instrução exige objetivo e monta rascunho sem enviar pedido ou alterar seleção e aprovação', async () => {
+  const h = await completedConsultation();
+  const before = h.requests.length;
+  const prepare = preparationButton(h);
+  assert.equal(prepare.type, 'button');
+  assert.equal(preparationEditor(h).hidden, true);
+  prepare.listeners.click();
+  assert.equal(preparationEditor(h).hidden, false);
+  const objective = preparationObjective(h);
+  const label = findSummaryNode(preparationEditor(h), n => n.tagName === 'LABEL');
+  assert.equal(label.getAttribute('for'), objective.getAttribute('id'));
+  assert.equal(objective.getAttribute('maxlength'), '1000');
+  objective.value = 'Adicione horários de início e fim ao relatório.';
+  preparationControl(h, 'Usar no campo Instrução').listeners.click();
+  assert.match(h.elements.instruction.value, /^Crie um plano de alterações/);
+  assert.match(h.elements.instruction.value, /Adicione horários de início e fim ao relatório/);
+  assert.match(h.elements.instruction.value, /HIPÓTESES NÃO CONFIRMADAS/);
+  assert.match(h.elements.instruction.value, /Confiança: baixa/);
+  assert.match(h.elements.instruction.value, /core\/executor\/test_runner.py/);
+  assert.match(h.elements.instruction.value, /SHA256/);
+  assert.match(h.elements.instruction.value, /Operação de contexto: 163/);
+  assert.doesNotMatch(h.elements.instruction.value, /Analise a operação, sem escrita ou commits/);
+  assert.equal(h.requests.length, before);
+  assert.equal(h.api.state.selectedTaskId, '163');
+  assert.equal(h.api.state.pendingApprovalId, '163');
+  assert.equal(h.api.state.busy, false);
+  assert.equal(h.elements['approval-actions'].hidden, false);
+  assert.equal(preparationEditor(h).hidden, true);
+  assert.equal(h.elements.notification.textContent, 'Instrução preparada. Revise antes de gerar o plano.');
+});
+
+for (const value of ['', '  ', 'x'.repeat(1001)]) {
+  test(`objetivo vazio ou acima do limite não preenche a instrução: ${value.length}`, async () => {
+    const h = await completedConsultation();
+    const before = h.requests.length;
+    preparationButton(h).listeners.click();
+    preparationObjective(h).value = value;
+    preparationControl(h, 'Usar no campo Instrução').listeners.click();
+    assert.equal(h.elements.instruction.value, '');
+    assert.equal(h.requests.length, before);
+    assert.equal(h.elements.notification.className, 'notification error');
+    assert.match(h.elements.notification.textContent, /até 1000 caracteres/);
+  });
+}
+
+test('rascunho existente é preservado e instrução preparada pode ser copiada', async () => {
+  const h = await completedConsultation();
+  editInstruction(h, 'Rascunho que já estava sendo escrito.');
+  preparationButton(h).listeners.click();
+  preparationObjective(h).value = 'Adicione identificação da etapa aos registros.';
+  const before = h.requests.length;
+  preparationControl(h, 'Usar no campo Instrução').listeners.click();
+  assert.equal(h.elements.instruction.value, 'Rascunho que já estava sendo escrito.');
+  assert.match(h.elements.notification.textContent, /rascunho.*preservado/);
+  await preparationControl(h, 'Copiar instrução preparada').listeners.click();
+  assert.match(h.copied[0], /Adicione identificação da etapa/);
+  assert.equal(h.elements.instruction.value, 'Rascunho que já estava sendo escrito.');
+  assert.equal(h.requests.length, before);
+});
+
+test('cancelar fecha o editor sem mudar a instrução ou perder o objetivo digitado', async () => {
+  const h = await completedConsultation();
+  preparationButton(h).listeners.click();
+  preparationObjective(h).value = 'Melhorar a apresentação do relatório.';
+  preparationControl(h, 'Cancelar').listeners.click();
+  assert.equal(preparationEditor(h).hidden, true);
+  assert.equal(h.elements.instruction.value, '');
+  preparationButton(h).listeners.click();
+  assert.equal(preparationObjective(h).value, 'Melhorar a apresentação do relatório.');
+});
+
+for (const status of ['running', 'failed']) {
+  test(`consulta ${status} não oferece preparação de instrução`, async () => {
+    const h = createHarness([], { consultationData: consultationJob(status) });
+    editInstruction(h, 'Consulta de teste');
+    await h.api.elements.consultButton.listeners.click();
+    assert.equal(preparationButton(h), null);
+  });
+}
+
+test('preparação não altera o rascunho enquanto uma operação está ocupada', async () => {
+  const h = await completedConsultation();
+  preparationButton(h).listeners.click();
+  preparationObjective(h).value = 'Adicione um campo ao relatório.';
+  h.api.state.busy = true;
+  const before = h.requests.length;
+  preparationControl(h, 'Usar no campo Instrução').listeners.click();
+  assert.equal(h.elements.instruction.value, '');
+  assert.equal(h.requests.length, before);
+  assert.match(h.elements.notification.textContent, /Aguarde a operação/);
+});
+
+test('botões antigos são ignorados quando outra consulta substitui o relatório', async () => {
+  const h = await completedConsultation();
+  preparationButton(h).listeners.click();
+  preparationObjective(h).value = 'Adicione um campo ao relatório.';
+  const oldUse = preparationControl(h, 'Usar no campo Instrução');
+  const oldCopy = preparationControl(h, 'Copiar instrução preparada');
+  const oldPrepare = preparationButton(h);
+  const oldCancel = preparationControl(h, 'Cancelar');
+  editInstruction(h, 'Nova consulta sem escrita.');
+  await h.api.elements.consultButton.listeners.click();
+  const before = h.requests.length;
+  const notification = h.elements.notification.textContent;
+  oldUse.listeners.click();
+  oldPrepare.listeners.click();
+  oldCancel.listeners.click();
+  await oldCopy.listeners.click();
+  assert.equal(h.elements.instruction.value, '');
+  assert.equal(h.copied.length, 0);
+  assert.equal(h.requests.length, before);
+  assert.equal(h.elements.notification.textContent, notification);
+});
+
+test('rascunho preparado respeita 12000 caracteres e conserva objetivo e orientação de planejamento', async () => {
+  const job = consultationJob();
+  job.report.findings = Array.from({ length: 8 }, () => ({ text: '😀'.repeat(500), evidence: ['request'] }));
+  job.report.hypotheses = Array.from({ length: 4 }, () => ({ cause: 'h'.repeat(800), confidence: 'baixa', evidence: ['request'] }));
+  job.report.missing_information = Array.from({ length: 8 }, () => 'm'.repeat(600));
+  const h = await completedConsultation({ consultationData: job });
+  preparationButton(h).listeners.click();
+  const objective = 'Adicione um campo ao relatório. ' + 'o'.repeat(950);
+  preparationObjective(h).value = objective;
+  preparationControl(h, 'Usar no campo Instrução').listeners.click();
+  const draft = h.elements.instruction.value;
+  assert.ok(draft.length <= 12000);
+  assert.ok(draft.includes(objective));
+  assert.match(draft, /Contexto abreviado/);
+  assert.match(draft, /ORIENTAÇÃO PARA O PLANEJAMENTO/);
+  assert.match(draft, /testes direcionados/);
+  assert.equal(draft.isWellFormed(), true);
+  assert.match(h.elements.notification.textContent, /contexto abreviado/);
+});
+
+test('objetivo e texto da IA são tratados como texto literal', async () => {
+  const job = consultationJob();
+  job.report.summary = '<img src=x onerror=alert(1)>';
+  const h = await completedConsultation({ consultationData: job });
+  preparationButton(h).listeners.click();
+  preparationObjective(h).value = '<script>alert(1)</script> Adicione um campo.';
+  preparationControl(h, 'Usar no campo Instrução').listeners.click();
+  assert.match(h.elements.instruction.value, /<script>/);
+  assert.match(h.elements.instruction.value, /<img/);
+  assert.equal(findSummaryNode(h.api.elements.consultationPanel, n => n.tagName === 'SCRIPT' || n.tagName === 'IMG'), null);
+});
+
+test('instrução preparada só é enviada após submissão explícita do usuário', async () => {
+  const h = await completedConsultation();
+  preparationButton(h).listeners.click();
+  preparationObjective(h).value = 'Adicione o nome da etapa ao relatório.';
+  preparationControl(h, 'Usar no campo Instrução').listeners.click();
+  const prepared = h.elements.instruction.value;
+  assert.equal(h.requests.filter(r => r.url === '/plan').length, 0);
+  await submitPlan(h);
+  const plan = h.requests.find(r => r.url === '/plan');
+  assert.equal(JSON.parse(plan.options.body).instruction, prepared);
+  assert.equal(h.elements.instruction.value, '');
+  assert.equal(h.api.state.pendingApprovalId, 'created-1');
+});
+
+test('preparar rascunho preserva prévia aberta e operação de origem do relatório', async () => {
+  const task = summaryTask({ status: 'pending', plan: { objective: 'Plano existente', changes: [
+    { path: 'example.py', change_type: 'create', content: 'VALUE = 1\n' }], tests: [], risks: [] } });
+  const h = createHarness([task, { ...task, approval_id: '164' }], { consultationData: consultationJob() });
+  await h.api.selectTask('163');
+  editInstruction(h, 'Consulta sem escrita');
+  await h.api.elements.consultButton.listeners.click();
+  await h.api.selectTask('164');
+  const preview = findSummaryNode(h.elements['plan-content'], n => n.tagName === 'DETAILS');
+  preview.open = true;
+  preparationButton(h).listeners.click();
+  preparationObjective(h).value = 'Adicione uma identificação ao relatório.';
+  preparationControl(h, 'Usar no campo Instrução').listeners.click();
+  assert.match(h.elements.instruction.value, /Operação de contexto: 163/);
+  assert.equal(h.api.state.selectedTaskId, '164');
+  assert.equal(findSummaryNode(h.elements['plan-content'], n => n.tagName === 'DETAILS'), preview);
+  assert.equal(preview.open, true);
+});
+
+test('cópia da instrução preparada usa alternativa e permite repetir após falha', async () => {
+  const options = { noClipboard: true, consultationData: consultationJob() };
+  const h = await completedConsultation(options);
+  let restored = false;
+  h.document.activeElement.focus = () => { restored = true; };
+  preparationButton(h).listeners.click();
+  preparationObjective(h).value = 'Adicione o nome da etapa ao relatório.';
+  await preparationControl(h, 'Copiar instrução preparada').listeners.click();
+  assert.equal(restored, true);
+  assert.equal(h.document.body.children.length, 0);
+  assert.equal(h.elements.instruction.value, '');
+  options.fallbackFails = true;
+  await preparationControl(h, 'Copiar instrução preparada').listeners.click();
+  assert.equal(h.elements.notification.className, 'notification error');
+  assert.equal(preparationControl(h, 'Copiar instrução preparada').disabled, false);
+});
