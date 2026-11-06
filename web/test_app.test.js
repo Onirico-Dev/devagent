@@ -37,6 +37,20 @@ class FakeElement {
     return this.children[0] || null;
   }
 
+  get nextSibling() {
+    if (!this.parentElement) return null;
+    return this.parentElement.children[this.parentElement.children.indexOf(this) + 1] || null;
+  }
+
+  insertBefore(node, reference) {
+    if (reference === null) { this.append(node); return node; }
+    const index = this.children.indexOf(reference);
+    assert.ok(index >= 0, "O nó de referência deve pertencer ao pai.");
+    node.parentElement = this;
+    this.children.splice(index, 0, node);
+    return node;
+  }
+
   append(...nodes) {
     nodes.forEach((node) => { node.parentElement = this; });
     this.children.push(...nodes);
@@ -112,6 +126,8 @@ function createHarness(tasks, harnessOptions = {}) {
   const elements = Object.fromEntries(
     ELEMENT_IDS.map((id) => [id, new FakeElement()])
   );
+  elements.instruction.value = harnessOptions.initialInstruction || "";
+  elements["instruction-form"].append(new FakeElement("label"), elements.instruction, new FakeElement("div"));
 
   const requests = [];
   const copied = [];
@@ -3021,6 +3037,134 @@ test('preparar rascunho preserva prévia aberta e operação de origem do relat�
   assert.equal(h.api.state.selectedTaskId, '164');
   assert.equal(findSummaryNode(h.elements['plan-content'], n => n.tagName === 'DETAILS'), preview);
   assert.equal(preview.open, true);
+});
+
+test('contador inicia abaixo da caixa e fica associado à descrição acessível', () => {
+  const h = createHarness([]);
+  const counter = h.api.elements.instructionCounter;
+  assert.equal(counter.textContent, '0 / 12000 caracteres');
+  assert.equal(counter.getAttribute('id'), 'instruction-count');
+  assert.equal(h.elements.instruction.getAttribute('aria-describedby'), 'instruction-count');
+  assert.equal(h.elements.instruction.nextSibling, counter);
+  assert.equal(counter.parentElement, h.elements['instruction-form']);
+  assert.equal(h.requests.length, 0);
+});
+
+test('contador considera texto existente ao carregar e acompanha digitação, colagem e exclusão', () => {
+  const h = createHarness([], { initialInstruction: 'Olá' });
+  const counter = h.api.elements.instructionCounter;
+  assert.equal(counter.textContent, '3 / 12000 caracteres');
+  for (const value of ['Texto colado\ncom espaços. ', 'ação 🧠', 'x'.repeat(12000), '']) {
+    editInstruction(h, value);
+    assert.equal(counter.textContent, `${value.length} / 12000 caracteres`);
+    assert.equal(h.elements.instruction.value, value);
+  }
+  assert.equal(h.api.state.instructionRevision, 4);
+  assert.equal(h.requests.length, 0);
+});
+
+test('plano aceito atualiza contador para zero sem mudar o texto enviado', async () => {
+  const h = createHarness([]);
+  editInstruction(h, '  Crie exemplo.py.  ');
+  await submitPlan(h);
+  assert.equal(h.api.elements.instructionCounter.textContent, '0 / 12000 caracteres');
+  const request = h.requests.find(r => r.url === '/plan');
+  assert.equal(JSON.parse(request.options.body).instruction, 'Crie exemplo.py.');
+  assert.equal(h.api.state.pendingApprovalId, 'created-1');
+});
+
+test('erro de planejamento conserva o contador e o rascunho', async () => {
+  const h = createHarness([], { postErrors: { '/plan': 'Codex excedeu o tempo limite.' } });
+  const value = '  Adicione o contador.  ';
+  editInstruction(h, value);
+  await submitPlan(h);
+  assert.equal(h.elements.instruction.value, value);
+  assert.equal(h.api.elements.instructionCounter.textContent, `${value.length} / 12000 caracteres`);
+  assert.equal(h.elements.notification.className, 'notification error');
+});
+
+test('plano atrasado preserva contador do novo rascunho', async () => {
+  const h = createHarness([], { deferPostRequests: true });
+  editInstruction(h, 'Primeiro pedido.');
+  const pending = submitPlan(h);
+  editInstruction(h, 'Novo.');
+  h.resolvePostRequest('/plan');
+  await pending;
+  assert.equal(h.elements.instruction.value, 'Novo.');
+  assert.equal(h.api.elements.instructionCounter.textContent, '5 / 12000 caracteres');
+});
+
+for (const forwarded of [false, true]) {
+  test(`consulta aceita limpa o contador, encaminhada: ${forwarded}`, async () => {
+    const h = createHarness([], forwarded
+      ? { postResponses: { '/plan': { data: consultationJob('running') } } }
+      : { consultationData: consultationJob('running') });
+    editInstruction(h, 'Analise sem alterar arquivos.');
+    if (forwarded) await submitPlan(h);
+    else await h.api.elements.consultButton.listeners.click();
+    assert.equal(h.elements.instruction.value, '');
+    assert.equal(h.api.elements.instructionCounter.textContent, '0 / 12000 caracteres');
+  });
+}
+
+for (const newDraft of [null, 'Texto novo.', '']) {
+  test(`falha posterior de consulta mantém contador coerente com o rascunho: ${JSON.stringify(newDraft)}`, async () => {
+    let current = consultationJob('running');
+    const h = createHarness([], { consultationResponse: async () => reportResponse(current) });
+    const original = '  Consulta original.  ';
+    editInstruction(h, original);
+    await h.api.elements.consultButton.listeners.click();
+    if (newDraft !== null) {
+      editInstruction(h, 'Edição posterior.');
+      editInstruction(h, newDraft);
+    }
+    current = consultationJob('failed');
+    h.api.startPolling();
+    await h.runPollingTimer();
+    const expected = newDraft === null ? original : newDraft;
+    assert.equal(h.elements.instruction.value, expected);
+    assert.equal(h.api.elements.instructionCounter.textContent, `${expected.length} / 12000 caracteres`);
+  });
+}
+
+test('Preparar instrução atualiza contador ao inserir e preserva contador de rascunho existente', async () => {
+  const h = await completedConsultation();
+  assert.equal(h.api.elements.instructionCounter.textContent, '0 / 12000 caracteres');
+  preparationButton(h).listeners.click();
+  preparationObjective(h).value = 'Adicione um contador de caracteres.';
+  const before = h.requests.length;
+  preparationControl(h, 'Usar no campo Instrução').listeners.click();
+  const prepared = h.elements.instruction.value;
+  assert.ok(prepared.length > 0 && prepared.length <= 12000);
+  assert.equal(h.api.elements.instructionCounter.textContent, `${prepared.length} / 12000 caracteres`);
+  preparationButton(h).listeners.click();
+  editInstruction(h, 'Rascunho preservado.');
+  preparationControl(h, 'Usar no campo Instrução').listeners.click();
+  assert.equal(h.elements.instruction.value, 'Rascunho preservado.');
+  assert.equal(h.api.elements.instructionCounter.textContent, '20 / 12000 caracteres');
+  await preparationControl(h, 'Copiar instrução preparada').listeners.click();
+  assert.equal(h.api.elements.instructionCounter.textContent, '20 / 12000 caracteres');
+  assert.equal(h.requests.length, before);
+  assert.equal(h.api.state.pendingApprovalId, '163');
+});
+
+test('polling preserva contador, seleção e prévia aberta durante rascunho', async () => {
+  const task = summaryTask({ status: 'pending', plan: { objective: 'Plano',
+    changes: [{ change_type: 'modify', path: 'example.py', content: 'VALUE = 1\n' }], tests: [], risks: [] } });
+  const h = createHarness([task]);
+  await h.api.selectTask('163');
+  const details = findSummaryNode(h.elements['plan-content'], n => n.tagName === 'DETAILS');
+  details.open = true;
+  editInstruction(h, 'Novo pedido.');
+  const counter = h.api.elements.instructionCounter;
+  h.api.startPolling();
+  await h.runPollingTimer();
+  assert.equal(h.api.elements.instructionCounter, counter);
+  assert.equal(counter.textContent, '12 / 12000 caracteres');
+  assert.equal(details.open, true);
+  assert.equal(h.api.state.selectedTaskId, '163');
+  assert.equal(h.api.state.pendingApprovalId, '163');
+  assert.equal(h.pendingPollingTimers(), 1);
 });
 
 test('cópia da instrução preparada usa alternativa e permite repetir após falha', async () => {

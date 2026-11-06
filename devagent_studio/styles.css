@@ -233,6 +233,14 @@ textarea::placeholder {
   color: #69758a;
 }
 
+.instruction-counter {
+  margin: 8px 0 0;
+  text-align: right;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
 .composer-footer {
   display: flex;
   justify-content: space-between;

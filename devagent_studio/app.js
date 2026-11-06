@@ -900,9 +900,14 @@
     return { value: elements.instruction.value, revision: state.instructionRevision };
   }
 
+  function updateInstructionCounter() {
+    elements.instructionCounter.textContent = `${(elements.instruction.value || "").length} / 12000 caracteres`;
+  }
+
   function clearSubmittedInstruction(draft) {
     if (elements.instruction.value !== draft.value || state.instructionRevision !== draft.revision) return null;
     elements.instruction.value = "";
+    updateInstructionCounter();
     return ++state.instructionRevision;
   }
 
@@ -910,6 +915,7 @@
     if (context.clearedRevision !== null && context.clearedRevision !== undefined &&
         state.instructionRevision === context.clearedRevision && elements.instruction.value === "") {
       elements.instruction.value = context.draft.value;
+      updateInstructionCounter();
       state.instructionRevision += 1;
     }
   }
@@ -1007,6 +1013,7 @@
         return;
       }
       elements.instruction.value = draft.text;
+      updateInstructionCounter();
       state.instructionRevision += 1;
       editor.hidden = true;
       elements.instruction.focus();
@@ -1451,7 +1458,15 @@
   document.addEventListener("visibilitychange", handleVisibilityChange);
 
   elements.instructionForm.addEventListener("submit", createPlan);
-  elements.instruction.addEventListener("input", () => { state.instructionRevision += 1; });
+  elements.instructionCounter = element("p", "instruction-counter muted");
+  elements.instructionCounter.setAttribute("id", "instruction-count");
+  elements.instruction.setAttribute("aria-describedby", "instruction-count");
+  elements.instruction.parentElement?.insertBefore(elements.instructionCounter, elements.instruction.nextSibling);
+  updateInstructionCounter();
+  elements.instruction.addEventListener("input", () => {
+    state.instructionRevision += 1;
+    updateInstructionCounter();
+  });
 
   const consultationActions = element("div", "operation-actions");
   elements.consultButton = element("button", "button button-secondary", "Consultar sem alterar");
