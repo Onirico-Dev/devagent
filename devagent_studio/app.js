@@ -83,15 +83,27 @@
   function showNotification(message, type = "info") {
     const notification = elements.notification;
 
+    if (state.notificationTimer !== null) {
+      window.clearTimeout(state.notificationTimer);
+      state.notificationTimer = null;
+    }
+
     notification.textContent = message;
     notification.className = `notification ${type}`;
     notification.hidden = false;
 
-    if (state.notificationTimer) {
-      window.clearTimeout(state.notificationTimer);
+    if (type === "error") {
+      const closeButton = element("button", "notification-close", "Fechar");
+      closeButton.type = "button";
+      closeButton.addEventListener("click", () => {
+        notification.hidden = true;
+      });
+      notification.append(closeButton);
+      return;
     }
 
     state.notificationTimer = window.setTimeout(() => {
+      state.notificationTimer = null;
       notification.hidden = true;
     }, 5000);
   }

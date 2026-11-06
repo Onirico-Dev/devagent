@@ -338,6 +338,7 @@ function createHarness(tasks, harnessOptions = {}) {
     sourceMarker,
     `  globalThis.__devagentTest = {
     sortTasksByUpdatedAt,
+    showNotification,
     decideTask,
     renderTaskList,
     renderOperation,
@@ -386,6 +387,16 @@ function createHarness(tasks, harnessOptions = {}) {
     requests,
     copied,
     document,
+    pendingNotificationTimer() {
+      return timers.get(api.state.notificationTimer) || null;
+    },
+    runNotificationTimer() {
+      const id = api.state.notificationTimer;
+      const timer = timers.get(id);
+      assert.ok(timer, "Deve existir temporizador de notificação.");
+      timers.delete(id);
+      timer.callback();
+    },
     async runPollingTimer() {
       const id = api.state.pollingTimer;
       if (id === null || !timers.has(id)) {
@@ -1880,6 +1891,65 @@ test("integração HTTP real: criação, aprovação e rejeição", { timeout: 1
       force: true,
     });
   }
+});
+
+test("erro permanece visível durante polling e fecha por botão acessível", async () => {
+  const h = createHarness([]);
+  h.api.showNotification("Erro persistente.", "error");
+  const notification = h.elements.notification;
+  const close = notification.children.find((node) => node.tagName === "BUTTON");
+  assert.ok(close);
+  assert.equal(close.textContent, "Fechar");
+  assert.equal(close.type, "button");
+  assert.equal(close.disabled, false);
+  assert.equal(h.api.state.notificationTimer, null);
+  assert.equal(h.pendingNotificationTimer(), null);
+  h.api.startPolling();
+  await h.runPollingTimer();
+  await h.runPollingTimer();
+  assert.equal(notification.hidden, false);
+  assert.equal(h.pendingPollingTimers(), 1);
+  close.listeners.click();
+  assert.equal(notification.hidden, true);
+  assert.equal(h.pendingPollingTimers(), 1);
+});
+
+for (const type of ["success", "info"]) {
+  test(`${type} desaparece após cinco segundos`, () => {
+    const h = createHarness([]);
+    h.api.showNotification("Mensagem temporária.", type);
+    assert.equal(h.elements.notification.hidden, false);
+    assert.equal(h.pendingNotificationTimer().delay, 5000);
+    assert.equal(h.elements.notification.children.length, 0);
+    h.runNotificationTimer();
+    assert.equal(h.elements.notification.hidden, true);
+    assert.equal(h.api.state.notificationTimer, null);
+  });
+
+  test(`erro cancela temporizador anterior de ${type}`, () => {
+    const h = createHarness([]);
+    h.api.showNotification("Mensagem temporária.", type);
+    const previousTimerId = h.api.state.notificationTimer;
+    h.api.showNotification("Erro persistente.", "error");
+    assert.equal(h.pendingNotificationTimer(), null);
+    assert.equal(h.api.state.notificationTimer, null);
+    h.api.state.notificationTimer = previousTimerId;
+    assert.equal(h.pendingNotificationTimer(), null);
+    h.api.state.notificationTimer = null;
+    assert.equal(h.elements.notification.hidden, false);
+  });
+}
+
+test("fechar erro permite apresentar nova notificação temporária", () => {
+  const h = createHarness([]);
+  h.api.showNotification("Erro persistente.", "error");
+  h.elements.notification.children[0].listeners.click();
+  assert.equal(h.elements.notification.hidden, true);
+  h.api.showNotification("Operação concluída.", "success");
+  assert.equal(h.elements.notification.hidden, false);
+  assert.equal(h.pendingNotificationTimer().delay, 5000);
+  h.runNotificationTimer();
+  assert.equal(h.elements.notification.hidden, true);
 });
 
 // Regressões do painel de conteúdo proposto.
