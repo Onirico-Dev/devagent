@@ -28,7 +28,11 @@ class DevAgentPipeline:
 
         self.engine = ChangeEngine(root)
         self.validator = PlanValidator(root)
-        self.context = ProjectContext(root)
+        self.context = ProjectContext(
+            root,
+            max_file_size=200000,
+            max_context_chars=AIPlanner.MAX_CONTEXT_CHARS,
+        )
         self.memory = Memory(Path(self.root) / "logs" / "memory.json")
 
     def process(self, text: str, feedback_context: dict | None = None):
@@ -92,6 +96,10 @@ class DevAgentPipeline:
                         and path not in relevant_paths
                     ):
                         relevant_paths.append(path)
+
+        for path in self.context.select_relevant_paths(text):
+            if path not in relevant_paths:
+                relevant_paths.append(path)
 
         context = self.context.build(
             relevant_paths=relevant_paths,

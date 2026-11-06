@@ -765,6 +765,7 @@ def test_health_endpoint():
         assert data == {
             "status": "ok",
             "service": "devagent",
+            "ai_provider": "Mock",
         }
 
     finally:

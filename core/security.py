@@ -6,6 +6,7 @@ class SecurityPolicy:
     ALLOWED_EXTENSIONS = {
         ".py", ".json", ".txt", ".md",
         ".yaml", ".yml", ".toml",
+        ".html", ".js", ".css",
     }
 
     BLOCKED_PATHS = {

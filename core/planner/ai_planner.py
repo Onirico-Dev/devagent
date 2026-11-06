@@ -10,7 +10,7 @@ from core.schemas.models import (
 
 
 class AIPlanner:
-    MAX_CONTEXT_CHARS = 12000
+    MAX_CONTEXT_CHARS = 262144
 
     def __init__(self, ai_adapter):
         self.ai = ai_adapter
