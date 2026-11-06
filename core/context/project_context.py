@@ -1,3 +1,5 @@
+import os
+import re
 from pathlib import Path
 
 from core.context.python_analyzer import PythonAnalyzer
@@ -12,6 +14,11 @@ class ProjectContext:
         ".venv",
         "venv",
         "node_modules",
+        "logs",
+        "secrets",
+        "backups",
+        ".ssh",
+        ".env",
     }
 
     DEFAULT_IGNORED_FILES = {
@@ -30,6 +37,12 @@ class ProjectContext:
         ".md",
         ".txt",
         ".sh",
+        ".js",
+        ".jsx",
+        ".ts",
+        ".tsx",
+        ".html",
+        ".css",
     }
 
     def __init__(
@@ -37,10 +50,12 @@ class ProjectContext:
         root=".",
         max_file_size=20000,
         max_files=100,
+        max_context_chars=50000,
     ):
         self.root = Path(root).resolve()
         self.max_file_size = max_file_size
         self.max_files = max_files
+        self.max_context_chars = max_context_chars
         self.python_analyzer = PythonAnalyzer()
 
     def _is_ignored(self, path: Path) -> bool:
@@ -53,9 +68,12 @@ class ProjectContext:
         if path.name in self.DEFAULT_IGNORED_FILES:
             return True
 
-        return False
+        return any(part.startswith(".env.") for part in path.parts)
 
     def _is_relevant(self, path: Path) -> bool:
+        if path.is_symlink():
+            return False
+
         if not path.is_file():
             return False
 
@@ -64,14 +82,78 @@ class ProjectContext:
 
         return path.suffix.lower() in self.DEFAULT_EXTENSIONS
 
+    def _source_files(self):
+        # Prune ignored trees before descending (not after enumerating them).
+        for directory, folders, names in os.walk(self.root, followlinks=False):
+            folders[:] = sorted(
+                name for name in folders
+                if not self._is_ignored(Path(directory) / name)
+                and not (Path(directory) / name).is_symlink()
+            )
+            for name in sorted(names):
+                path = Path(directory) / name
+                if self._is_relevant(path):
+                    yield path.relative_to(self.root)
+
+    def select_relevant_paths(self, instruction):
+        """Find explicit files and bounded, literal matches for routes/UI labels."""
+        explicit = []
+        for name in re.findall(r"(?<![\w./-])[\w./-]+\.[A-Za-z0-9]+", instruction):
+            relative = Path(name)
+            path = (self.root / relative).resolve()
+            if (
+                not relative.is_absolute()
+                and path.is_relative_to(self.root)
+                and not self._is_ignored(path)
+                and self._is_relevant(self.root / relative)
+                and relative not in explicit
+            ):
+                explicit.append(relative)
+
+        routes = re.findall(r"(?<![\w/])/[A-Za-z0-9_/-]+", instruction)
+        labels = re.findall(r'''["“]([^"“”\r\n]{4,80})["”]''', instruction)
+        identifiers = re.findall(r"\b[A-Za-z]\w*_\w+\b", instruction)
+        terms = {term.casefold() for term in routes + labels + identifiers}
+        route_names = {route.rstrip("/").rsplit("/", 1)[-1] for route in routes}
+        matches = []
+        for index, relative in enumerate(self._source_files()):
+            if index >= 1000:
+                break
+            path = self.root / relative
+            if path.stat().st_size > self.max_file_size:
+                continue
+            content = self.read_file(relative).casefold()
+            score = sum(term in content for term in terms)
+            score += sum(
+                f"def {name}(" in content or f".{name}(" in content
+                for name in route_names
+            )
+            if score:
+                is_test = (
+                    relative.name.startswith("test_")
+                    or "tests" in relative.parts
+                    or ".test." in relative.name
+                )
+                matches.append((is_test, -score, relative))
+        source_stems = {
+            path.stem for is_test, score, path in matches
+            if not is_test and path.suffix not in {".md", ".txt"}
+        }
+
+        def rank(item):
+            is_test, score, path = item
+            category = 2 if path.suffix in {".md", ".txt"} else int(is_test)
+            subject = path.stem.removeprefix("test_").removesuffix(".test")
+            return category, subject not in source_stems, score, path
+
+        return [str(path) for path in dict.fromkeys(
+            explicit + [item[2] for item in sorted(matches, key=rank)]
+        )]
+
     def list_files(self):
         files = []
 
-        for path in self.root.rglob("*"):
-            if not self._is_relevant(path):
-                continue
-
-            relative = path.relative_to(self.root)
+        for relative in self._source_files():
             files.append(relative)
 
             if len(files) >= self.max_files:
@@ -80,9 +162,8 @@ class ProjectContext:
         return sorted(files)
 
     def read_file(self, relative_path):
-        path = (
-            self.root / relative_path
-        ).resolve()
+        unresolved = self.root / relative_path
+        path = unresolved.resolve()
 
         try:
             path.relative_to(self.root)
@@ -91,7 +172,7 @@ class ProjectContext:
                 f"Caminho bloqueado: {relative_path}"
             ) from None
 
-        if self._is_ignored(path):
+        if self._is_ignored(unresolved) or self._is_ignored(path):
             raise ValueError(
                 f"Arquivo protegido: {relative_path}"
             )
@@ -140,10 +221,11 @@ class ProjectContext:
         )
 
     def build(self, relevant_paths=None):
-        relevant_paths = {
+        requested = list(dict.fromkeys(
             Path(path)
             for path in (relevant_paths or [])
-        }
+        ))
+        relevant_paths = set(requested)
 
         files = self.list_files()
 
@@ -159,7 +241,10 @@ class ProjectContext:
                 if not absolute.is_file():
                     continue
 
-                if self._is_ignored(absolute):
+                if (self.root / relative).is_symlink():
+                    continue
+
+                if self._is_ignored(self.root / relative) or self._is_ignored(absolute):
                     continue
 
                 if absolute.suffix.lower() not in self.DEFAULT_EXTENSIONS:
@@ -167,10 +252,7 @@ class ProjectContext:
 
                 files.append(relative)
 
-        prioritized = [
-            path for path in files
-            if path in relevant_paths
-        ]
+        prioritized = [path for path in requested if path in files]
 
         remaining = [
             path for path in files
@@ -179,8 +261,6 @@ class ProjectContext:
 
         files = prioritized + remaining
 
-        MAX_CONTEXT_CHARS = 50000
-
         sections = [
             "=== CONTEXTO DO PROJETO ===",
             f"ROOT: {self.root}",
@@ -188,7 +268,8 @@ class ProjectContext:
             "",
         ]
 
-        total = sum(len(x) for x in sections)
+        # Reserve space for line separators and the final included-file count.
+        total = sum(len(x) + 1 for x in sections) + 100
         included = 0
 
         for relative in files:
@@ -197,13 +278,7 @@ class ProjectContext:
             if path.stat().st_size > self.max_file_size:
                 continue
 
-            if relative in relevant_paths:
-                try:
-                    content = path.read_text(encoding="utf-8")
-                except UnicodeDecodeError:
-                    content = self.read_file(relative)
-            else:
-                content = self.read_file(relative)
+            content = self.read_file(relative)
 
             section = (
                 f"=== ARQUIVO: {relative} ===\n"
@@ -216,11 +291,11 @@ class ProjectContext:
                     content,
                 )
 
-            if total + len(section) > MAX_CONTEXT_CHARS:
+            if total + len(section) + 1 > self.max_context_chars:
                 continue
 
             sections.append(section)
-            total += len(section)
+            total += len(section) + 1
             included += 1
 
         sections.insert(
