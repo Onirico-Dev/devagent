@@ -7,6 +7,7 @@
     healthIndicator: $("health-indicator"),
     healthLabel: $("health-label"),
     apiStatus: $("api-status"),
+    aiProvider: $("ai-provider"),
     refreshButton: $("refresh-button"),
     instructionForm: $("instruction-form"),
     instruction: $("instruction"),
@@ -151,12 +152,19 @@
     return STATUS_LABELS[normalized] || normalized.replaceAll("_", " ");
   }
 
-  function setHealth(online, label) {
+  function setHealth(online, label, provider = "Desconhecido") {
     elements.healthIndicator.className =
       `indicator ${online ? "online" : "offline"}`;
 
     elements.healthLabel.textContent = label;
     elements.apiStatus.textContent = online ? "Online" : "Offline";
+    const knownProviders = ["Codex", "Mock", "Groq"];
+    const providerLabel = online
+      ? (knownProviders.includes(provider) ? provider : "Desconhecido")
+      : "Indisponível";
+    if (elements.aiProvider.textContent !== providerLabel) {
+      elements.aiProvider.textContent = providerLabel;
+    }
   }
 
   async function checkHealth() {
@@ -167,7 +175,7 @@
         throw new Error("Estado inesperado da API.");
       }
 
-      setHealth(true, "Serviço conectado");
+      setHealth(true, "Serviço conectado", result.ai_provider);
       return true;
     } catch (error) {
       setHealth(false, "Serviço indisponível");
@@ -188,6 +196,35 @@
 
     wrapper.append(heading, content);
     container.append(wrapper);
+  }
+
+  async function copyProposedContent(content) {
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(content);
+        return;
+      } catch {
+        // Navegadores podem negar acesso mesmo com a API disponível.
+      }
+    }
+    const input = document.createElement("textarea");
+    const previousFocus = document.activeElement;
+    input.value = content;
+    input.setAttribute("readonly", "");
+    input.style.position = "fixed";
+    input.style.opacity = "0";
+    document.body.append(input);
+    try {
+      input.focus();
+      input.select();
+      input.setSelectionRange(0, content.length);
+      if (typeof document.execCommand !== "function" || !document.execCommand("copy")) {
+        throw new Error("Cópia indisponível");
+      }
+    } finally {
+      input.remove();
+      previousFocus?.focus({ preventScroll: true });
+    }
   }
 
   function renderPlan(plan) {
@@ -242,7 +279,18 @@
         const summary = element("summary", "", "Visualizar conteúdo proposto");
         const pre = element("pre", "code-preview", change.content);
 
-        details.append(summary, pre);
+        const copyButton = element("button", "button button-secondary", "Copiar conteúdo");
+        copyButton.type = "button";
+        copyButton.addEventListener("click", async () => {
+          try {
+            await copyProposedContent(String(change.content));
+            showNotification("Conteúdo copiado.", "success");
+          } catch {
+            showNotification("Não foi possível copiar. Selecione o texto do conteúdo para copiar.", "error");
+          }
+        });
+
+        details.append(summary, copyButton, pre);
         card.append(details);
       }
 
@@ -297,7 +345,11 @@
     elements.planPanel.hidden = false;
     elements.planStatus.textContent = statusLabel(status).toUpperCase();
 
-    renderPlan(plan);
+    const planKey = JSON.stringify([task.approval_id ?? null, plan]);
+    if (renderPlanPanel.renderedPlanKey !== planKey || !elements.planContent.firstChild) {
+      renderPlan(plan);
+      renderPlanPanel.renderedPlanKey = planKey;
+    }
 
     const canDecide =
       status === "pending" &&
@@ -826,7 +878,7 @@
 
     try {
       await refreshTasks(true);
-      setHealth(true, "Serviço conectado");
+      await checkHealth();
     } catch (error) {
       setHealth(false, "Falha ao sincronizar");
     } finally {

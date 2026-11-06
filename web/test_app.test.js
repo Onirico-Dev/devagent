@@ -66,6 +66,7 @@ const ELEMENT_IDS = [
   "health-indicator",
   "health-label",
   "api-status",
+  "ai-provider",
   "refresh-button",
   "instruction-form",
   "instruction",
@@ -239,7 +240,8 @@ function createHarness(tasks, harnessOptions = {}) {
     }
 
     if (url === "/health") {
-      data = { status: "ok" };
+      if (harnessOptions.healthError) throw new TypeError(harnessOptions.healthError);
+      data = harnessOptions.healthData || { status: "ok", ai_provider: "Mock" };
     } else if (url === "/tasks") {
       const failure = taskListFailureArmed ? taskListFailures.shift() : null;
       if (failure) {
@@ -321,6 +323,7 @@ function createHarness(tasks, harnessOptions = {}) {
     sortTasksByUpdatedAt,
     decideTask,
     renderTaskList,
+    checkHealth,
     refreshTasks,
     selectTask,
     initialize,
@@ -1849,4 +1852,55 @@ test("integração HTTP real: criação, aprovação e rejeição", { timeout: 1
       force: true,
     });
   }
+});
+
+// Regressões do painel de conteúdo proposto.
+require("./test_plan_preview.test.js");
+
+for (const [provider, expected] of [
+  ['Codex', 'Codex'], ['Mock', 'Mock'], ['Groq', 'Groq'],
+  [undefined, 'Desconhecido'], [null, 'Desconhecido'],
+  ['Outro', 'Desconhecido'], ['<img src=x onerror=alert(1)>', 'Desconhecido'],
+]) {
+  test(`health mostra o provedor ${String(provider)} como ${expected}`, async () => {
+    const harness = createHarness([], { healthData: { status: 'ok', ai_provider: provider } });
+    assert.equal(await harness.api.checkHealth(), true);
+    assert.equal(harness.elements['ai-provider'].textContent, expected);
+    assert.equal(harness.elements['api-status'].textContent, 'Online');
+  });
+}
+
+test('falha de health limpa o provedor anterior e a recuperação atualiza o valor', async () => {
+  const options = { healthData: { status: 'ok', ai_provider: 'Codex' } };
+  const harness = createHarness([], options);
+  await harness.api.checkHealth();
+  assert.equal(harness.elements['ai-provider'].textContent, 'Codex');
+  options.healthError = 'Failed to fetch';
+  assert.equal(await harness.api.checkHealth(), false);
+  assert.equal(harness.elements['api-status'].textContent, 'Offline');
+  assert.equal(harness.elements['ai-provider'].textContent, 'Indisponível');
+  options.healthError = null;
+  options.healthData = { status: 'ok', ai_provider: 'Groq' };
+  assert.equal(await harness.api.checkHealth(), true);
+  assert.equal(harness.elements['ai-provider'].textContent, 'Groq');
+});
+
+test('polling consulta health e atualiza o provedor sem depender de reload', async () => {
+  const options = { healthData: { status: 'ok', ai_provider: 'Codex' } };
+  const harness = createHarness([], options);
+  harness.api.startPolling();
+  await harness.runPollingTimer();
+  assert.equal(harness.elements['ai-provider'].textContent, 'Codex');
+  options.healthData = { status: 'ok', ai_provider: 'Mock' };
+  await harness.runPollingTimer();
+  assert.equal(harness.elements['ai-provider'].textContent, 'Mock');
+  assert.equal(harness.requests.filter(request => request.url === '/health').length, 2);
+  assert.equal(harness.pendingPollingTimers(), 1);
+});
+
+test('estado inválido em health não mantém identificação de IA online', async () => {
+  const harness = createHarness([], { healthData: { status: 'failed', ai_provider: 'Codex' } });
+  assert.equal(await harness.api.checkHealth(), false);
+  assert.equal(harness.elements['api-status'].textContent, 'Offline');
+  assert.equal(harness.elements['ai-provider'].textContent, 'Indisponível');
 });
