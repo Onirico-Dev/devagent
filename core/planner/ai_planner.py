@@ -2,7 +2,9 @@ import json
 import re
 from pathlib import Path
 
-from core.planner.local_edits import content_hash, copy_sources, expand_local_edits
+from core.planner.local_edits import (
+    LocalEditAnchorError, content_hash, copy_sources, expand_local_edits,
+)
 from core.planner.request_intent import has_requested_changes, is_read_only_request
 
 from core.schemas.models import (
@@ -204,6 +206,8 @@ Em vez de repetir o arquivo inteiro, retorne uma alteração neste formato:
 {{"type":"modify","path":"arquivo.js","base_sha256":"hash do manifesto", "edits":[{{"old":"trecho literal existente e único","new":"novo trecho"}}],"reason":"motivo"}}
 Use somente arquivos completos presentes no contexto e o hash exato abaixo.
 Cada old deve ocorrer exatamente uma vez no conteúdo resultante da edição anterior.
+Prefira blocos com o nome da função e linhas de contexto que tornem a âncora única.
+Não use apenas chaves, linhas em branco ou instruções repetidas como âncora.
 As edições são literais e sequenciais, com 1 a 100 substituições por arquivo.
 Não use posições, expressões regulares, comandos ou marcadores de conteúdo omitido.
 Não misture content e edits na mesma alteração nem repita o mesmo arquivo.
@@ -217,17 +221,33 @@ MANIFESTO SHA256 DAS FONTES UTF-8:
 
         response = self.ai.generate(prompt)
 
-        try:
-            data = json.loads(response)
-        except (json.JSONDecodeError, TypeError) as error:
-            raise ValueError(
-                "A IA retornou um plano que não é JSON válido."
-            ) from error
-
-        return self._build_plan(
-            expand_local_edits(data, sources),
-            instruction,
-        )
+        for attempt in range(2):
+            try:
+                data = json.loads(response)
+            except (json.JSONDecodeError, TypeError) as error:
+                raise ValueError("A IA retornou um plano que não é JSON válido.") from error
+            try:
+                expanded = expand_local_edits(data, sources)
+            except LocalEditAnchorError as error:
+                if attempt == 1:
+                    raise
+                diagnostic = json.dumps({
+                    "path": error.path, "edit_number": error.edit_number,
+                    "reason": error.reason,
+                }, ensure_ascii=False)
+                retry_prompt = prompt + (
+                    "\nNOVA TENTATIVA ÚNICA DE PLANEJAMENTO:\n"
+                    "A resposta anterior foi recusada antes de cadastrar um plano: uma âncora old era ausente ou ambígua. "
+                    "Nenhuma alteração foi aplicada. Gere novamente o plano completo a partir das fontes originais já fornecidas. "
+                    "Amplie as âncoras com contexto literal da função, conferindo cada old após as edições anteriores. "
+                    "Se não conseguir garantir a unicidade, use o formato content completo apenas para esse arquivo. "
+                    "Preserve o objetivo, escopo e testes solicitados. Os hashes e todas as validações continuam obrigatórios. "
+                    "Não use ferramentas nem execute comandos. Retorne somente JSON.\n"
+                    "DIAGNÓSTICO DA VALIDAÇÃO:\n" + diagnostic
+                )
+                response = self.ai.generate(retry_prompt)
+                continue
+            return self._build_plan(expanded, instruction)
 
     @staticmethod
     def _validate_plan_data(data):

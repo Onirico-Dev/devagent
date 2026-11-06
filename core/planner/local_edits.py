@@ -8,6 +8,17 @@ MAX_CONTENT_BYTES = 200000
 MAX_EDITS = 100
 
 
+class LocalEditAnchorError(ValueError):
+    """Identifies a literal anchor failure without including source content."""
+
+    def __init__(self, path, edit_number, reason):
+        self.path = path
+        self.edit_number = edit_number
+        self.reason = reason
+        detail = "não encontrado" if reason == "missing" else "ambíguo"
+        super().__init__(f"Trecho old precisa ocorrer exatamente uma vez: {path}, edição {edit_number}, {detail}.")
+
+
 def content_hash(content):
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
@@ -58,15 +69,17 @@ def expand_local_edits(data, sources):
         if not isinstance(edits, list) or not 1 <= len(edits) <= MAX_EDITS:
             raise ValueError("Edição local exige de 1 a 100 substituições.")
         content = original
-        for edit in edits:
+        for edit_number, edit in enumerate(edits, 1):
             if not isinstance(edit, dict) or set(edit) != {"old", "new"}:
                 raise ValueError("Cada substituição exige somente old e new.")
             old, new = edit["old"], edit["new"]
             if not isinstance(old, str) or not old or not isinstance(new, str) or old == new:
                 raise ValueError("Substituição local inválida ou sem alteração.")
             first = content.find(old)
-            if first < 0 or content.find(old, first + 1) >= 0:
-                raise ValueError("Trecho old precisa ocorrer exatamente uma vez.")
+            if first < 0:
+                raise LocalEditAnchorError(path, edit_number, "missing")
+            if content.find(old, first + 1) >= 0:
+                raise LocalEditAnchorError(path, edit_number, "ambiguous")
             content = content[:first] + new + content[first + len(old):]
             if len(content.encode("utf-8")) > MAX_CONTENT_BYTES:
                 raise ValueError("Conteúdo reconstruído excede o limite de 200000 bytes.")
