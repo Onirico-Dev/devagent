@@ -228,16 +228,32 @@ MANIFESTO SHA256 DAS FONTES UTF-8:
                 raise ValueError("A IA retornou um plano que não é JSON válido.") from error
             try:
                 expanded = expand_local_edits(data, sources)
-            except LocalEditAnchorError as error:
+            except (LocalEditAnchorError, ValueError) as error:
+                invalid_replacement = (
+                    type(error) is ValueError
+                    and str(error) == "Substituição local inválida ou sem alteração."
+                )
+                if not isinstance(error, LocalEditAnchorError) and not invalid_replacement:
+                    raise
                 if attempt == 1:
                     raise
-                diagnostic = json.dumps({
-                    "path": error.path, "edit_number": error.edit_number,
-                    "reason": error.reason,
-                }, ensure_ascii=False)
+                if isinstance(error, LocalEditAnchorError):
+                    diagnostic = json.dumps({
+                        "path": error.path, "edit_number": error.edit_number,
+                        "reason": error.reason,
+                    }, ensure_ascii=False)
+                else:
+                    diagnostic = json.dumps({
+                        "reason": "invalid_replacement",
+                    }, ensure_ascii=False)
+                failure_description = (
+                    "uma âncora old era ausente ou ambígua"
+                    if isinstance(error, LocalEditAnchorError)
+                    else "uma substituição local era inválida ou sem alteração"
+                )
                 retry_prompt = prompt + (
                     "\nNOVA TENTATIVA ÚNICA DE PLANEJAMENTO:\n"
-                    "A resposta anterior foi recusada antes de cadastrar um plano: uma âncora old era ausente ou ambígua. "
+                    f"A resposta anterior foi recusada antes de cadastrar um plano: {failure_description}. "
                     "Nenhuma alteração foi aplicada. Gere novamente o plano completo a partir das fontes originais já fornecidas. "
                     "Amplie as âncoras com contexto literal da função, conferindo cada old após as edições anteriores. "
                     "Se não conseguir garantir a unicidade, use o formato content completo apenas para esse arquivo. "

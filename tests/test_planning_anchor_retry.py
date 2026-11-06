@@ -180,3 +180,28 @@ def test_second_failure_registers_no_task_and_preserves_files(tmp_path):
     assert gateway.list_tasks() == []
     assert source.read_bytes() == SOURCE.encode("utf-8")
     assert len(adapter.prompts) == 2
+
+
+def test_invalid_replacement_recovers_once():
+    adapter = Adapter(
+        document("VALUE = 1", "VALUE = 1"),
+        document(),
+    )
+    result = plan(adapter)
+    assert result.changes[0].content == SOURCE.replace("VALUE = 1", "VALUE = 2")
+    assert len(adapter.prompts) == 2
+    assert "invalid_replacement" in adapter.prompts[1]
+    assert "uma substituição local era inválida ou sem alteração" in adapter.prompts[1]
+    assert "uma âncora old era ausente ou ambígua" not in adapter.prompts[1]
+
+
+def test_invalid_replacement_second_failure_stops():
+    adapter = Adapter(
+        document("VALUE = 1", "VALUE = 1"),
+        document("", "VALUE = 2"),
+        document(),
+    )
+    with pytest.raises(ValueError, match="Substituição local inválida"):
+        plan(adapter)
+    assert len(adapter.prompts) == 2
+    assert len(adapter.responses) == 1
