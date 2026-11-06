@@ -97,19 +97,26 @@ class DevAgentPipeline:
                     ):
                         relevant_paths.append(path)
 
-        for path in self.context.select_relevant_paths(text):
+        explicit = self.context.select_explicit_paths(text) if self.ai_planner is not None else []
+        selected = explicit or self.context.select_relevant_paths(text)
+        for path in selected:
             if path not in relevant_paths:
                 relevant_paths.append(path)
 
-        context = self.context.build(
-            relevant_paths=relevant_paths,
-        )
+        sources = {}
+        if self.ai_planner is not None:
+            context = self.context.build(
+                relevant_paths=relevant_paths, focused=True, snapshots=sources,
+            )
+        else:
+            context = self.context.build(relevant_paths=relevant_paths)
 
         if self.ai_planner is not None:
             plan = self.ai_planner.create_plan(
                 instruction=text,
                 context=context,
                 feedback_context=feedback_context,
+                source_files=sources,
             )
         else:
             plan = self.planner.create_plan(
@@ -123,6 +130,11 @@ class DevAgentPipeline:
         self.validator.validate_project_coherence(
             plan
         )
+
+        for change in plan.changes:
+            if change.change_type.value == "modify" and change.path in sources:
+                if self.context.read_file(change.path, preserve_newlines=True) != sources[change.path]:
+                    raise ValueError(f"Arquivo mudou durante o planejamento: {change.path}. Gere um novo plano.")
 
         changes = self.engine.prepare(
             plan

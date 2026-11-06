@@ -95,8 +95,8 @@ class ProjectContext:
                 if self._is_relevant(path):
                     yield path.relative_to(self.root)
 
-    def select_relevant_paths(self, instruction):
-        """Find explicit files and bounded, literal matches for routes/UI labels."""
+    def select_explicit_paths(self, instruction):
+        """Return validated existing paths explicitly named in the instruction."""
         explicit = []
         for name in re.findall(r"(?<![\w./-])[\w./-]+\.[A-Za-z0-9]+", instruction):
             relative = Path(name)
@@ -109,6 +109,12 @@ class ProjectContext:
                 and relative not in explicit
             ):
                 explicit.append(relative)
+
+        return [str(path) for path in explicit]
+
+    def select_relevant_paths(self, instruction):
+        """Find explicit files and bounded, literal matches for routes/UI labels."""
+        explicit = [Path(path) for path in self.select_explicit_paths(instruction)]
 
         routes = re.findall(r"(?<![\w/])/[A-Za-z0-9_/-]+", instruction)
         labels = re.findall(r'''["“]([^"“”\r\n]{4,80})["”]''', instruction)
@@ -161,7 +167,7 @@ class ProjectContext:
 
         return sorted(files)
 
-    def read_file(self, relative_path):
+    def read_file(self, relative_path, *, preserve_newlines=False):
         unresolved = self.root / relative_path
         path = unresolved.resolve()
 
@@ -189,6 +195,9 @@ class ProjectContext:
             )
 
         try:
+            if preserve_newlines:
+                with path.open("r", encoding="utf-8", newline="") as stream:
+                    return stream.read()
             return path.read_text(
                 encoding="utf-8"
             )
@@ -220,7 +229,9 @@ class ProjectContext:
             f"CLASSES: {analysis['classes']}\n"
         )
 
-    def build(self, relevant_paths=None):
+    def build(self, relevant_paths=None, *, focused=False, snapshots=None):
+        if snapshots is not None:
+            snapshots.clear()
         requested = list(dict.fromkeys(
             Path(path)
             for path in (relevant_paths or [])
@@ -259,7 +270,7 @@ class ProjectContext:
             if path not in relevant_paths
         ]
 
-        files = prioritized + remaining
+        files = prioritized if focused and prioritized else prioritized + remaining
 
         sections = [
             "=== CONTEXTO DO PROJETO ===",
@@ -278,7 +289,7 @@ class ProjectContext:
             if path.stat().st_size > self.max_file_size:
                 continue
 
-            content = self.read_file(relative)
+            content = self.read_file(relative, preserve_newlines=True) if snapshots is not None else self.read_file(relative)
 
             section = (
                 f"=== ARQUIVO: {relative} ===\n"
@@ -295,6 +306,8 @@ class ProjectContext:
                 continue
 
             sections.append(section)
+            if snapshots is not None and not content.startswith("[ARQUIVO BINÁRIO OMITIDO:"):
+                snapshots[relative.as_posix()] = content
             total += len(section) + 1
             included += 1
 

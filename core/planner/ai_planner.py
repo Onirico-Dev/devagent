@@ -2,6 +2,8 @@ import json
 import re
 from pathlib import Path
 
+from core.planner.local_edits import content_hash, copy_sources, expand_local_edits
+
 from core.schemas.models import (
     Change,
     ChangeType,
@@ -105,7 +107,9 @@ class AIPlanner:
         instruction: str,
         context: str = "",
         feedback_context: dict | None = None,
+        source_files: dict | None = None,
     ) -> Plan:
+        sources = copy_sources(source_files)
         if not isinstance(context, str):
             context = ""
 
@@ -166,7 +170,8 @@ Regras:
 1. Nunca use caminhos absolutos.
 2. Nunca use ../ para sair do projeto.
 3. Não invente arquivos sem necessidade.
-4. Para MODIFY, forneça o conteúdo completo do arquivo.
+4. Para MODIFY, forneça o conteúdo completo do arquivo; quando houver manifesto
+   de fontes, a alternativa de edições localizadas descrita abaixo também é válida.
 5. Para CREATE, forneça o conteúdo completo.
 6. Para DELETE, não forneça conteúdo.
 7. Quando a instrução do usuário especificar conteúdo entre aspas,
@@ -187,6 +192,26 @@ Regras:
 18. Nunca use caminhos absolutos ou caminhos contendo ../ em "tests".
 """
 
+        if sources:
+            manifest = json.dumps({path: content_hash(content) for path, content in sources.items()}, ensure_ascii=False)
+            prompt += f"""
+
+EDIÇÕES LOCALIZADAS DISPONÍVEIS (preferidas para MODIFY):
+Em vez de repetir o arquivo inteiro, retorne uma alteração neste formato:
+{{"type":"modify","path":"arquivo.js","base_sha256":"hash do manifesto", "edits":[{{"old":"trecho literal existente e único","new":"novo trecho"}}],"reason":"motivo"}}
+Use somente arquivos completos presentes no contexto e o hash exato abaixo.
+Cada old deve ocorrer exatamente uma vez no conteúdo resultante da edição anterior.
+As edições são literais e sequenciais, com 1 a 100 substituições por arquivo.
+Não use posições, expressões regulares, comandos ou marcadores de conteúdo omitido.
+Não misture content e edits na mesma alteração nem repita o mesmo arquivo.
+Para inserir texto, substitua um trecho único de ancoragem pelo trecho e o acréscimo.
+Preserve quebras de linha e o texto fora dos trechos substituídos.
+O DevAgent reconstruirá o conteúdo completo para validação e revisão humana.
+O formato tradicional com content completo continua aceito; CREATE e DELETE mantêm suas regras.
+MANIFESTO SHA256 DAS FONTES UTF-8:
+{manifest}
+"""
+
         response = self.ai.generate(prompt)
 
         try:
@@ -197,7 +222,7 @@ Regras:
             ) from error
 
         return self._build_plan(
-            data,
+            expand_local_edits(data, sources),
             instruction,
         )
 
