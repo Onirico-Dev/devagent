@@ -6,6 +6,7 @@ import re
 from threading import Lock, Thread
 from uuid import uuid4
 
+from core.adapters.codex import CodexProtocolError
 from core.adapters.codex_adapter import CodexAdapter
 from core.adapters.groq import GroqAdapter
 from core.api.task_diagnostic import diagnose_task
@@ -144,19 +145,50 @@ class TaskInvestigations:
         with self.lock:
             return self._view(job)
 
-    def _fail(self, job):
+    def _fail(self, job, category=None):
+        messages = {
+            "timeout": "timeout: O tempo de espera da investigação foi excedido. Tente novamente.",
+            "transport_error": "transport_error: A comunicação com o Codex falhou. Tente novamente.",
+            "invalid_response": "invalid_response: A IA retornou uma resposta inválida. Tente novamente.",
+        }
         with self.lock:
             job["status"] = "failed"
-            job["error"] = "A investigação não foi concluída. Confira a conexão com a IA e tente novamente."
+            job["error"] = messages.get(
+                category,
+                "A investigação não foi concluída. Confira a conexão com a IA e tente novamente.",
+            )
 
     def _run(self, job, adapter, facts, prompt_builder, report_parser):
         try:
-            report = report_parser(adapter.generate(prompt_builder(facts)), facts)
-            with self.lock:
-                job["report"] = report
-                job["status"] = "completed"
+            prompt = prompt_builder(facts)
         except Exception:
             self._fail(job)
+            return
+
+        try:
+            raw = adapter.generate(prompt)
+        except TimeoutError:
+            self._fail(job, "timeout")
+            return
+        except CodexProtocolError:
+            self._fail(job, "transport_error")
+            return
+        except Exception:
+            self._fail(job)
+            return
+
+        try:
+            report = report_parser(raw, facts)
+        except (ValueError, TypeError):
+            self._fail(job, "invalid_response")
+            return
+        except Exception:
+            self._fail(job)
+            return
+
+        with self.lock:
+            job["report"] = report
+            job["status"] = "completed"
 
     def get(self, task, job_id, owner, *, prepared_facts=None):
         key = fingerprint(investigation_facts(task) if prepared_facts is None else prepared_facts)

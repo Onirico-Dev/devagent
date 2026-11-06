@@ -10,6 +10,7 @@ import pytest
 import api
 import core.api.service as service_module
 import core.api.task_investigation as investigation
+from core.adapters.codex import CodexProtocolError
 from core.adapters.codex_adapter import CodexAdapter
 from core.adapters.groq import GroqAdapter
 from core.adapters.mock import MockAdapter
@@ -152,6 +153,127 @@ def test_failures_do_not_expose_adapter_errors_and_retry_is_possible():
     assert second["job_id"] != first["job_id"]
     assert wait_job(manager, selected, second, owner)["status"] == "completed"
     assert manager.get(selected, first["job_id"], owner) is None
+
+
+PUBLIC_JOB_FIELDS = {"job_id", "approval_id", "status", "provider", "report", "error"}
+GENERIC_FAILURE = "A investigação não foi concluída. Confira a conexão com a IA e tente novamente."
+TIMEOUT_FAILURE = "timeout: O tempo de espera da investigação foi excedido. Tente novamente."
+TRANSPORT_FAILURE = "transport_error: A comunicação com o Codex falhou. Tente novamente."
+INVALID_RESPONSE_FAILURE = "invalid_response: A IA retornou uma resposta inválida. Tente novamente."
+PRIVATE_FAILURE_DETAILS = (
+    "PRIVATE_EXCEPTION api_key=PRIVATE_CREDENTIAL "
+    "PRIVATE_PROMPT PRIVATE_AI_RESPONSE /private/internal/path"
+)
+
+
+@pytest.mark.parametrize("stage,error_type,expected", [
+    ("adapter", TimeoutError, TIMEOUT_FAILURE),
+    ("adapter", CodexProtocolError, TRANSPORT_FAILURE),
+    ("adapter", ValueError, GENERIC_FAILURE),
+    ("adapter", TypeError, GENERIC_FAILURE),
+    ("adapter", RuntimeError, GENERIC_FAILURE),
+    ("parser", ValueError, INVALID_RESPONSE_FAILURE),
+    ("parser", TypeError, INVALID_RESPONSE_FAILURE),
+    ("parser", RuntimeError, GENERIC_FAILURE),
+    ("parser", TimeoutError, GENERIC_FAILURE),
+    ("parser", CodexProtocolError, GENERIC_FAILURE),
+    ("prompt", ValueError, GENERIC_FAILURE),
+    ("prompt", TypeError, GENERIC_FAILURE),
+    ("prompt", RuntimeError, GENERIC_FAILURE),
+    ("prompt", TimeoutError, GENERIC_FAILURE),
+    ("prompt", CodexProtocolError, GENERIC_FAILURE),
+])
+def test_failure_classification_is_scoped_private_and_has_no_automatic_retry(stage, error_type, expected):
+    calls = {"prompt": 0, "adapter": 0, "parser": 0}
+    finished = Event()
+
+    def fail():
+        raise error_type(PRIVATE_FAILURE_DETAILS)
+
+    def build(facts):
+        calls["prompt"] += 1
+        if stage == "prompt":
+            fail()
+        return "PRIVATE_PROMPT api_key=PRIVATE_CREDENTIAL"
+
+    def generate(prompt):
+        calls["adapter"] += 1
+        if stage == "adapter":
+            fail()
+        return "PRIVATE_AI_RESPONSE /private/internal/path"
+
+    def parse(raw, facts):
+        calls["parser"] += 1
+        fail()
+
+    class ObservedInvestigations(investigation.TaskInvestigations):
+        def _run(self, *args):
+            try:
+                super()._run(*args)
+            finally:
+                finished.set()
+
+    manager = ObservedInvestigations()
+    owner = object()
+    selected = task()
+    ai = adapter(generate)
+    first = manager.start(selected, ai, owner, prompt_builder=build, report_parser=parse)
+    assert finished.wait(2)
+    current = wait_job(manager, selected, first, owner)
+    assert set(first) == PUBLIC_JOB_FIELDS
+    assert set(current) == PUBLIC_JOB_FIELDS
+    assert current == {
+        "job_id": first["job_id"], "approval_id": "167", "status": "failed",
+        "provider": "Codex", "report": None, "error": expected,
+    }
+    assert calls == {
+        "prompt": 1,
+        "adapter": int(stage != "prompt"),
+        "parser": int(stage == "parser"),
+    }
+    assert "PRIVATE" not in json.dumps(current)
+    assert "/private/internal/path" not in json.dumps(current)
+    assert manager.get(selected, first["job_id"], object()) is None
+    assert manager.get(task(approval_id="168"), first["job_id"], owner) is None
+
+    # A nova tentativa exige uma chamada manual explícita a start.
+    ai.generate = lambda prompt: json.dumps(report())
+    second = manager.start(selected, ai, owner)
+    assert second["job_id"] != first["job_id"]
+    completed = wait_job(manager, selected, second, owner)
+    assert set(second) == PUBLIC_JOB_FIELDS
+    assert set(completed) == PUBLIC_JOB_FIELDS
+    assert completed["status"] == "completed"
+    assert completed["report"] == report()
+    assert completed["error"] is None
+    assert manager.get(selected, first["job_id"], owner) == current
+
+
+@pytest.mark.parametrize("raw", [
+    "PRIVATE_AI_RESPONSE api_key=PRIVATE_CREDENTIAL /private/internal/path",
+    json.dumps(report(summary="PRIVATE_AI_RESPONSE", hypotheses=[])),
+])
+def test_invalid_json_and_report_validation_have_safe_public_errors(raw):
+    ai = adapter(raw)
+    manager = investigation.TaskInvestigations()
+    owner = object()
+    selected = task()
+    job = manager.start(selected, ai, owner)
+    current = wait_job(manager, selected, job, owner)
+    assert set(current) == PUBLIC_JOB_FIELDS
+    assert current["status"] == "failed"
+    assert current["report"] is None
+    assert current["error"] == INVALID_RESPONSE_FAILURE
+    assert "PRIVATE" not in json.dumps(current)
+    assert "/private/internal/path" not in json.dumps(current)
+    assert len(ai.prompts) == 1
+
+
+def test_unknown_failure_category_preserves_generic_message():
+    manager = investigation.TaskInvestigations()
+    job = {"status": "running", "error": None}
+    manager._fail(job, "PRIVATE_UNKNOWN_CATEGORY")
+    assert job == {"status": "failed", "error": GENERIC_FAILURE}
 
 
 def test_failure_to_start_worker_is_reported(monkeypatch):
