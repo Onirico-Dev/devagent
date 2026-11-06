@@ -475,6 +475,18 @@ textarea::placeholder {
   overflow-wrap: anywhere;
 }
 
+.operation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.operation-actions .button {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .detail-value {
   min-width: 0;
   overflow-wrap: anywhere;

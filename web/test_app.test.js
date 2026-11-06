@@ -21,6 +21,8 @@ class FakeElement {
     this.disabled = false;
     this.value = "";
     this.type = "";
+    this.style = {};
+    this.parentElement = null;
     this.classList = {
       add: (...names) => {
         const current = new Set(this.className.split(/\s+/).filter(Boolean));
@@ -36,6 +38,7 @@ class FakeElement {
   }
 
   append(...nodes) {
+    nodes.forEach((node) => { node.parentElement = this; });
     this.children.push(...nodes);
   }
 
@@ -60,6 +63,11 @@ class FakeElement {
   addEventListener(name, callback) {
     this.listeners[name] = callback;
   }
+
+  remove() { this.parentElement?.removeChild(this); }
+  focus() {}
+  select() {}
+  setSelectionRange() {}
 }
 
 const ELEMENT_IDS = [
@@ -106,6 +114,7 @@ function createHarness(tasks, harnessOptions = {}) {
   );
 
   const requests = [];
+  const copied = [];
   const timers = new Map();
   let nextTimerId = 1;
 
@@ -196,6 +205,8 @@ function createHarness(tasks, harnessOptions = {}) {
   }
 
   const document = {
+    body: new FakeElement("body"),
+    activeElement: new FakeElement("button"),
     hidden: false,
     listeners: {},
     getElementById(id) {
@@ -206,6 +217,12 @@ function createHarness(tasks, harnessOptions = {}) {
     },
     addEventListener(name, callback) {
       this.listeners[name] = callback;
+    },
+    execCommand(command) {
+      assert.equal(command, "copy");
+      if (harnessOptions.fallbackFails) return false;
+      copied.push(document.body.children.at(-1).value);
+      return true;
     },
   };
 
@@ -323,6 +340,8 @@ function createHarness(tasks, harnessOptions = {}) {
     sortTasksByUpdatedAt,
     decideTask,
     renderTaskList,
+    renderOperation,
+    renderPlanPanel,
     checkHealth,
     refreshTasks,
     selectTask,
@@ -338,6 +357,13 @@ function createHarness(tasks, harnessOptions = {}) {
   );
 
   const context = vm.createContext({
+    navigator: harnessOptions.noClipboard ? {} : { clipboard: {
+      async writeText(content) {
+        if (harnessOptions.clipboardFails) throw new Error("denied");
+        if (harnessOptions.clipboardWrite) await harnessOptions.clipboardWrite(content);
+        copied.push(content);
+      },
+    } },
     document,
     fetch: harnessOptions.fetchImpl || fetchMock,
     window: {
@@ -358,6 +384,8 @@ function createHarness(tasks, harnessOptions = {}) {
     api,
     elements,
     requests,
+    copied,
+    document,
     async runPollingTimer() {
       const id = api.state.pollingTimer;
       if (id === null || !timers.has(id)) {
@@ -1903,4 +1931,164 @@ test('estado inválido em health não mantém identificação de IA online', asy
   assert.equal(await harness.api.checkHealth(), false);
   assert.equal(harness.elements['api-status'].textContent, 'Offline');
   assert.equal(harness.elements['ai-provider'].textContent, 'Indisponível');
+});
+
+function findSummaryNode(node, predicate) {
+  if (predicate(node)) return node;
+  for (const child of node.children) {
+    const found = findSummaryNode(child, predicate);
+    if (found) return found;
+  }
+  return null;
+}
+
+function summaryButton(harness) {
+  return findSummaryNode(harness.elements["operation-details"],
+    (node) => node.tagName === "BUTTON" && node.textContent === "Copiar resumo");
+}
+
+function summaryTask(extra = {}) {
+  return makeTask("163", "2026-11-06T14:11:43Z", {
+    status: "committed", transaction_id: "transaction-163",
+    tests: { success: true, returncode: 0, stdout: "PRIVATE_OUTPUT", stderr: "PRIVATE_ERROR" },
+    repair_attempts: 0, git: { commit_hash: "05f357c", message: "PRIVATE_MESSAGE" },
+    instruction: "PRIVATE_INSTRUCTION", metadata: { secret: "PRIVATE_METADATA" },
+    ...extra,
+  });
+}
+
+const EXPECTED_SUMMARY = [
+  "Identificador: 163", "Estado: Concluída", "Transação: transaction-163",
+  "Sucesso dos testes: Sim", "Código de saída: 0", "Tentativas de reparo: 0",
+  "Commit: 05f357c",
+].join("\n");
+
+test("copiar resumo contém somente os sete campos públicos solicitados", async () => {
+  const h = createHarness([]);
+  h.api.renderOperation(summaryTask());
+  const button = summaryButton(h);
+  assert.equal(button.type, "button");
+  await button.listeners.click();
+  assert.deepEqual(h.copied, [EXPECTED_SUMMARY]);
+  assert.equal(h.elements.notification.textContent, "Resumo copiado.");
+  assert.equal(h.elements.notification.className, "notification success");
+  assert.equal(h.requests.length, 0);
+});
+
+test("copiar resumo informa campos ausentes sem usar task_id como approval_id", async () => {
+  const h = createHarness([]);
+  h.api.renderOperation({ task_id: "INTERNAL_ID" });
+  await summaryButton(h).listeners.click();
+  assert.equal(h.copied[0], ["Identificador", "Estado", "Transação", "Sucesso dos testes",
+    "Código de saída", "Tentativas de reparo", "Commit"]
+    .map((label) => `${label}: Não informado`).join("\n"));
+});
+
+test("copiar resumo preserva resultado falso e valores numéricos zero", async () => {
+  const h = createHarness([]);
+  h.api.renderOperation(summaryTask({ status: "rolled_back", tests: { success: false, returncode: 1 } }));
+  await summaryButton(h).listeners.click();
+  assert.equal(h.copied[0], EXPECTED_SUMMARY.replace("Concluída", "Revertida")
+    .replace("testes: Sim", "testes: Não").replace("saída: 0", "saída: 1"));
+});
+
+test("copiar resumo não serializa objetos inesperados nos campos permitidos", async () => {
+  const h = createHarness([]);
+  h.api.renderOperation({ approval_id: {}, status: null, transaction_id: {},
+    tests: { success: "false", returncode: {} }, repair_attempts: {}, git: { commit_hash: {} } });
+  await summaryButton(h).listeners.click();
+  assert.equal(h.copied[0].split("Não informado").length - 1, 7);
+  assert.equal(h.copied[0].includes("[object Object]"), false);
+});
+
+test("copiar resumo acompanha a tarefa selecionada sem enviar POST", async () => {
+  const tasks = [summaryTask(), summaryTask({ approval_id: "164", status: "pending", tests: null, git: null })];
+  const h = createHarness(tasks);
+  await h.api.selectTask("163");
+  await summaryButton(h).listeners.click();
+  await h.api.selectTask("164");
+  await summaryButton(h).listeners.click();
+  assert.equal(h.copied[0], EXPECTED_SUMMARY);
+  assert.match(h.copied[1], /^Identificador: 164\nEstado: Pendente\n/);
+  assert.equal(h.api.state.selectedTaskId, "164");
+  assert.equal(h.requests.some((request) => request.options.method === "POST"), false);
+});
+
+test("polling atualiza resumo e preserva prévia aberta e aprovação pendente", async () => {
+  const task = summaryTask({ status: "pending", tests: null, git: null,
+    plan: { objective: "Plano", changes: [{ change_type: "create", path: "example.py", content: "VALUE = 1\n" }], tests: [], risks: [] } });
+  const tasks = [task];
+  const h = createHarness(tasks);
+  await h.api.selectTask("163");
+  const details = findSummaryNode(h.elements["plan-content"], (node) => node.tagName === "DETAILS");
+  details.open = true;
+  const pre = findSummaryNode(details, (node) => node.tagName === "PRE");
+  task.repair_attempts = 1;
+  h.api.startPolling();
+  await h.runPollingTimer();
+  await summaryButton(h).listeners.click();
+  assert.match(h.copied[0], /Tentativas de reparo: 1/);
+  assert.equal(findSummaryNode(h.elements["plan-content"], (node) => node.tagName === "DETAILS"), details);
+  assert.equal(details.open, true);
+  assert.equal(findSummaryNode(details, (node) => node.tagName === "PRE"), pre);
+  assert.equal(h.api.state.pendingApprovalId, "163");
+  assert.equal(h.elements["approval-actions"].hidden, false);
+  assert.equal(h.pendingPollingTimers(), 1);
+});
+
+test("nenhuma operação selecionada não apresenta botão copiar resumo", () => {
+  const h = createHarness([]);
+  h.api.renderOperation(summaryTask());
+  assert.ok(summaryButton(h));
+  h.api.renderOperation(null);
+  assert.equal(summaryButton(h), null);
+  assert.equal(h.elements["operation-details"].textContent, "Nenhuma operação selecionada.");
+});
+
+for (const options of [{ clipboardFails: true }, { noClipboard: true }]) {
+  test(`copiar resumo usa alternativa quando clipboard ${options.noClipboard ? "está ausente" : "é negado"}`, async () => {
+    const h = createHarness([], options);
+    let focusRestored = false;
+    h.document.activeElement.focus = () => { focusRestored = true; };
+    h.api.renderOperation(summaryTask());
+    await summaryButton(h).listeners.click();
+    assert.deepEqual(h.copied, [EXPECTED_SUMMARY]);
+    assert.equal(h.document.body.children.length, 0);
+    assert.equal(focusRestored, true);
+    assert.equal(h.elements.notification.textContent, "Resumo copiado.");
+  });
+}
+
+test("falha ao copiar resumo preserva operação e permite nova tentativa", async () => {
+  const options = { clipboardFails: true, fallbackFails: true };
+  const h = createHarness([summaryTask()], options);
+  await h.api.selectTask("163");
+  const button = summaryButton(h);
+  await button.listeners.click();
+  assert.deepEqual(h.copied, []);
+  assert.equal(h.elements.notification.className, "notification error");
+  assert.equal(h.elements.notification.textContent, "Não foi possível copiar o resumo. Tente novamente.");
+  assert.equal(h.api.state.selectedTaskId, "163");
+  assert.equal(h.api.state.selectedTask.status, "committed");
+  assert.equal(h.document.body.children.length, 0);
+  assert.equal(button.disabled, false);
+  options.clipboardFails = false;
+  await button.listeners.click();
+  assert.deepEqual(h.copied, [EXPECTED_SUMMARY]);
+});
+
+test("cópia pendente ignora clique repetido sem ocupar o fluxo de aprovação", async () => {
+  let finish;
+  const h = createHarness([], { clipboardWrite: () => new Promise((resolve) => { finish = resolve; }) });
+  h.api.renderOperation(summaryTask());
+  const button = summaryButton(h);
+  const copying = button.listeners.click();
+  assert.equal(button.disabled, true);
+  assert.equal(h.api.state.busy, false);
+  await button.listeners.click();
+  assert.equal(h.copied.length, 0);
+  finish();
+  await copying;
+  assert.deepEqual(h.copied, [EXPECTED_SUMMARY]);
+  assert.equal(button.disabled, false);
 });

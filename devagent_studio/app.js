@@ -362,6 +362,25 @@
       : null;
   }
 
+  function operationSummary(task) {
+    const missing = "Não informado";
+    const scalar = (value) => {
+      if (typeof value === "string" && value.trim()) return value;
+      if (typeof value === "number" && Number.isFinite(value)) return String(value);
+      return missing;
+    };
+    const success = task.tests?.success;
+    return [
+      `Identificador: ${scalar(task.approval_id)}`,
+      `Estado: ${typeof task.status === "string" && task.status.trim() ? statusLabel(task.status) : missing}`,
+      `Transação: ${scalar(task.transaction_id)}`,
+      `Sucesso dos testes: ${typeof success === "boolean" ? (success ? "Sim" : "Não") : missing}`,
+      `Código de saída: ${scalar(task.tests?.returncode)}`,
+      `Tentativas de reparo: ${scalar(task.repair_attempts)}`,
+      `Commit: ${scalar(task.git?.commit_hash)}`,
+    ].join("\n");
+  }
+
   function renderOperation(task) {
     clearNode(elements.operationDetails);
 
@@ -372,6 +391,24 @@
     }
 
     elements.operationDetails.className = "operation-content";
+
+    const actions = element("div", "operation-actions");
+    const copyButton = element("button", "button button-secondary", "Copiar resumo");
+    copyButton.type = "button";
+    copyButton.addEventListener("click", async () => {
+      if (copyButton.disabled) return;
+      copyButton.disabled = true;
+      try {
+        await copyProposedContent(operationSummary(task));
+        showNotification("Resumo copiado.", "success");
+      } catch {
+        showNotification("Não foi possível copiar o resumo. Tente novamente.", "error");
+      } finally {
+        copyButton.disabled = false;
+      }
+    });
+    actions.append(copyButton);
+    elements.operationDetails.append(actions);
 
     const grid = element("div", "details-grid");
 
