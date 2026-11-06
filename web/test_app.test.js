@@ -2543,12 +2543,13 @@ test('consulta explícita usa fontes e contexto selecionado sem criar plano ou m
   const preview = findSummaryNode(h.elements['plan-content'], n => n.tagName === 'DETAILS');
   preview.open = true;
   h.elements.instruction.value = 'Investigue. Não modificar arquivos. Não criar commits.';
+  const submittedInstruction = h.elements.instruction.value;
   assert.equal(h.api.elements.consultButton.type, 'button');
   await h.api.elements.consultButton.listeners.click();
   const posts = h.requests.filter(r => r.options.method === 'POST');
   assert.equal(posts.length, 1);
   assert.equal(posts[0].url, '/consultations');
-  assert.deepEqual(JSON.parse(posts[0].options.body), { instruction: h.elements.instruction.value, context_task_id: '163' });
+  assert.deepEqual(JSON.parse(posts[0].options.body), { instruction: submittedInstruction, context_task_id: '163' });
   assert.equal(h.api.state.busy, false);
   assert.equal(h.api.state.pendingApprovalId, '163');
   assert.equal(h.api.state.selectedTaskId, '163');
@@ -2677,4 +2678,146 @@ test('consulta exibe texto literal e copia com alternativa e recuperação de fo
   await consultationCopy(h).listeners.click();
   assert.equal(h.elements.notification.className, 'notification error');
   assert.equal(consultationCopy(h).disabled, false);
+});
+
+function editInstruction(h, value) {
+  h.elements.instruction.value = value;
+  h.elements.instruction.listeners.input();
+}
+function submitPlan(h) {
+  return h.elements['instruction-form'].listeners.submit({ preventDefault() {} });
+}
+
+test('plano aceito limpa a caixa e mantém a instrução na tarefa apresentada', async () => {
+  const h = createHarness([]);
+  editInstruction(h, '  Crie exemplo.py.  ');
+  await submitPlan(h);
+  assert.equal(h.elements.instruction.value, '');
+  assert.equal(h.api.state.selectedTask.instruction, 'Crie exemplo.py.');
+  assert.equal(h.api.state.pendingApprovalId, 'created-1');
+  assert.equal(h.elements['plan-button'].disabled, false);
+});
+
+for (const options of [
+  { postErrors: { '/plan': 'Sem conexão.' } },
+  { postResponses: { '/plan': { status: 500, data: { error: 'Falha de planejamento.' } } } },
+  { postResponses: { '/plan': { data: { status: 'pending' } } } },
+]) {
+  test(`erro no plano preserva a instrução: ${JSON.stringify(options)}`, async () => {
+    const h = createHarness([], options);
+    editInstruction(h, '  Minha instrução original.  ');
+    await submitPlan(h);
+    assert.equal(h.elements.instruction.value, '  Minha instrução original.  ');
+    assert.equal(h.elements.notification.className, 'notification error');
+  });
+}
+
+test('resposta de plano não apaga um rascunho substituído durante a espera', async () => {
+  const h = createHarness([], { deferPostRequests: true });
+  editInstruction(h, 'Primeiro pedido.');
+  const creating = submitPlan(h);
+  editInstruction(h, 'Novo rascunho.');
+  h.resolvePostRequest('/plan');
+  await creating;
+  assert.equal(h.elements.instruction.value, 'Novo rascunho.');
+  assert.equal(h.api.state.selectedTask.instruction, 'Primeiro pedido.');
+});
+
+test('consulta aceita limpa a caixa e conserva a pergunta no relatório e na cópia', async () => {
+  const h = createHarness([], { consultationData: consultationJob() });
+  editInstruction(h, '  Minha pergunta de leitura.  ');
+  await h.api.elements.consultButton.listeners.click();
+  assert.equal(h.elements.instruction.value, '');
+  assert.match(allText(h.api.elements.consultationPanel), /Minha pergunta de leitura/);
+  await consultationCopy(h).listeners.click();
+  assert.match(h.copied[0], /Minha pergunta de leitura/);
+});
+
+test('consulta encaminhada por Gerar plano também limpa a caixa', async () => {
+  const h = createHarness([], { postResponses: { '/plan': { data: consultationJob('running') } } });
+  editInstruction(h, 'Analise sem modificar arquivos.');
+  await submitPlan(h);
+  assert.equal(h.elements.instruction.value, '');
+  assert.equal(h.api.state.consultationContext.instruction, 'Analise sem modificar arquivos.');
+  assert.equal(h.api.state.consultationContext.running, true);
+});
+
+for (const current of [consultationJob('failed'), consultationJob('completed', { report: {} })]) {
+  test(`falha inicial de consulta mantém texto: ${current.status}`, async () => {
+    const h = createHarness([], { consultationData: current });
+    editInstruction(h, '  Pergunta preservada.  ');
+    await h.api.elements.consultButton.listeners.click();
+    assert.equal(h.elements.instruction.value, '  Pergunta preservada.  ');
+    assert.equal(h.api.elements.consultButton.disabled, false);
+  });
+}
+
+test('falha posterior restaura a pergunta enviada quando a caixa continua vazia', async () => {
+  let current = consultationJob('running');
+  const h = createHarness([], { consultationResponse: async () => reportResponse(current) });
+  editInstruction(h, '  Pergunta para tentar novamente.  ');
+  await h.api.elements.consultButton.listeners.click();
+  assert.equal(h.elements.instruction.value, '');
+  current = consultationJob('failed');
+  h.api.startPolling();
+  await h.runPollingTimer();
+  assert.equal(h.elements.instruction.value, '  Pergunta para tentar novamente.  ');
+  assert.equal(h.api.elements.consultButton.disabled, false);
+});
+
+for (const newDraft of ['Rascunho novo.', '']) {
+  test(`falha posterior preserva edição posterior, inclusive exclusão intencional: ${JSON.stringify(newDraft)}`, async () => {
+    let current = consultationJob('running');
+    const h = createHarness([], { consultationResponse: async () => reportResponse(current) });
+    editInstruction(h, 'Pergunta enviada.');
+    await h.api.elements.consultButton.listeners.click();
+    editInstruction(h, 'Texto digitado depois.');
+    editInstruction(h, newDraft);
+    current = consultationJob('failed');
+    h.api.startPolling();
+    await h.runPollingTimer();
+    assert.equal(h.elements.instruction.value, newDraft);
+  });
+}
+
+test('aceite de consulta atrasado preserva rascunho novo mesmo se o texto final for igual', async () => {
+  let finish;
+  const h = createHarness([], { consultationResponse: () => new Promise(resolve => { finish = resolve; }) });
+  editInstruction(h, 'Texto original.');
+  const starting = h.api.elements.consultButton.listeners.click();
+  editInstruction(h, 'Outro texto.');
+  editInstruction(h, 'Texto original.');
+  finish(reportResponse(consultationJob('running')));
+  await starting;
+  assert.equal(h.elements.instruction.value, 'Texto original.');
+});
+
+test('nova operação aceita impede restauração de uma consulta anterior que falhar', async () => {
+  let current = consultationJob('running');
+  const h = createHarness([], { consultationResponse: async () => reportResponse(current) });
+  editInstruction(h, 'Consulta antiga.');
+  await h.api.elements.consultButton.listeners.click();
+  editInstruction(h, 'Crie exemplo.py.');
+  await submitPlan(h);
+  assert.equal(h.elements.instruction.value, '');
+  current = consultationJob('failed');
+  h.api.startPolling();
+  await h.runPollingTimer();
+  assert.equal(h.elements.instruction.value, '');
+  assert.equal(h.api.state.pendingApprovalId, 'created-1');
+});
+
+test('contexto visível acompanha seleção e identifica a operação enviada durante a consulta', async () => {
+  const h = createHarness([summaryTask(), summaryTask({ approval_id: '164' })], { consultationData: consultationJob('running') });
+  assert.match(h.api.elements.consultationContextLabel.textContent, /nenhuma operação selecionada/);
+  await h.api.selectTask('163');
+  assert.equal(h.api.elements.consultationContextLabel.textContent, 'Contexto da próxima consulta: operação 163.');
+  editInstruction(h, 'Consulta.');
+  await h.api.elements.consultButton.listeners.click();
+  await h.api.selectTask('164');
+  assert.equal(h.api.elements.consultationContextLabel.textContent, 'Contexto da próxima consulta: operação 164.');
+  assert.match(allText(h.api.elements.consultationPanel), /Operação enviada como contexto: 163/);
+  assert.equal(JSON.parse(h.requests.find(r => r.url === '/consultations').options.body).context_task_id, '163');
+  await h.api.refreshTasks(true);
+  assert.equal(h.api.elements.consultationContextLabel.textContent, 'Contexto da próxima consulta: operação 164.');
 });

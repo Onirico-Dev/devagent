@@ -39,6 +39,7 @@
     diagnosticContext: null,
     investigationContext: null,
     consultationContext: null,
+    instructionRevision: 0,
   };
 
   const POLL_INTERVAL_MS = 5000;
@@ -568,6 +569,7 @@
 
   function renderOperation(task) {
     clearNode(elements.operationDetails);
+    updateConsultationContextLabel();
 
     if (!task) {
       state.diagnosticContext = null;
@@ -894,12 +896,41 @@
     }
   }
 
+  function captureInstruction() {
+    return { value: elements.instruction.value, revision: state.instructionRevision };
+  }
+
+  function clearSubmittedInstruction(draft) {
+    if (elements.instruction.value !== draft.value || state.instructionRevision !== draft.revision) return null;
+    elements.instruction.value = "";
+    return ++state.instructionRevision;
+  }
+
+  function restoreConsultationInstruction(context) {
+    if (context.clearedRevision !== null && context.clearedRevision !== undefined &&
+        state.instructionRevision === context.clearedRevision && elements.instruction.value === "") {
+      elements.instruction.value = context.draft.value;
+      state.instructionRevision += 1;
+    }
+  }
+
+  function updateConsultationContextLabel() {
+    if (!elements.consultationContextLabel) return;
+    const label = state.selectedTaskId
+      ? `Contexto da próxima consulta: operação ${state.selectedTaskId}.`
+      : "Contexto da próxima consulta: nenhuma operação selecionada.";
+    if (elements.consultationContextLabel.textContent !== label) elements.consultationContextLabel.textContent = label;
+  }
+
   function renderConsultation(context) {
     const panel = elements.consultationPanel;
     clearNode(panel);
     panel.hidden = false;
     panel.append(element("h3", "", "Consulta técnica — somente leitura"));
     panel.append(element("p", "muted", context.instruction));
+    if (context.contextTaskId !== undefined) {
+      panel.append(element("p", "muted", `Operação enviada como contexto: ${context.contextTaskId || "nenhuma"}.`));
+    }
     if (!context.report) {
       panel.append(element("p", "", context.running ? "Consultando a IA…" : "A consulta não foi concluída."));
       return;
@@ -973,19 +1004,25 @@
 
   async function startConsultation() {
     if (state.busy || state.consultationContext?.running) return;
-    const instruction = elements.instruction.value.trim();
+    const draft = captureInstruction();
+    const instruction = draft.value.trim();
     if (!instruction) { showNotification("Informe uma consulta.", "error"); return; }
-    const context = { instruction, running: true, report: null, jobId: null };
+    const context = { instruction, draft, clearedRevision: null, contextTaskId: state.selectedTaskId,
+      running: true, report: null, jobId: null };
     state.consultationContext = context;
     elements.consultButton.disabled = true;
     renderConsultation(context);
     try {
       const job = await request("/consultations", { method: "POST", body: JSON.stringify({ instruction,
-        ...(state.selectedTaskId ? { context_task_id: state.selectedTaskId } : {}) }) });
-      if (context === state.consultationContext) acceptConsultation(job, context);
+        ...(context.contextTaskId ? { context_task_id: context.contextTaskId } : {}) }) });
+      if (context === state.consultationContext) {
+        acceptConsultation(job, context);
+        context.clearedRevision = clearSubmittedInstruction(draft);
+      }
     } catch (error) {
       if (context === state.consultationContext) {
         context.running = false;
+        restoreConsultationInstruction(context);
         renderConsultation(context);
         showNotification(`Não foi possível consultar: ${error.message}`, "error");
       }
@@ -1004,6 +1041,7 @@
     } catch (error) {
       if (context === state.consultationContext) {
         context.running = false;
+        restoreConsultationInstruction(context);
         renderConsultation(context);
         showNotification(`Não foi possível atualizar a consulta: ${error.message}`, "error");
       }
@@ -1020,7 +1058,9 @@
       return;
     }
 
-    const instruction = elements.instruction.value.trim();
+    const draft = captureInstruction();
+    const instruction = draft.value.trim();
+    const contextTaskId = state.selectedTaskId;
 
     if (!instruction) {
       showNotification("Informe uma instrução.", "error");
@@ -1032,13 +1072,15 @@
     try {
       const result = await request("/plan", {
         method: "POST",
-        body: JSON.stringify({ instruction, ...(state.selectedTaskId ? { context_task_id: state.selectedTaskId } : {}) }),
+        body: JSON.stringify({ instruction, ...(contextTaskId ? { context_task_id: contextTaskId } : {}) }),
       });
 
       if (result.kind === "consultation") {
-        const context = { instruction, running: false, report: null, jobId: null };
+        const context = { instruction, draft, clearedRevision: null, contextTaskId,
+          running: false, report: null, jobId: null };
         state.consultationContext = context;
         acceptConsultation(result, context);
+        context.clearedRevision = clearSubmittedInstruction(draft);
         showNotification("Pedido encaminhado à consulta somente de leitura.");
         return;
       }
@@ -1059,6 +1101,7 @@
 
       renderPlanPanel(state.selectedTask);
       renderOperation(state.selectedTask);
+      clearSubmittedInstruction(draft);
 
       showNotification("Plano recebido. Revise antes de aprovar.", "success");
 
@@ -1297,16 +1340,20 @@
   document.addEventListener("visibilitychange", handleVisibilityChange);
 
   elements.instructionForm.addEventListener("submit", createPlan);
+  elements.instruction.addEventListener("input", () => { state.instructionRevision += 1; });
 
   const consultationActions = element("div", "operation-actions");
   elements.consultButton = element("button", "button button-secondary", "Consultar sem alterar");
   elements.consultButton.type = "button";
   elements.consultButton.addEventListener("click", startConsultation);
   consultationActions.append(elements.consultButton);
+  elements.consultationContextLabel = element("p", "muted");
+  elements.consultationContextLabel.setAttribute("aria-live", "polite");
+  updateConsultationContextLabel();
   elements.consultationPanel = element("section", "diagnostic-panel consultation-panel");
   elements.consultationPanel.hidden = true;
   elements.consultationPanel.setAttribute("aria-live", "polite");
-  elements.instructionForm.append(consultationActions,
+  elements.instructionForm.append(consultationActions, elements.consultationContextLabel,
     element("p", "muted", "A consulta envia à IA fontes permitidas do projeto e dados públicos da operação selecionada. O relatório é apresentado sem executar alterações."),
     elements.consultationPanel);
 
