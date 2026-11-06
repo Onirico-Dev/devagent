@@ -37,6 +37,7 @@
     pollingInFlight: false,
     lastSelectionError: null,
     diagnosticContext: null,
+    investigationContext: null,
   };
 
   const POLL_INTERVAL_MS = 5000;
@@ -447,11 +448,126 @@
     }
   }
 
+  function investigationKey(task) {
+    return JSON.stringify([diagnosticKey(task), task.tests?.stdout, task.tests?.stderr, task.error, task.rollback_error]);
+  }
+
+  function renderInvestigation(context) {
+    clearNode(context.panel);
+    context.panel.hidden = !context.report;
+    if (!context.report) return;
+    const report = context.report;
+    context.panel.append(element("h3", "", "Investigação com IA"));
+    context.panel.append(element("p", "muted", `IA: ${context.provider}. Hipóteses para revisão humana.`));
+    context.panel.append(element("p", "", report.summary));
+    const list = document.createElement("ul");
+    const labels = { diagnostic: "Diagnóstico", stdout: "Saída", stderr: "Erros", error: "Erro da operação", rollback_error: "Erro de reversão" };
+    report.hypotheses.forEach((hypothesis) => {
+      list.append(element("li", "", `${hypothesis.cause} Confiança: ${hypothesis.confidence}. Evidências: ${hypothesis.evidence.map(key => labels[key]).join(", ")}.`));
+    });
+    context.panel.append(element("strong", "", "Hipóteses da IA"), list);
+    const steps = document.createElement("ul");
+    report.next_steps.forEach(step => steps.append(element("li", "", step)));
+    context.panel.append(element("strong", "", "Próximos passos sugeridos"), steps);
+    context.panel.append(element("p", "muted", "A investigação não altera arquivos nem cadastra planos. A causa raiz pode exigir verificação adicional."));
+    const copy = element("button", "button button-secondary", "Copiar investigação");
+    copy.type = "button";
+    copy.addEventListener("click", async () => {
+      if (copy.disabled) return;
+      copy.disabled = true;
+      try {
+        await copyProposedContent([
+          "Investigação com IA — hipóteses para revisão humana", `IA: ${context.provider}`, report.summary,
+          ...report.hypotheses.map(h => `${h.cause} Confiança: ${h.confidence}. Evidências: ${h.evidence.map(key => labels[key]).join(", ")}.`),
+          "Próximos passos:", ...report.next_steps,
+        ].join("\n"));
+        showNotification("Investigação copiada.", "success");
+      } catch {
+        showNotification("Não foi possível copiar a investigação. Tente novamente.", "error");
+      } finally {
+        copy.disabled = false;
+      }
+    });
+    context.panel.append(copy);
+  }
+
+  function acceptInvestigation(job, task, context) {
+    const isText = (value, limit) => typeof value === "string" && value.trim().length > 0 && value.length <= limit;
+    const fields = ["diagnostic", "stdout", "stderr", "error", "rollback_error"];
+    const report = job?.report;
+    if (!job || job.approval_id !== task.approval_id || !/^[a-f0-9]{32}$/.test(job.job_id) ||
+        (context.jobId && context.jobId !== job.job_id) || !["Codex", "Groq"].includes(job.provider) ||
+        !["running", "completed", "failed"].includes(job.status)) {
+      throw new Error("Resposta de investigação inválida.");
+    }
+    context.jobId = job.job_id;
+    if (job.status === "failed") throw new Error("A investigação não foi concluída. Tente novamente.");
+    if (job.status === "completed") {
+      if (!report || !isText(report.summary, 1200) || !Array.isArray(report.hypotheses) ||
+          report.hypotheses.length < 1 || report.hypotheses.length > 4 ||
+          !report.hypotheses.every(h => h && isText(h.cause, 800) && ["baixa", "média", "alta"].includes(h.confidence) &&
+            Array.isArray(h.evidence) && h.evidence.length > 0 && h.evidence.length <= 4 && h.evidence.every(key => fields.includes(key))) ||
+          !Array.isArray(report.next_steps) || report.next_steps.length < 1 || report.next_steps.length > 6 ||
+          !report.next_steps.every(step => isText(step, 600))) {
+        throw new Error("Relatório da investigação inválido.");
+      }
+      context.report = report;
+      context.provider = job.provider;
+      renderInvestigation(context);
+    }
+    context.running = job.status === "running";
+  }
+
+  function updateInvestigationButton(context) {
+    context.button.disabled = context.running;
+    context.button.textContent = context.running ? "Investigando…" : "Investigar com IA";
+  }
+
+  async function startInvestigation(task, context) {
+    if (context !== state.investigationContext || context.running) return;
+    context.running = true;
+    updateInvestigationButton(context);
+    try {
+      const job = await request(`/tasks/${encodeURIComponent(task.approval_id)}/investigation`, { method: "POST", body: "{}" });
+      if (context !== state.investigationContext) return;
+      acceptInvestigation(job, task, context);
+    } catch (error) {
+      if (context === state.investigationContext) {
+        context.running = false;
+        context.jobId = null;
+        showNotification(`Não foi possível investigar com IA: ${error.message}`, "error");
+      }
+    } finally {
+      if (context === state.investigationContext) updateInvestigationButton(context);
+    }
+  }
+
+  async function refreshInvestigation() {
+    const context = state.investigationContext;
+    if (!context?.running || !context.jobId || context.polling) return;
+    context.polling = true;
+    try {
+      const job = await request(`/tasks/${encodeURIComponent(context.task.approval_id)}/investigation/${context.jobId}`);
+      if (context !== state.investigationContext) return;
+      acceptInvestigation(job, context.task, context);
+    } catch (error) {
+      if (context === state.investigationContext) {
+        context.running = false;
+        context.jobId = null;
+        showNotification(`Não foi possível atualizar a investigação: ${error.message}`, "error");
+      }
+    } finally {
+      context.polling = false;
+      if (context === state.investigationContext) updateInvestigationButton(context);
+    }
+  }
+
   function renderOperation(task) {
     clearNode(elements.operationDetails);
 
     if (!task) {
       state.diagnosticContext = null;
+      state.investigationContext = null;
       elements.operationDetails.className = "empty-state";
       elements.operationDetails.textContent = "Nenhuma operação selecionada.";
       return;
@@ -464,6 +580,11 @@
       state.diagnosticContext = { key, report: null, loading: false };
     }
     const diagnostic = state.diagnosticContext;
+    const investigationVersion = investigationKey(task);
+    if (state.investigationContext?.key !== investigationVersion) {
+      state.investigationContext = { key: investigationVersion, task, report: null, running: false, jobId: null };
+    }
+    const investigation = state.investigationContext;
     const actions = element("div", "operation-actions");
     const copyButton = element("button", "button button-secondary", "Copiar resumo");
     copyButton.type = "button";
@@ -486,12 +607,24 @@
       diagnostic.button.disabled = diagnostic.loading;
       diagnostic.button.addEventListener("click", () => loadDiagnostic(task, diagnostic));
       actions.append(diagnostic.button);
+      investigation.button = element("button", "button button-secondary");
+      investigation.button.type = "button";
+      updateInvestigationButton(investigation);
+      investigation.button.addEventListener("click", () => startInvestigation(task, investigation));
+      actions.append(investigation.button);
     }
     elements.operationDetails.append(actions);
+    if (task.approval_id) {
+      elements.operationDetails.append(element("p", "muted investigation-note", "Investigar com IA envia à IA os dados públicos do resultado e trechos de Saída e Erros. A consulta não aplica alterações."));
+    }
     diagnostic.panel = element("section", "diagnostic-panel");
     diagnostic.panel.setAttribute("aria-live", "polite");
     renderDiagnostic(diagnostic);
     elements.operationDetails.append(diagnostic.panel);
+    investigation.panel = element("section", "diagnostic-panel investigation-panel");
+    investigation.panel.setAttribute("aria-live", "polite");
+    renderInvestigation(investigation);
+    elements.operationDetails.append(investigation.panel);
 
     const grid = element("div", "details-grid");
 
@@ -999,6 +1132,7 @@
     try {
       await refreshTasks(true);
       await checkHealth();
+      await refreshInvestigation();
     } catch (error) {
       setHealth(false, "Falha ao sincronizar");
     } finally {

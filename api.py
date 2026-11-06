@@ -188,6 +188,17 @@ class APIHandler(BaseHTTPRequestHandler):
             task_route = path.split("/")
 
             if (
+                len(task_route) == 5 and task_route[1] == "tasks"
+                and task_route[2] and task_route[3] == "investigation" and task_route[4]
+            ):
+                job = service.get_task_investigation(task_route[2], task_route[4])
+                if job is None:
+                    self.send_json(404, {"error": "Investigação não encontrada"})
+                    return
+                self.send_json(200, job)
+                return
+
+            if (
                 len(task_route) == 4
                 and task_route[1] == "tasks"
                 and task_route[2]
@@ -232,6 +243,32 @@ class APIHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlsplit(self.path).path
+
+        route = path.split("/")
+        if len(route) == 4 and route[1] == "tasks" and route[2] and route[3] == "investigation":
+            try:
+                if self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json":
+                    self.send_json(415, {"error": "Use Content-Type application/json"})
+                    return
+                length = self.headers.get("Content-Length", "")
+                if not length.isdecimal() or not 0 < int(length) <= 64:
+                    self.send_json(400, {"error": "Corpo da investigação inválido"})
+                    return
+                try:
+                    body = json.loads(self.rfile.read(int(length)))
+                except (ValueError, UnicodeDecodeError):
+                    body = None
+                if not isinstance(body, dict) or body:
+                    self.send_json(400, {"error": "A investigação aceita somente um objeto JSON vazio"})
+                    return
+                job = self._service().start_task_investigation(route[2])
+                if job is None:
+                    self.send_json(404, {"error": "Tarefa não encontrada"})
+                else:
+                    self.send_json(202 if job["status"] == "running" else 200, job)
+            except Exception as error:
+                self.handle_error(error)
+            return
 
         if path == "/plan":
             try:

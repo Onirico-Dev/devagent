@@ -2,6 +2,7 @@ from core.adapters.codex_adapter import CodexAdapter
 from core.adapters.mock import MockAdapter
 from core.adapters.groq import GroqAdapter
 from core.api.task_diagnostic import diagnose_task
+from core.api.task_investigation import TASK_INVESTIGATIONS
 
 
 class APIService:
@@ -78,6 +79,22 @@ class APIService:
         if task.get("approval_id") != task_id:
             raise ValueError("A tarefa não corresponde ao identificador solicitado.")
         return {"approval_id": task_id, **diagnose_task(task)}
+
+    def start_task_investigation(self, task_id):
+        task = self.get_task(task_id)
+        if task is None:
+            return None
+        if task.get("approval_id") != task_id:
+            raise ValueError("A tarefa não corresponde ao identificador solicitado.")
+        return TASK_INVESTIGATIONS.start(task, getattr(self.agent, "ai", None), self.gateway)
+
+    def get_task_investigation(self, task_id, job_id):
+        task = self.get_task(task_id)
+        if task is None:
+            return None
+        if task.get("approval_id") != task_id:
+            raise ValueError("A tarefa não corresponde ao identificador solicitado.")
+        return TASK_INVESTIGATIONS.get(task, job_id, self.gateway)
 
     def create_task(self, instruction):
         self.gateway.agent = self.agent

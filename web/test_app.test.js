@@ -230,6 +230,11 @@ function createHarness(tasks, harnessOptions = {}) {
     const request = { url, options };
     requests.push(request);
 
+    if (url.startsWith("/tasks/") && url.includes("/investigation")) {
+      if (harnessOptions.investigationResponse) return await harnessOptions.investigationResponse(url, options);
+      return reportResponse(harnessOptions.investigationData);
+    }
+
     let data;
 
     if (options.method === "POST") {
@@ -2311,4 +2316,201 @@ test('diagnóstico renderiza texto literal e limpa o relatório quando não há 
   h.api.renderOperation(null);
   assert.equal(diagnosticButton(h), null);
   assert.equal(h.api.state.diagnosticContext, null);
+});
+
+function investigationButton(h) {
+  return findSummaryNode(h.elements['operation-details'],
+    node => node.tagName === 'BUTTON' && ['Investigar com IA', 'Investigando…'].includes(node.textContent));
+}
+function investigationPanel(h) {
+  return findSummaryNode(h.elements['operation-details'], node => node.className === 'diagnostic-panel investigation-panel');
+}
+function investigationJob(id = '163', status = 'completed') {
+  return { approval_id: id, job_id: 'a'.repeat(32), status, provider: 'Codex', error: null,
+    report: status === 'completed' ? { summary: 'Há dados insuficientes para comprovar a causa.',
+      hypotheses: [{ cause: 'Pode ter ocorrido interrupção externa.', confidence: 'baixa', evidence: ['diagnostic'] }],
+      next_steps: ['Confira os registros antes de propor correção.'] } : null };
+}
+function investigationCopy(h) {
+  return findSummaryNode(investigationPanel(h), node => node.tagName === 'BUTTON' && node.textContent === 'Copiar investigação');
+}
+
+test('investigação usa POST explícito e preserva aprovação, seleção, prévia e cópias', async () => {
+  const task = summaryTask({ status: 'pending', plan: { objective: 'Plano', changes: [
+    { path: 'example.py', change_type: 'create', content: 'VALUE = 1\n' }], tests: [], risks: [] } });
+  const h = createHarness([task], { investigationData: investigationJob() });
+  await h.api.selectTask('163');
+  const preview = findSummaryNode(h.elements['plan-content'], n => n.tagName === 'DETAILS');
+  preview.open = true;
+  const copy = summaryButton(h);
+  const diagnostic = diagnosticButton(h);
+  assert.equal(investigationButton(h).type, 'button');
+  assert.match(allText(h.elements['operation-details']), /envia à IA/);
+  await investigationButton(h).listeners.click();
+  const requests = h.requests.filter(r => r.options.method === 'POST');
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, '/tasks/163/investigation');
+  assert.equal(requests[0].options.body, '{}');
+  assert.equal(requests[0].options.headers['Content-Type'], 'application/json');
+  assert.equal(h.api.state.busy, false);
+  assert.equal(h.api.state.pendingApprovalId, '163');
+  assert.equal(h.elements['approval-actions'].hidden, false);
+  assert.equal(h.elements['approve-button'].disabled, false);
+  assert.equal(h.api.state.selectedTaskId, '163');
+  assert.equal(preview.open, true);
+  assert.equal(summaryButton(h), copy);
+  assert.equal(diagnosticButton(h), diagnostic);
+  assert.equal(investigationPanel(h).hidden, false);
+  assert.equal(investigationPanel(h).attributes['aria-live'], 'polite');
+  assert.match(allText(investigationPanel(h)), /Hipóteses da IA/);
+  await investigationCopy(h).listeners.click();
+  assert.equal(h.copied.length, 1);
+  assert.match(h.copied[0], /hipóteses para revisão humana/);
+  assert.doesNotMatch(h.copied[0], /PRIVATE/);
+  assert.equal(h.elements.notification.textContent, 'Investigação copiada.');
+});
+
+test('investigação em segundo plano acompanha polling sem duplicar POST ou temporizador', async () => {
+  let current = investigationJob('163', 'running');
+  const h = createHarness([summaryTask()], { investigationResponse: async () => reportResponse(current) });
+  await h.api.selectTask('163');
+  h.api.startPolling();
+  await investigationButton(h).listeners.click();
+  assert.equal(investigationButton(h).disabled, true);
+  await investigationButton(h).listeners.click();
+  await h.runPollingTimer();
+  assert.equal(h.requests.filter(r => r.options.method === 'POST').length, 1);
+  assert.equal(investigationButton(h).disabled, true);
+  assert.equal(h.pendingPollingTimers(), 1);
+  assert.equal(h.api.state.busy, false);
+  current = investigationJob();
+  await h.runPollingTimer();
+  assert.equal(investigationButton(h).disabled, false);
+  assert.equal(investigationPanel(h).hidden, false);
+  assert.equal(h.pendingPollingTimers(), 1);
+  assert.ok(h.requests.some(r => r.url === '/tasks/163/investigation/' + 'a'.repeat(32)));
+  const before = h.requests.filter(r => r.url.includes('/investigation/')).length;
+  await h.runPollingTimer();
+  assert.equal(h.requests.filter(r => r.url.includes('/investigation/')).length, before);
+  assert.equal(investigationPanel(h).hidden, false);
+});
+
+for (const staleError of [false, true]) {
+  test(`troca de seleção ignora ${staleError ? 'erro' : 'resposta'} antiga da investigação`, async () => {
+    let finish;
+    const h = createHarness([summaryTask(), summaryTask({ approval_id: '164' })], {
+      investigationResponse: () => new Promise(resolve => { finish = resolve; }),
+    });
+    await h.api.selectTask('163');
+    const first = investigationButton(h).listeners.click();
+    await h.api.selectTask('164');
+    const before = h.elements.notification.textContent;
+    finish(reportResponse(staleError ? { error: 'erro antigo' } : investigationJob(), staleError ? 503 : 200));
+    await first;
+    assert.equal(h.api.state.selectedTaskId, '164');
+    assert.equal(investigationPanel(h).hidden, true);
+    assert.equal(investigationButton(h).disabled, false);
+    assert.equal(h.elements.notification.textContent, before);
+  });
+}
+
+test('resposta pendente da consulta de investigação é ignorada após mudar a seleção', async () => {
+  let finish;
+  const options = { investigationData: investigationJob('163', 'running') };
+  const h = createHarness([summaryTask(), summaryTask({ approval_id: '164' })], options);
+  await h.api.selectTask('163');
+  await investigationButton(h).listeners.click();
+  options.investigationResponse = () => new Promise(resolve => { finish = resolve; });
+  h.api.startPolling();
+  const polling = h.runPollingTimer();
+  await new Promise(resolve => setImmediate(resolve));
+  await h.api.selectTask('164');
+  finish(reportResponse(investigationJob()));
+  await polling;
+  assert.equal(investigationPanel(h).hidden, true);
+  assert.equal(h.api.state.selectedTaskId, '164');
+});
+
+test('mudança nos trechos públicos invalida investigação sem alterar diagnóstico por regras', async () => {
+  const task = summaryTask();
+  const h = createHarness([task], { investigationData: investigationJob(), diagnosticData: publicReport() });
+  await h.api.selectTask('163');
+  await diagnosticButton(h).listeners.click();
+  await investigationButton(h).listeners.click();
+  task.tests.stderr = 'Nova evidência';
+  h.api.startPolling();
+  await h.runPollingTimer();
+  assert.equal(investigationPanel(h).hidden, true);
+  assert.equal(diagnosticPanel(h).hidden, false);
+});
+
+for (const job of [null, investigationJob('other'), { ...investigationJob(), job_id: '../wrong' },
+  { ...investigationJob(), status: 'unknown' }, { ...investigationJob(), provider: 'Mock' },
+  { ...investigationJob(), report: null },
+  { ...investigationJob(), report: { ...investigationJob().report, hypotheses: [{}] } },
+  { ...investigationJob(), report: { ...investigationJob().report, next_steps: ['x'.repeat(601)] } },
+  investigationJob('163', 'failed')]) {
+  test(`investigação recusa resposta inválida: ${JSON.stringify(job).slice(0, 65)}`, async () => {
+    const h = createHarness([summaryTask()], { investigationData: job });
+    await h.api.selectTask('163');
+    await investigationButton(h).listeners.click();
+    assert.equal(investigationPanel(h).hidden, true);
+    assert.equal(investigationButton(h).disabled, false);
+    assert.equal(h.elements.notification.className, 'notification error');
+    assert.equal(h.api.state.notificationTimer, null);
+    assert.equal(h.api.state.busy, false);
+  });
+}
+
+test('falha de consulta libera nova tentativa e não marca o serviço offline', async () => {
+  const options = { investigationData: investigationJob('163', 'running') };
+  const h = createHarness([summaryTask()], options);
+  await h.api.selectTask('163');
+  await investigationButton(h).listeners.click();
+  options.investigationResponse = async () => { throw new TypeError('Falha simulada.'); };
+  h.api.startPolling();
+  await h.runPollingTimer();
+  assert.equal(investigationButton(h).disabled, false);
+  assert.equal(h.elements['api-status'].textContent, 'Online');
+  assert.match(h.elements.notification.textContent, /Falha simulada/);
+  options.investigationResponse = async () => reportResponse(investigationJob());
+  await investigationButton(h).listeners.click();
+  assert.equal(investigationPanel(h).hidden, false);
+});
+
+test('investigação rejeita identificador de consulta diferente do solicitado', async () => {
+  let current = investigationJob('163', 'running');
+  const h = createHarness([summaryTask()], { investigationResponse: async () => reportResponse(current) });
+  await h.api.selectTask('163');
+  await investigationButton(h).listeners.click();
+  current = { ...investigationJob(), job_id: 'b'.repeat(32) };
+  h.api.startPolling();
+  await h.runPollingTimer();
+  assert.equal(investigationPanel(h).hidden, true);
+  assert.equal(investigationButton(h).disabled, false);
+  assert.match(h.elements.notification.textContent, /Resposta de investigação inválida/);
+});
+
+test('relatório da IA usa texto literal e cópia reaproveita alternativa com foco restaurado', async () => {
+  const job = investigationJob();
+  job.report.summary = '<img src=x onerror=alert(1)>';
+  const options = { investigationData: job, noClipboard: true };
+  const h = createHarness([summaryTask()], options);
+  let restored = false;
+  h.document.activeElement.focus = () => { restored = true; };
+  await h.api.selectTask('163');
+  await investigationButton(h).listeners.click();
+  assert.equal(findSummaryNode(investigationPanel(h), n => n.tagName === 'IMG'), null);
+  assert.match(allText(investigationPanel(h)), /<img/);
+  await investigationCopy(h).listeners.click();
+  assert.equal(restored, true);
+  assert.equal(h.document.body.children.length, 0);
+  assert.match(h.copied[0], /<img/);
+  options.fallbackFails = true;
+  await investigationCopy(h).listeners.click();
+  assert.equal(h.elements.notification.className, 'notification error');
+  assert.equal(investigationCopy(h).disabled, false);
+  h.api.renderOperation(null);
+  assert.equal(h.api.state.investigationContext, null);
+  assert.equal(investigationButton(h), null);
 });
