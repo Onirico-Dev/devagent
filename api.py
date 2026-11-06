@@ -188,6 +188,19 @@ class APIHandler(BaseHTTPRequestHandler):
             task_route = path.split("/")
 
             if (
+                len(task_route) == 4
+                and task_route[1] == "tasks"
+                and task_route[2]
+                and task_route[3] == "diagnostic"
+            ):
+                report = service.task_diagnostic(task_route[2])
+                if report is None:
+                    self.send_json(404, {"error": "Tarefa não encontrada"})
+                    return
+                self.send_json(200, report)
+                return
+
+            if (
                 len(task_route) == 3
                 and task_route[1] == "tasks"
                 and task_route[2]

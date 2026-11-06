@@ -273,6 +273,9 @@ function createHarness(tasks, harnessOptions = {}) {
         };
       }
       data = { tasks: [...tasks] };
+    } else if (url.startsWith("/tasks/") && url.endsWith("/diagnostic")) {
+      if (harnessOptions.diagnosticResponse) return await harnessOptions.diagnosticResponse(url);
+      data = harnessOptions.diagnosticData;
     } else if (url.startsWith("/tasks/")) {
       const id = decodeURIComponent(url.slice("/tasks/".length));
       const shouldInjectTaskFailure = taskRequestFailureArmed;
@@ -1802,6 +1805,10 @@ test("integração HTTP real: criação, aprovação e rejeição", { timeout: 1
       `A aprovação não terminou em committed. Notificação: ${harness.elements.notification.textContent}. stderr: ${stderr}`
     );
 
+    const diagnosticResponse = await fetch(`${baseUrl}/tasks/${encodeURIComponent(createdId)}/diagnostic`);
+    assert.equal(diagnosticResponse.status, 200);
+    assert.equal((await diagnosticResponse.json()).category, "completed");
+
     const createdFile = path.join(projectRoot, "integration_created.py");
     assert.ok(
       fs.existsSync(createdFile),
@@ -2161,4 +2168,147 @@ test("cópia pendente ignora clique repetido sem ocupar o fluxo de aprovação",
   await copying;
   assert.deepEqual(h.copied, [EXPECTED_SUMMARY]);
   assert.equal(button.disabled, false);
+});
+
+function diagnosticButton(h) {
+  return findSummaryNode(h.elements['operation-details'],
+    node => node.tagName === 'BUTTON' && ['Diagnóstico', 'Analisando…'].includes(node.textContent));
+}
+function diagnosticPanel(h) {
+  return findSummaryNode(h.elements['operation-details'], node => node.className === 'diagnostic-panel');
+}
+function publicReport(id = '163') {
+  return { approval_id: id, summary: 'Operação concluída.', evidence: ['Testes aprovados.'],
+    next_steps: ['Confira o resultado.'], limitations: 'Consulta somente de leitura.' };
+}
+function reportResponse(report, status = 200) {
+  return { ok: status === 200, status, async text() { return JSON.stringify(report); } };
+}
+function allText(node) {
+  return [node.textContent, ...node.children.map(allText)].join('\n');
+}
+
+test('diagnóstico usa apenas GET e mantém seleção, aprovação, prévia e cópia', async () => {
+  const task = summaryTask({ status: 'pending', plan: { objective: 'Plano',
+    changes: [{ path: 'example.py', change_type: 'create', content: 'VALUE = 1\n' }], tests: [], risks: [] } });
+  const h = createHarness([task], { diagnosticData: publicReport() });
+  await h.api.selectTask('163');
+  const preview = findSummaryNode(h.elements['plan-content'], node => node.tagName === 'DETAILS');
+  preview.open = true;
+  const copy = summaryButton(h);
+  const button = diagnosticButton(h);
+  assert.equal(button.type, 'button');
+  await button.listeners.click();
+  assert.equal(h.api.state.busy, false);
+  assert.equal(h.api.state.pendingApprovalId, '163');
+  assert.equal(h.api.state.selectedTaskId, '163');
+  assert.equal(h.elements['approval-actions'].hidden, false);
+  assert.equal(preview.open, true);
+  assert.equal(diagnosticPanel(h).hidden, false);
+  assert.match(allText(diagnosticPanel(h)), /Operação concluída/);
+  assert.equal(diagnosticPanel(h).attributes['aria-live'], 'polite');
+  assert.equal(h.requests.at(-1).url, '/tasks/163/diagnostic');
+  assert.equal(h.requests.some(r => r.options.method === 'POST'), false);
+  assert.equal(summaryButton(h), copy);
+  await copy.listeners.click();
+  assert.match(h.copied[0], /^Identificador: 163/);
+  h.api.startPolling();
+  await h.runPollingTimer();
+  assert.match(allText(diagnosticPanel(h)), /Operação concluída/);
+  assert.equal(h.pendingPollingTimers(), 1);
+  assert.equal(findSummaryNode(h.elements['plan-content'], node => node.tagName === 'DETAILS'), preview);
+});
+
+test('diagnóstico pendente evita duplicação e aceita resposta após polling dos mesmos dados', async () => {
+  let finish;
+  const task = summaryTask();
+  const h = createHarness([task], { diagnosticResponse: () => new Promise(resolve => { finish = resolve; }) });
+  await h.api.selectTask('163');
+  const first = diagnosticButton(h).listeners.click();
+  assert.equal(diagnosticButton(h).disabled, true);
+  assert.equal(h.api.state.busy, false);
+  h.api.startPolling();
+  await h.runPollingTimer();
+  assert.equal(diagnosticButton(h).disabled, true);
+  await diagnosticButton(h).listeners.click();
+  assert.equal(h.requests.filter(r => r.url.endsWith('/diagnostic')).length, 1);
+  finish(reportResponse(publicReport()));
+  await first;
+  assert.equal(diagnosticButton(h).disabled, false);
+  assert.equal(diagnosticPanel(h).hidden, false);
+});
+
+for (const staleError of [false, true]) {
+  test(`troca de seleção ignora ${staleError ? 'erro' : 'resposta'} antiga do diagnóstico`, async () => {
+    let finish;
+    const h = createHarness([summaryTask(), summaryTask({ approval_id: '164' })], {
+      diagnosticResponse: () => new Promise(resolve => { finish = resolve; }),
+    });
+    await h.api.selectTask('163');
+    const first = diagnosticButton(h).listeners.click();
+    await h.api.selectTask('164');
+    const before = h.elements.notification.textContent;
+    finish(reportResponse(staleError ? { error: 'erro antigo' } : publicReport(), staleError ? 503 : 200));
+    await first;
+    assert.equal(h.api.state.selectedTaskId, '164');
+    assert.equal(diagnosticPanel(h).hidden, true);
+    assert.equal(diagnosticButton(h).disabled, false);
+    assert.equal(h.elements.notification.textContent, before);
+  });
+}
+
+test('mudança nos dados invalida relatório e resposta pendente, mesmo na mesma tarefa', async () => {
+  let finish;
+  const options = { diagnosticData: publicReport() };
+  const task = summaryTask();
+  const h = createHarness([task], options);
+  await h.api.selectTask('163');
+  await diagnosticButton(h).listeners.click();
+  options.diagnosticResponse = () => new Promise(resolve => { finish = resolve; });
+  const second = diagnosticButton(h).listeners.click();
+  task.tests.returncode = -15;
+  h.api.startPolling();
+  await h.runPollingTimer();
+  assert.equal(diagnosticPanel(h).hidden, true);
+  finish(reportResponse(publicReport()));
+  await second;
+  assert.equal(diagnosticPanel(h).hidden, true);
+});
+
+for (const report of [null, publicReport('other'), { ...publicReport(), evidence: [{}] },
+  { ...publicReport(), summary: 'x'.repeat(1001) }, { ...publicReport(), next_steps: [] }]) {
+  test(`resposta inválida do diagnóstico é recusada: ${JSON.stringify(report).slice(0, 60)}`, async () => {
+    const h = createHarness([summaryTask()], { diagnosticData: report });
+    await h.api.selectTask('163');
+    await diagnosticButton(h).listeners.click();
+    assert.equal(diagnosticPanel(h).hidden, true);
+    assert.equal(h.elements.notification.className, 'notification error');
+    assert.equal(h.api.state.notificationTimer, null);
+    assert.equal(diagnosticButton(h).disabled, false);
+  });
+}
+
+test('falha de rede no diagnóstico permite nova tentativa sem bloquear aprovação', async () => {
+  const options = { diagnosticResponse: async () => { throw new TypeError('Sem conexão.'); } };
+  const h = createHarness([summaryTask({ status: 'pending' })], options);
+  await h.api.selectTask('163');
+  await diagnosticButton(h).listeners.click();
+  assert.match(h.elements.notification.textContent, /Sem conexão/);
+  assert.equal(h.api.state.pendingApprovalId, '163');
+  assert.equal(h.elements['approve-button'].disabled, false);
+  options.diagnosticResponse = async () => reportResponse(publicReport());
+  await diagnosticButton(h).listeners.click();
+  assert.equal(diagnosticPanel(h).hidden, false);
+});
+
+test('diagnóstico renderiza texto literal e limpa o relatório quando não há seleção', async () => {
+  const report = { ...publicReport(), summary: '<img src=x onerror=alert(1)>' };
+  const h = createHarness([summaryTask()], { diagnosticData: report });
+  await h.api.selectTask('163');
+  await diagnosticButton(h).listeners.click();
+  assert.match(allText(diagnosticPanel(h)), /<img src=x/);
+  assert.equal(findSummaryNode(diagnosticPanel(h), node => node.tagName === 'IMG'), null);
+  h.api.renderOperation(null);
+  assert.equal(diagnosticButton(h), null);
+  assert.equal(h.api.state.diagnosticContext, null);
 });

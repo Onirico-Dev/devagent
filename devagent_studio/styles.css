@@ -478,6 +478,7 @@ textarea::placeholder {
 .operation-actions {
   display: flex;
   flex-wrap: wrap;
+  gap: 8px;
   margin-bottom: 14px;
 }
 
@@ -490,6 +491,26 @@ textarea::placeholder {
 .detail-value {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.diagnostic-panel {
+  min-width: 0;
+  padding: 14px;
+  margin-bottom: 14px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.diagnostic-panel h3 {
+  margin-top: 0;
+}
+
+.operation-actions .button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }
 
 .code-preview {

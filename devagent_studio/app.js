@@ -36,6 +36,7 @@
     pollingStarted: false,
     pollingInFlight: false,
     lastSelectionError: null,
+    diagnosticContext: null,
   };
 
   const POLL_INTERVAL_MS = 5000;
@@ -393,10 +394,64 @@
     ].join("\n");
   }
 
+  function diagnosticKey(task) {
+    return JSON.stringify([
+      task.approval_id, task.status, task.updated_at,
+      task.tests?.success, task.tests?.returncode, task.repair_attempts,
+      Boolean(task.error), Boolean(task.rollback_error), task.git?.commit_hash,
+    ]);
+  }
+
+  function renderDiagnostic(context) {
+    clearNode(context.panel);
+    context.panel.hidden = !context.report;
+    if (!context.report) return;
+    const report = context.report;
+    context.panel.append(element("h3", "", "Diagnóstico"));
+    context.panel.append(element("p", "", report.summary));
+    for (const [label, values] of [["Evidências", report.evidence], ["Próximos passos", report.next_steps]]) {
+      context.panel.append(element("strong", "", label));
+      const list = document.createElement("ul");
+      values.forEach((value) => list.append(element("li", "", value)));
+      context.panel.append(list);
+    }
+    context.panel.append(element("p", "muted", report.limitations));
+  }
+
+  async function loadDiagnostic(task, context) {
+    if (context !== state.diagnosticContext || context.loading) return;
+    context.loading = true;
+    context.button.disabled = true;
+    context.button.textContent = "Analisando…";
+    try {
+      const report = await request(`/tasks/${encodeURIComponent(task.approval_id)}/diagnostic`);
+      if (context !== state.diagnosticContext) return;
+      const isText = (value) => typeof value === "string" && value.length > 0 && value.length <= 1000;
+      const isList = (value) => Array.isArray(value) && value.length > 0 && value.length <= 8 && value.every(isText);
+      if (!report || report.approval_id !== task.approval_id || !isText(report.summary) ||
+          !isText(report.limitations) || !isList(report.evidence) || !isList(report.next_steps)) {
+        throw new Error("Resposta de diagnóstico inválida.");
+      }
+      context.report = report;
+      renderDiagnostic(context);
+    } catch (error) {
+      if (context === state.diagnosticContext) {
+        showNotification(`Não foi possível consultar o diagnóstico: ${error.message}`, "error");
+      }
+    } finally {
+      context.loading = false;
+      if (context === state.diagnosticContext) {
+        context.button.disabled = false;
+        context.button.textContent = "Diagnóstico";
+      }
+    }
+  }
+
   function renderOperation(task) {
     clearNode(elements.operationDetails);
 
     if (!task) {
+      state.diagnosticContext = null;
       elements.operationDetails.className = "empty-state";
       elements.operationDetails.textContent = "Nenhuma operação selecionada.";
       return;
@@ -404,6 +459,11 @@
 
     elements.operationDetails.className = "operation-content";
 
+    const key = diagnosticKey(task);
+    if (state.diagnosticContext?.key !== key) {
+      state.diagnosticContext = { key, report: null, loading: false };
+    }
+    const diagnostic = state.diagnosticContext;
     const actions = element("div", "operation-actions");
     const copyButton = element("button", "button button-secondary", "Copiar resumo");
     copyButton.type = "button";
@@ -420,7 +480,18 @@
       }
     });
     actions.append(copyButton);
+    if (task.approval_id) {
+      diagnostic.button = element("button", "button button-secondary", diagnostic.loading ? "Analisando…" : "Diagnóstico");
+      diagnostic.button.type = "button";
+      diagnostic.button.disabled = diagnostic.loading;
+      diagnostic.button.addEventListener("click", () => loadDiagnostic(task, diagnostic));
+      actions.append(diagnostic.button);
+    }
     elements.operationDetails.append(actions);
+    diagnostic.panel = element("section", "diagnostic-panel");
+    diagnostic.panel.setAttribute("aria-live", "polite");
+    renderDiagnostic(diagnostic);
+    elements.operationDetails.append(diagnostic.panel);
 
     const grid = element("div", "details-grid");
 
