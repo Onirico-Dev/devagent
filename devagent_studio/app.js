@@ -22,6 +22,12 @@
     taskCount: $("task-count"),
     taskList: $("task-list"),
     notification: $("notification"),
+    chatForm: $("chat-form"),
+    chatInput: $("chat-input"),
+    chatSend: $("chat-send"),
+    chatClear: $("chat-clear"),
+    chatLog: $("chat-log"),
+    chatStatus: $("chat-status"),
   };
 
   const state = {
@@ -40,6 +46,9 @@
     investigationContext: null,
     consultationContext: null,
     instructionRevision: 0,
+    chatTurns: [],
+    chatContext: null,
+    chatRevision: 0,
   };
 
   const POLL_INTERVAL_MS = 5000;
@@ -159,6 +168,7 @@
     if (elements.consultButton) {
       elements.consultButton.disabled = busy || Boolean(state.consultationContext?.running);
     }
+    updateChatControls();
 
     if (message) {
       showNotification(message);
@@ -458,6 +468,7 @@
   }
 
   function renderInvestigation(context) {
+    updateChatControls();
     clearNode(context.panel);
     context.panel.hidden = !context.report;
     if (!context.report) return;
@@ -1074,7 +1085,157 @@
         Object.hasOwn(sourceSelectionReasons, record.reason) && Object.hasOwn(sourceSelectionOrigins, record.origin));
   }
 
+  function updateChatControls() {
+    if (!elements.chatSend) return;
+    const pending = state.chatContext?.running || state.consultationContext?.running || state.investigationContext?.running;
+    elements.chatSend.disabled = state.busy || Boolean(pending);
+    elements.chatClear.disabled = state.busy || Boolean(state.chatContext?.running);
+    elements.chatInput.disabled = state.busy;
+    elements.chatStatus.textContent = state.chatContext?.running
+      ? "Aguardando resposta da IA…"
+      : `Somente leitura · ${String(elements.chatInput.value || "").length} / 4000`;
+  }
+
+  function chatReportLines(report) {
+    return [report.reply, "Referências: " + (report.references.map(ref => ref === "request" ? "Mensagem atual" :
+      ref === "conversation" ? "Conversa anterior" : ref).join(", ") || "Nenhuma referência declarada."), "Fontes desta resposta:",
+      ...report.sources.map(source => `${source.path} — SHA256 ${source.sha256}`),
+      "Cobertura da seleção de fontes:",
+      ...report.source_selection.records.map(record =>
+        `${sourceSelectionOrigins[record.origin]}: ${record.path} — ${sourceSelectionReasons[record.reason]}.`),
+      ...(report.source_selection.truncated ? ["Diagnóstico de fontes abreviado."] : [])];
+  }
+
+  function renderChat() {
+    if (!elements.chatLog) return;
+    clearNode(elements.chatLog);
+    if (!state.chatTurns.length) {
+      elements.chatLog.append(element("p", "muted", "Pergunte sobre o projeto para iniciar a conversa."));
+    }
+    for (const turn of state.chatTurns) {
+      const article = element("article", "chat-turn");
+      article.append(element("strong", "", "Você"), element("p", "chat-question", turn.question));
+      if (turn.report) {
+        article.append(element("strong", "", turn.provider), element("p", "chat-reply", turn.report.reply));
+        const details = element("details", "chat-sources");
+        details.append(element("summary", "", "Fontes desta resposta"));
+        const list = element("ul");
+        chatReportLines(turn.report).slice(1).forEach(line => list.append(element("li", "", line)));
+        details.append(list);
+        const copy = element("button", "button button-secondary", "Copiar resposta");
+        copy.type = "button";
+        copy.addEventListener("click", async () => {
+          if (copy.disabled) return;
+          copy.disabled = true;
+          try {
+            await copyProposedContent([`IA: ${turn.provider}. Somente leitura.`, ...chatReportLines(turn.report)].join("\n"));
+            showNotification("Resposta copiada.", "success");
+          } catch {
+            showNotification("Não foi possível copiar a resposta. Tente novamente.", "error");
+          } finally { copy.disabled = false; }
+        });
+        article.append(details, copy);
+      } else {
+        article.append(element("p", "muted", turn.error || "Aguardando resposta da IA…"));
+      }
+      elements.chatLog.append(article);
+    }
+    updateChatControls();
+  }
+
+  function chatHistory() {
+    const pairs = state.chatTurns.filter(turn => turn.report).slice(-3).map(turn => [
+      { role: "user", content: turn.question }, { role: "assistant", content: turn.report.reply },
+    ]);
+    while (pairs.flat().reduce((sum, item) => sum + item.content.length, 0) > 12000) pairs.shift();
+    return pairs.flat();
+  }
+
+  function failChat(context, message = "A conversa não foi concluída. Reenvie a mensagem para tentar novamente.") {
+    context.running = false;
+    context.turn.error = message;
+    if (context.cleared && elements.chatInput.value === "" && state.chatRevision === context.revision) {
+      elements.chatInput.value = context.turn.question;
+    }
+    renderChat();
+    showNotification(message, "error");
+  }
+
+  function acceptChat(job, context) {
+    const textOk = (value, limit) => typeof value === "string" && value.trim().length > 0 && [...value].length <= limit;
+    if (!job || job.kind !== "chat" || typeof job.job_id !== "string" || !/^[a-f0-9]{32}$/.test(job.job_id) ||
+        (context.jobId && job.job_id !== context.jobId) || !["Codex", "Groq"].includes(job.provider) ||
+        !["running", "completed", "failed"].includes(job.status)) throw new Error("Resposta de conversa inválida.");
+    context.jobId = job.job_id;
+    if (job.status === "failed") {
+      const messages = {
+        "timeout: O tempo de espera da investigação foi excedido. Tente novamente.": "O tempo de espera da conversa foi excedido. Reenvie a mensagem para tentar novamente.",
+        "transport_error: A comunicação com o Codex falhou. Tente novamente.": "A comunicação com a IA falhou. Reenvie a mensagem para tentar novamente.",
+        "invalid_response: A IA retornou uma resposta inválida. Tente novamente.": "A IA retornou uma resposta de conversa inválida. Reenvie a mensagem para tentar novamente.",
+      };
+      failChat(context, typeof job.error === "string" && Object.hasOwn(messages, job.error) ? messages[job.error] : undefined);
+      return;
+    }
+    if (job.status === "completed") {
+      const report = job.report;
+      if (!report || Object.keys(report).sort().join(",") !== "references,reply,source_selection,sources" ||
+          !textOk(report.reply, 4000) || !Array.isArray(report.sources) || report.sources.length > 16 ||
+          !report.sources.every(source => source && textOk(source.path, 240) && typeof source.sha256 === "string" && /^[a-f0-9]{64}$/.test(source.sha256)) ||
+          !validSourceSelection(report.source_selection)) throw new Error("Relatório de conversa inválido.");
+      const allowed = new Set(["request", ...(context.history.length ? ["conversation"] : []), ...report.sources.map(source => source.path)]);
+      if (!Array.isArray(report.references) || report.references.length > 16 ||
+          !report.references.every(ref => allowed.has(ref)) || new Set(report.references).size !== report.references.length) {
+        throw new Error("Referências de conversa inválidas.");
+      }
+      context.turn.report = report;
+      context.turn.provider = job.provider;
+      context.running = false;
+      renderChat();
+    }
+    updateChatControls();
+  }
+
+  async function startChat(event) {
+    event.preventDefault();
+    if (state.busy || state.chatContext?.running || state.consultationContext?.running || state.investigationContext?.running) return;
+    const question = elements.chatInput.value;
+    if (!question.trim() || question.length > 4000) {
+      showNotification("Informe uma mensagem de até 4000 caracteres.", "error");
+      return;
+    }
+    const context = { running: true, inFlight: false, jobId: null, history: chatHistory(),
+      revision: state.chatRevision, cleared: false, turn: { question, report: null, error: null } };
+    state.chatContext = context;
+    state.chatTurns.push(context.turn);
+    state.chatTurns = state.chatTurns.slice(-4);
+    renderChat();
+    try {
+      const job = await request("/chat", { method: "POST", body: JSON.stringify({ message: question, history: context.history }) });
+      if (state.chatContext !== context) return;
+      acceptChat(job, context);
+      if (!context.turn.error && elements.chatInput.value === question && state.chatRevision === context.revision) {
+        elements.chatInput.value = "";
+        context.cleared = true;
+      }
+    } catch {
+      if (state.chatContext === context) failChat(context);
+    } finally { updateChatControls(); }
+  }
+
+  async function refreshChat() {
+    const context = state.chatContext;
+    if (!context?.running || !context.jobId || context.inFlight) return;
+    context.inFlight = true;
+    try {
+      const job = await request(`/chat/${context.jobId}`);
+      if (state.chatContext === context) acceptChat(job, context);
+    } catch {
+      if (state.chatContext === context) failChat(context);
+    } finally { context.inFlight = false; updateChatControls(); }
+  }
+
   function renderConsultation(context) {
+    updateChatControls();
     const panel = elements.consultationPanel;
     clearNode(panel);
     panel.hidden = false;
@@ -1474,6 +1635,7 @@
       await checkHealth();
       await refreshInvestigation();
       await refreshConsultation();
+      await refreshChat();
     } catch (error) {
       setHealth(false, "Falha ao sincronizar");
     } finally {
@@ -1504,6 +1666,18 @@
   }
 
   document.addEventListener("visibilitychange", handleVisibilityChange);
+
+  if (elements.chatForm) {
+    elements.chatForm.addEventListener("submit", startChat);
+    elements.chatInput.addEventListener("input", () => { state.chatRevision += 1; updateChatControls(); });
+    elements.chatClear.addEventListener("click", () => {
+      if (state.busy || state.chatContext?.running) return;
+      state.chatTurns = [];
+      state.chatContext = null;
+      renderChat();
+    });
+    renderChat();
+  }
 
   elements.instructionForm.addEventListener("submit", createPlan);
   elements.instructionCounter = element("p", "instruction-counter muted");

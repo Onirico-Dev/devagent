@@ -339,6 +339,16 @@ O orçamento de recuperação permanece em duas chamadas totais à IA: a chamada
 
 Na resposta da IA, variações de maiúsculas e minúsculas dos tipos conhecidos `create`, `modify` e `delete` são normalizadas antes da validação. Isso não consome uma regeneração. O plano apresentado e persistido mantém os tipos canônicos em minúsculas; valores desconhecidos continuam inválidos. Caminhos, conteúdos, hashes e âncoras não passam por essa normalização.
 
+### 7.10. Conversa com o projeto
+
+O painel **Assistente** do Studio oferece conversa de texto somente de leitura com Codex ou Groq. Cada pergunta pode usar fontes permitidas atuais e o histórico recente. A resposta apresenta fontes, hashes, referências e cobertura da seleção; **Copiar resposta** inclui essas informações. Pedidos de implementação continuam sujeitos ao fluxo separado de **Gerar plano** e aprovação humana.
+
+Nesta primeira entrega, até quatro trocas ficam na memória da aba. São enviadas até três trocas completas anteriores, limitadas a 12000 caracteres, além da mensagem atual de até 4000 caracteres. Pares antigos são descartados inteiros quando necessário. Recarregar a página limpa o histórico exibido. **Nova conversa** limpa esse histórico sem descartar o rascunho ainda não enviado. Não há persistência adicional do chat em disco nem uso de localStorage; os resultados de trabalhos permanecem no cache limitado em memória do servidor, compartilhado com consultas e investigações.
+
+O backend relê as fontes a cada pergunta; respostas anteriores não autorizam novos caminhos explícitos. O diagnóstico de seleção é acrescentado localmente após validar a resposta. Há mascaramento de padrões comuns de credenciais no conteúdo enviado e na resposta. O chat não cria tarefas, aprovações, transações ou commits, e não executa testes nem reparos. Falhas não provocam reenvio automático; uma nova tentativa depende de ação do usuário.
+
+`POST /chat` recebe somente `message` e `history` (pares ordenados de `user` e `assistant`, cada item com `role` e `content`). Retorna um trabalho `kind: "chat"`; `GET /chat/{job_id}` acompanha o resultado. O mesmo gerenciador existente limita trabalhos simultâneos, capacidade e acesso por instância proprietária; trabalhos de conversa e consulta não são intercambiáveis. Adaptadores e respectivos limites de transporte permanecem os existentes. A interface é local e este recurso não acrescenta autenticação multiusuário.
+
 ## 8. Persistência e diretório de trabalho
 
 O estado é distribuído entre componentes. Entre os locais relevantes estão:

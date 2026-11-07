@@ -15,6 +15,30 @@
   --success: #79d6ae;
 }
 
+.chat-log {
+  max-height: 480px;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  margin: 18px 0;
+}
+
+.chat-turn {
+  border-top: 1px solid var(--border);
+  padding: 16px 0;
+  min-width: 0;
+}
+
+.chat-question, .chat-reply {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 8px 0 16px;
+}
+
+.chat-question { color: var(--accent); }
+.chat-sources { font-size: 12px; color: var(--muted); }
+.chat-sources summary { cursor: pointer; }
+.chat-panel textarea { width: 100%; }
+
 * {
   box-sizing: border-box;
 }

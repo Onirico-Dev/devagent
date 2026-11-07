@@ -103,6 +103,7 @@ const ELEMENT_IDS = [
   "task-count",
   "task-list",
   "notification",
+  "chat-form", "chat-input", "chat-send", "chat-clear", "chat-log", "chat-status",
 ];
 
 function makeTask(id, updatedAt, extra = {}) {
@@ -127,6 +128,7 @@ function createHarness(tasks, harnessOptions = {}) {
     ELEMENT_IDS.map((id) => [id, new FakeElement()])
   );
   elements.instruction.value = harnessOptions.initialInstruction || "";
+  elements["chat-input"].value = "";
   elements["instruction-form"].append(new FakeElement("label"), elements.instruction, new FakeElement("div"));
 
   const requests = [];
@@ -245,6 +247,11 @@ function createHarness(tasks, harnessOptions = {}) {
   async function fetchMock(url, options = {}) {
     const request = { url, options };
     requests.push(request);
+
+    if (url === "/chat" || url.startsWith("/chat/")) {
+      if (harnessOptions.chatResponse) return await harnessOptions.chatResponse(url, options);
+      return reportResponse(harnessOptions.chatData);
+    }
 
     if (url === "/consultations" || url.startsWith("/consultations/")) {
       if (harnessOptions.consultationResponse) return await harnessOptions.consultationResponse(url, options);
@@ -3421,4 +3428,280 @@ test('cópia da instrução preparada usa alternativa e permite repetir após fa
   await preparationControl(h, 'Copiar instrução preparada').listeners.click();
   assert.equal(h.elements.notification.className, 'notification error');
   assert.equal(preparationControl(h, 'Copiar instrução preparada').disabled, false);
+});
+
+
+function chatJob(status = 'completed', extra = {}) {
+  return { kind: 'chat', job_id: 'e'.repeat(32), provider: 'Codex', status, error: null,
+    report: status === 'completed' ? {
+      reply: 'A função retorna OK.', references: ['request', 'app.py'],
+      sources: [{ path: 'app.py', sha256: 'd'.repeat(64) }],
+      source_selection: sourceSelection([{ path: 'app.py', origin: 'explicit', reason: 'included' }]),
+    } : null, ...extra };
+}
+async function sendChat(h, message) {
+  h.api.elements.chatInput.value = message;
+  h.api.elements.chatInput.listeners.input();
+  await h.api.elements.chatForm.listeners.submit({ preventDefault() {} });
+}
+function chatCopy(h) {
+  return findSummaryNode(h.api.elements.chatLog, node => node.tagName === 'BUTTON' && node.textContent === 'Copiar resposta');
+}
+
+test('chat responde e copia fontes sem mudar plano, aprovação, seleção ou rascunho principal', async () => {
+  const h = createHarness([summaryTask({ status: 'pending' })], { chatData: chatJob() });
+  await h.api.selectTask('163');
+  const preview = h.elements['plan-content'].firstChild;
+  preview.open = true;
+  h.elements.instruction.value = 'Rascunho de implementação';
+  await sendChat(h, 'Explique app.py');
+  const posts = h.requests.filter(r => r.options.method === 'POST');
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].url, '/chat');
+  assert.deepEqual(JSON.parse(posts[0].options.body), { message: 'Explique app.py', history: [] });
+  assert.equal(h.api.elements.chatInput.value, '');
+  assert.equal(h.elements.instruction.value, 'Rascunho de implementação');
+  assert.equal(h.api.state.pendingApprovalId, '163');
+  assert.equal(h.api.state.selectedTaskId, '163');
+  assert.equal(h.elements['plan-content'].firstChild, preview);
+  assert.equal(preview.open, true);
+  await chatCopy(h).listeners.click();
+  assert.match(h.copied[0], /A função retorna OK/);
+  assert.match(h.copied[0], /SHA256/);
+  assert.match(h.copied[0], /Solicitado: app.py — Incluído/);
+  assert.equal(h.api.elements.chatSend.disabled, false);
+});
+
+test('segunda pergunta envia a troca anterior como histórico sem dados da operação selecionada', async () => {
+  const h = createHarness([summaryTask()], { chatData: chatJob() });
+  await h.api.selectTask('163');
+  await sendChat(h, 'Explique app.py');
+  await sendChat(h, 'E qual é o retorno?');
+  const sent = JSON.parse(h.requests.filter(r => r.url === '/chat').at(-1).options.body);
+  assert.deepEqual(sent.history, [
+    { role: 'user', content: 'Explique app.py' }, { role: 'assistant', content: 'A função retorna OK.' },
+  ]);
+  assert.equal(Object.hasOwn(sent, 'context_task_id'), false);
+  assert.equal(h.api.state.chatTurns.length, 2);
+});
+
+test('histórico visível fica em quatro trocas e o enviado fica em três trocas anteriores', async () => {
+  const h = createHarness([], { chatData: chatJob() });
+  for (let i = 0; i < 5; i++) await sendChat(h, 'Pergunta ' + i);
+  assert.equal(h.api.state.chatTurns.length, 4);
+  assert.equal(h.api.state.chatTurns[0].question, 'Pergunta 1');
+  const sent = JSON.parse(h.requests.filter(r => r.url === '/chat').at(-1).options.body);
+  assert.equal(sent.history.length, 6);
+  assert.equal(sent.history[0].content, 'Pergunta 1');
+});
+
+test('histórico enviado elimina pares antigos inteiros para respeitar 12000 caracteres', async () => {
+  const job = chatJob();
+  job.report.reply = 'r'.repeat(4000);
+  const h = createHarness([], { chatData: job });
+  for (let i = 0; i < 3; i++) await sendChat(h, String(i) + 'q'.repeat(3999));
+  const sent = JSON.parse(h.requests.filter(r => r.url === '/chat').at(-1).options.body);
+  assert.equal(sent.history.length, 2);
+  assert.ok(sent.history.reduce((sum, item) => sum + item.content.length, 0) <= 12000);
+  assert.ok(sent.history[0].content.startsWith('1'));
+});
+
+test('Nova conversa limpa histórico exibido, preserva rascunho e não envia requisição', async () => {
+  const h = createHarness([], { chatData: chatJob() });
+  await sendChat(h, 'Primeira pergunta');
+  h.api.elements.chatInput.value = 'Próxima pergunta ainda não enviada';
+  const before = h.requests.length;
+  await h.api.elements.chatClear.listeners.click();
+  assert.equal(h.requests.length, before);
+  assert.equal(h.api.state.chatTurns.length, 0);
+  assert.equal(h.api.state.chatContext, null);
+  assert.equal(h.api.elements.chatInput.value, 'Próxima pergunta ainda não enviada');
+  assert.match(allText(h.api.elements.chatLog), /iniciar a conversa/);
+});
+
+test('chat pendente bloqueia envios duplicados e limpeza, preservando edição durante o POST', async () => {
+  let finish;
+  const h = createHarness([], { chatResponse: () => new Promise(resolve => { finish = resolve; }) });
+  const pending = sendChat(h, 'Pergunta inicial');
+  assert.equal(h.api.elements.chatSend.disabled, true);
+  await h.api.elements.chatForm.listeners.submit({ preventDefault() {} });
+  await h.api.elements.chatClear.listeners.click();
+  assert.equal(h.requests.filter(r => r.url === '/chat').length, 1);
+  assert.equal(h.api.state.chatTurns.length, 1);
+  h.api.elements.chatInput.value = 'Rascunho novo';
+  h.api.elements.chatInput.listeners.input();
+  finish(reportResponse(chatJob('running')));
+  await pending;
+  assert.equal(h.api.elements.chatInput.value, 'Rascunho novo');
+  assert.equal(h.api.elements.chatSend.disabled, true);
+});
+
+test('chat acompanha GET pelo polling existente e encerra acompanhamento após conclusão', async () => {
+  let current = chatJob('running');
+  const h = createHarness([], { chatResponse: async () => reportResponse(current) });
+  h.api.startPolling();
+  await sendChat(h, 'Pergunta');
+  assert.equal(h.api.elements.chatInput.value, '');
+  current = chatJob();
+  await h.runPollingTimer();
+  assert.match(allText(h.api.elements.chatLog), /A função retorna OK/);
+  assert.equal(h.api.elements.chatSend.disabled, false);
+  const before = h.requests.filter(r => r.url.startsWith('/chat/')).length;
+  await h.runPollingTimer();
+  assert.equal(h.requests.filter(r => r.url.startsWith('/chat/')).length, before);
+});
+
+for (const draft of [null, 'Rascunho novo', '']) {
+  test('falha posterior restaura apenas rascunho intocado: ' + JSON.stringify(draft), async () => {
+    let current = chatJob('running');
+    const h = createHarness([], { chatResponse: async () => reportResponse(current) });
+    h.api.startPolling();
+    await sendChat(h, 'Pergunta original');
+    if (draft !== null) {
+      h.api.elements.chatInput.value = draft;
+      h.api.elements.chatInput.listeners.input();
+    }
+    current = chatJob('failed', { error: 'PRIVATE_SENTINEL' });
+    await h.runPollingTimer();
+    assert.equal(h.api.elements.chatInput.value, draft === null ? 'Pergunta original' : draft);
+    assert.equal(h.api.state.chatContext.running, false);
+    assert.equal(h.api.elements.chatSend.disabled, false);
+    assert.doesNotMatch(allText(h.api.elements.chatLog), /PRIVATE_SENTINEL/);
+    const before = h.requests.length;
+    await h.runPollingTimer();
+    assert.equal(h.requests.slice(before).some(r => r.url.startsWith('/chat/')), false);
+  });
+}
+
+for (const message of ['', '  ', 'x'.repeat(4001)]) {
+  test('mensagem inválida não chama API: ' + message.length, async () => {
+    const h = createHarness([]);
+    await sendChat(h, message);
+    assert.equal(h.requests.length, 0);
+    assert.equal(h.api.state.chatTurns.length, 0);
+    assert.equal(h.elements.notification.className, 'notification error');
+  });
+}
+
+for (const job of [null, chatJob('unknown'), chatJob('completed', { kind: 'consultation' }),
+  chatJob('completed', { job_id: ['e'.repeat(32)] }),
+  chatJob('completed', { provider: 'Mock' }), chatJob('completed', { job_id: '../wrong' }),
+  chatJob('completed', { report: {} }),
+  chatJob('completed', { report: { ...chatJob().report, reply: '' } }),
+  chatJob('completed', { report: { ...chatJob().report, actions: [] } }),
+  chatJob('completed', { report: { ...chatJob().report, references: ['conversation'] } }),
+  chatJob('completed', { report: { ...chatJob().report, references: ['private.py'] } }),
+  chatJob('completed', { report: { ...chatJob().report, references: ['request', 'request'] } }),
+  chatJob('completed', { report: { ...chatJob().report, source_selection: null } }),
+  chatJob('completed', { report: { ...chatJob().report, sources: [{ path: 'app.py', sha256: 'bad' }] } }),
+  chatJob('completed', { report: { ...chatJob().report, sources: [{ path: 'app.py', sha256: ['d'.repeat(64)] }] } }),
+]) {
+  test('chat recusa resposta inválida sem alterar a operação: ' + JSON.stringify(job).slice(0, 100), async () => {
+    const h = createHarness([summaryTask()], { chatData: job });
+    await sendChat(h, 'Pergunta original');
+    assert.equal(h.api.elements.chatInput.value, 'Pergunta original');
+    assert.equal(h.api.state.chatTurns[0].report, null);
+    assert.equal(h.api.state.chatContext.running, false);
+    assert.equal(h.api.elements.chatSend.disabled, false);
+    assert.equal(h.elements.notification.className, 'notification error');
+    assert.equal(h.requests.filter(r => r.options.method === 'POST' && r.url !== '/chat').length, 0);
+  });
+}
+
+for (const error of ['timeout: O tempo de espera da investigação foi excedido. Tente novamente.',
+  'transport_error: A comunicação com o Codex falhou. Tente novamente.',
+  'invalid_response: A IA retornou uma resposta inválida. Tente novamente.', null, { private: 'PRIVATE_SENTINEL' }]) {
+  test('falha de chat usa somente mensagens públicas: ' + JSON.stringify(error), async () => {
+    const options = { chatData: chatJob('failed', { error }) };
+    const h = createHarness([], options);
+    await sendChat(h, 'Pergunta original');
+    assert.doesNotMatch(allText(h.api.elements.chatLog), /PRIVATE_SENTINEL/);
+    assert.equal(h.api.state.chatContext.running, false);
+    options.chatData = chatJob();
+    await sendChat(h, 'Pergunta original');
+    assert.equal(h.api.state.chatTurns.at(-1).report.reply, chatJob().report.reply);
+    const sent = JSON.parse(h.requests.filter(r => r.url === '/chat').at(-1).options.body);
+    assert.deepEqual(sent.history, []);
+  });
+}
+
+test('falhas de transporte não expõem mensagens arbitrárias nem provocam reenvio automático', async () => {
+  const h = createHarness([], { chatResponse: async () => { throw new TypeError('PRIVATE_SENTINEL'); } });
+  await sendChat(h, 'Pergunta');
+  assert.doesNotMatch(allText(h.api.elements.chatLog), /PRIVATE_SENTINEL/);
+  assert.equal(h.api.elements.chatInput.value, 'Pergunta');
+  assert.equal(h.requests.length, 1);
+});
+
+test('chat trata HTML como texto, copia por alternativa e informa falha de cópia', async () => {
+  const job = chatJob();
+  job.report.reply = '<img src=x onerror=alert(1)>';
+  job.report.references = [];
+  job.report.source_selection.truncated = true;
+  const options = { chatData: job, noClipboard: true };
+  const h = createHarness([], options);
+  await sendChat(h, 'Pergunta');
+  assert.equal(findSummaryNode(h.api.elements.chatLog, n => n.tagName === 'IMG'), null);
+  await chatCopy(h).listeners.click();
+  assert.match(h.copied[0], /<img/);
+  assert.match(h.copied[0], /abreviado/);
+  options.fallbackFails = true;
+  await chatCopy(h).listeners.click();
+  assert.equal(h.elements.notification.className, 'notification error');
+  assert.equal(chatCopy(h).disabled, false);
+});
+
+test('resposta antiga de chat é ignorada quando o contexto deixa de ser o ativo', async () => {
+  let finish;
+  const h = createHarness([], { chatResponse: () => new Promise(resolve => { finish = resolve; }) });
+  const pending = sendChat(h, 'Pergunta antiga');
+  h.api.state.chatContext = null;
+  h.api.state.chatTurns = [];
+  h.api.elements.chatInput.value = 'Rascunho novo';
+  finish(reportResponse(chatJob()));
+  await pending;
+  assert.equal(h.api.elements.chatInput.value, 'Rascunho novo');
+  assert.equal(h.api.state.chatTurns.length, 0);
+});
+
+test('chat respeita operação ocupada e consulta de IA já em andamento', async () => {
+  const h = createHarness([], { chatData: chatJob() });
+  h.api.state.busy = true;
+  await sendChat(h, 'Pergunta');
+  h.api.state.busy = false;
+  h.api.state.consultationContext = { running: true };
+  await sendChat(h, 'Pergunta');
+  assert.equal(h.requests.length, 0);
+});
+
+test('falha de transporte no acompanhamento do chat restaura a pergunta e exige nova ação manual', async () => {
+  const h = createHarness([], { chatResponse: async url => {
+    if (url === '/chat') return reportResponse(chatJob('running'));
+    throw new TypeError('PRIVATE_SENTINEL');
+  } });
+  h.api.startPolling();
+  await sendChat(h, 'Pergunta original');
+  await h.runPollingTimer();
+  assert.equal(h.api.elements.chatInput.value, 'Pergunta original');
+  assert.equal(h.api.state.chatContext.inFlight, false);
+  assert.equal(h.api.state.chatContext.running, false);
+  assert.doesNotMatch(allText(h.api.elements.chatLog), /PRIVATE_SENTINEL/);
+});
+
+test('acompanhamento antigo do chat não preenche uma conversa substituta', async () => {
+  let finish;
+  const h = createHarness([], { chatResponse: async url => url === '/chat'
+    ? reportResponse(chatJob('running')) : new Promise(resolve => { finish = resolve; }) });
+  h.api.startPolling();
+  await sendChat(h, 'Pergunta antiga');
+  const pending = h.runPollingTimer();
+  for (let i = 0; !finish && i < 20; i++) await Promise.resolve();
+  assert.equal(typeof finish, 'function');
+  h.api.state.chatContext = null;
+  h.api.state.chatTurns = [];
+  h.api.elements.chatInput.value = 'Rascunho da conversa nova';
+  finish(reportResponse(chatJob()));
+  await pending;
+  assert.equal(h.api.state.chatTurns.length, 0);
+  assert.equal(h.api.elements.chatInput.value, 'Rascunho da conversa nova');
 });

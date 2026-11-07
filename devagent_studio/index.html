@@ -39,6 +39,27 @@
 
       <section class="workspace">
         <div class="main-column">
+          <section class="panel chat-panel" aria-labelledby="chat-title">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">CONVERSA COM O PROJETO</p>
+                <h2 id="chat-title">Assistente</h2>
+              </div>
+              <button id="chat-clear" class="button button-secondary" type="button">Nova conversa</button>
+            </div>
+            <p class="muted">Converse para entender o projeto. Alterações continuam no fluxo de plano e aprovação abaixo.</p>
+            <div id="chat-log" class="chat-log" role="log" aria-live="polite" aria-relevant="additions text"></div>
+            <form id="chat-form">
+              <label for="chat-input">Sua mensagem</label>
+              <textarea id="chat-input" rows="3" maxlength="4000" required
+                aria-describedby="chat-note" placeholder="Pergunte sobre o projeto ou continue a conversa..."></textarea>
+              <div class="composer-footer">
+                <span id="chat-status" class="muted" role="status">Somente leitura</span>
+                <button id="chat-send" class="button button-primary" type="submit">Enviar mensagem</button>
+              </div>
+            </form>
+            <p id="chat-note" class="muted">Até quatro trocas ficam nesta aba. A IA recebe fontes permitidas atuais e até três trocas anteriores, limitadas a 12000 caracteres. Recarregar a página limpa o histórico exibido.</p>
+          </section>
           <section class="panel composer">
             <div class="panel-heading">
               <div>
