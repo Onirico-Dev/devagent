@@ -30,6 +30,25 @@ gateway = DevAgentGateway(agent, ".")
 
 
 class APIHandler(BaseHTTPRequestHandler):
+    REQUEST_READ_TIMEOUT = 30
+
+    def setup(self):
+        super().setup()
+        # Bound idle client I/O without changing the AI adapter's timeout.
+        self.connection.settimeout(self.REQUEST_READ_TIMEOUT)
+
+    def _read_request_body(self, length):
+        try:
+            body = self.rfile.read(length)
+        except TimeoutError:
+            self.close_connection = True
+            self.send_json(408, {"error": "Tempo de leitura da requisição excedido."})
+            return None
+        if len(body) != length:
+            self.close_connection = True
+            self.send_json(400, {"error": "JSON inválido"})
+            return None
+        return body
 
     def _service(self):
         return APIService(agent, gateway)
@@ -265,8 +284,11 @@ class APIHandler(BaseHTTPRequestHandler):
                 if not length.isdecimal() or not 0 < int(length) <= 64:
                     self.send_json(400, {"error": "Corpo da investigação inválido"})
                     return
+                raw = self._read_request_body(int(length))
+                if raw is None:
+                    return
                 try:
-                    body = json.loads(self.rfile.read(int(length)))
+                    body = json.loads(raw)
                 except (ValueError, UnicodeDecodeError):
                     body = None
                 if not isinstance(body, dict) or body:
@@ -317,15 +339,8 @@ class APIHandler(BaseHTTPRequestHandler):
                         )
                         return
 
-                raw = self.rfile.read(length)
-
-                if len(raw) != length:
-                    self.send_json(
-                        400,
-                        {
-                            "error": "JSON inválido",
-                        },
-                    )
+                raw = self._read_request_body(length)
+                if raw is None:
                     return
 
                 try:
