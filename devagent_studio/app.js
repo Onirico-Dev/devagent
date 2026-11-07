@@ -506,7 +506,18 @@
       throw new Error("Resposta de investigação inválida.");
     }
     context.jobId = job.job_id;
-    if (job.status === "failed") throw new Error("A investigação não foi concluída. Tente novamente.");
+    if (job.status === "failed") {
+      const publicErrors = [
+        "timeout: O tempo de espera da investigação foi excedido. Tente novamente.",
+        "transport_error: A comunicação com o Codex falhou. Tente novamente.",
+        "invalid_response: A IA retornou uma resposta inválida. Tente novamente.",
+      ];
+      throw new Error(
+        typeof job.error === "string" && publicErrors.includes(job.error)
+          ? job.error
+          : "A investigação não foi concluída. Tente novamente."
+      );
+    }
     if (job.status === "completed") {
       if (!report || !isText(report.summary, 1200) || !Array.isArray(report.hypotheses) ||
           report.hypotheses.length < 1 || report.hypotheses.length > 4 ||

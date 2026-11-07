@@ -2356,6 +2356,155 @@ function investigationCopy(h) {
   return findSummaryNode(investigationPanel(h), node => node.tagName === 'BUTTON' && node.textContent === 'Copiar investigação');
 }
 
+const PUBLIC_INVESTIGATION_ERRORS = [
+  'timeout: O tempo de espera da investigação foi excedido. Tente novamente.',
+  'transport_error: A comunicação com o Codex falhou. Tente novamente.',
+  'invalid_response: A IA retornou uma resposta inválida. Tente novamente.',
+];
+const PRIVATE_INVESTIGATION_ERROR = 'PRIVATE_EXCEPTION /private/project token=PRIVATE_CREDENTIAL prompt=PRIVATE_PROMPT raw=PRIVATE_RESPONSE';
+const INVESTIGATION_FAILURE_CASES = [
+  ...PUBLIC_INVESTIGATION_ERRORS.map(error => ({ name: error.split(':')[0], error, expected: error })),
+  { name: 'ausente', absent: true },
+  { name: 'null', error: null },
+  { name: 'objeto', error: { message: PRIVATE_INVESTIGATION_ERROR } },
+  { name: 'número', error: 176 },
+  { name: 'booleano', error: true },
+  { name: 'array', error: [PUBLIC_INVESTIGATION_ERRORS[0]] },
+  { name: 'texto arbitrário', error: PRIVATE_INVESTIGATION_ERROR },
+  { name: 'categoria isolada', error: 'timeout' },
+  { name: 'espaço adicional', error: PUBLIC_INVESTIGATION_ERRORS[0] + ' ' },
+  { name: 'prefixo adicional', error: 'PRIVATE_PREFIX ' + PUBLIC_INVESTIGATION_ERRORS[1] },
+  { name: 'conteúdo privado anexado', error: PUBLIC_INVESTIGATION_ERRORS[2] + PRIVATE_INVESTIGATION_ERROR },
+];
+
+for (const phase of ['POST', 'GET']) {
+  for (const scenario of INVESTIGATION_FAILURE_CASES) {
+    test(`falha de investigação ${phase}: ${scenario.name}`, async () => {
+      const task = summaryTask({ instruction: 'Operação pública', tests: { success: false, returncode: 1 }, git: null, status: 'pending' });
+      let current = investigationJob('163', phase === 'POST' ? 'failed' : 'running');
+      const h = createHarness([task], { investigationResponse: async () => reportResponse(current) });
+      await h.api.selectTask('163');
+      const context = h.api.state.investigationContext;
+      const failed = { ...investigationJob('163', 'failed'), error: scenario.error };
+      if (scenario.absent) delete failed.error;
+      if (phase === 'POST') current = failed;
+      h.api.startPolling();
+      await investigationButton(h).listeners.click();
+      if (phase === 'GET') {
+        assert.equal(context.running, true);
+        assert.equal(investigationButton(h).disabled, true);
+        current = failed;
+        await h.runPollingTimer();
+      }
+      const prefix = phase === 'POST'
+        ? 'Não foi possível investigar com IA: '
+        : 'Não foi possível atualizar a investigação: ';
+      assert.equal(h.elements.notification.textContent, prefix + (scenario.expected || 'A investigação não foi concluída. Tente novamente.'));
+      assert.equal(h.elements.notification.className, 'notification error');
+      assert.equal(h.api.state.notificationTimer, null);
+      assert.equal(h.api.state.investigationContext, context);
+      assert.equal(context.running, false);
+      assert.equal(context.jobId, null);
+      assert.equal(investigationButton(h).disabled, false);
+      assert.equal(investigationButton(h).textContent, 'Investigar com IA');
+      assert.equal(investigationPanel(h).hidden, true);
+      assert.equal(h.api.state.selectedTaskId, '163');
+      assert.equal(h.api.state.pendingApprovalId, '163');
+      assert.equal(h.api.state.busy, false);
+      assert.equal(h.elements['approve-button'].disabled, false);
+      assert.doesNotMatch(allText(h.elements.notification) + allText(h.elements['operation-details']), /PRIVATE_|\/private\/project/);
+      assert.deepEqual(h.copied, []);
+      const before = h.requests.filter(r => r.url.includes('/investigation')).length;
+      const notification = h.elements.notification.textContent;
+      await h.runPollingTimer();
+      await h.runPollingTimer();
+      assert.equal(h.requests.filter(r => r.url.includes('/investigation')).length, before);
+      assert.equal(h.elements.notification.textContent, notification);
+      assert.equal(h.api.state.investigationContext, context);
+      assert.equal(h.pendingPollingTimers(), 1);
+      current = { ...investigationJob(), job_id: 'b'.repeat(32) };
+      await investigationButton(h).listeners.click();
+      assert.equal(h.requests.filter(r => r.options.method === 'POST' && r.url.endsWith('/investigation')).length, 2);
+      assert.equal(h.api.state.investigationContext, context);
+      assert.equal(context.jobId, 'b'.repeat(32));
+      assert.equal(investigationPanel(h).hidden, false);
+      assert.equal(investigationButton(h).disabled, false);
+      await investigationCopy(h).listeners.click();
+      assert.equal(h.copied.length, 1);
+      assert.doesNotMatch(h.copied[0], /PRIVATE_/);
+    });
+  }
+}
+
+for (const phase of ['POST', 'GET']) {
+  for (const change of ['seleção', 'evidência']) {
+    test(`falha antiga de investigação ${phase} é ignorada após mudar ${change}`, async () => {
+      let finish;
+      const task = summaryTask();
+      const options = { investigationData: investigationJob('163', 'running') };
+      const h = createHarness([task, summaryTask({ approval_id: '164' })], options);
+      await h.api.selectTask('163');
+      const oldContext = h.api.state.investigationContext;
+      if (phase === 'GET') await investigationButton(h).listeners.click();
+      options.investigationResponse = () => new Promise(resolve => { finish = resolve; });
+      h.api.startPolling();
+      const pending = phase === 'POST'
+        ? investigationButton(h).listeners.click()
+        : h.runPollingTimer();
+      if (phase === 'GET') await new Promise(resolve => setImmediate(resolve));
+      assert.equal(typeof finish, 'function');
+      if (change === 'seleção') await h.api.selectTask('164');
+      else {
+        task.tests.stderr = 'Evidência atualizada';
+        await h.api.selectTask('163');
+      }
+      const currentContext = h.api.state.investigationContext;
+      assert.notEqual(currentContext, oldContext);
+      options.investigationResponse = async () => reportResponse({ ...investigationJob(currentContext.task.approval_id, 'running'), job_id: 'b'.repeat(32) });
+      await investigationButton(h).listeners.click();
+      const notification = h.elements.notification.textContent;
+      finish(reportResponse({ ...investigationJob('163', 'failed'), error: PUBLIC_INVESTIGATION_ERRORS[0] }));
+      await pending;
+      assert.equal(h.api.state.investigationContext, currentContext);
+      assert.equal(h.api.state.selectedTaskId, change === 'seleção' ? '164' : '163');
+      assert.equal(currentContext.running, true);
+      assert.equal(currentContext.jobId, 'b'.repeat(32));
+      assert.equal(investigationButton(h).disabled, true);
+      assert.equal(investigationPanel(h).hidden, true);
+      assert.equal(h.elements.notification.textContent, notification);
+      assert.equal(h.pendingPollingTimers(), 1);
+    });
+  }
+}
+
+test('GET de investigação pendente mantém identidade e impede consultas simultâneas', async () => {
+  let finish;
+  const options = { investigationData: investigationJob('163', 'running') };
+  const h = createHarness([summaryTask()], options);
+  await h.api.selectTask('163');
+  await investigationButton(h).listeners.click();
+  const context = h.api.state.investigationContext;
+  options.investigationResponse = () => new Promise(resolve => { finish = resolve; });
+  h.api.startPolling();
+  const pending = h.runPollingTimer();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(typeof finish, 'function');
+  assert.equal(h.api.state.investigationContext, context);
+  assert.equal(context.polling, true);
+  await h.api.pollTasks();
+  await investigationButton(h).listeners.click();
+  assert.equal(h.requests.filter(r => r.url.includes('/investigation/')).length, 1);
+  assert.equal(h.requests.filter(r => r.options.method === 'POST').length, 1);
+  finish(reportResponse({ ...investigationJob('163', 'failed'), error: PUBLIC_INVESTIGATION_ERRORS[1] }));
+  await pending;
+  assert.equal(h.api.state.investigationContext, context);
+  assert.equal(context.polling, false);
+  assert.equal(context.running, false);
+  assert.equal(context.jobId, null);
+  assert.equal(investigationButton(h).disabled, false);
+  assert.equal(h.pendingPollingTimers(), 1);
+});
+
 test('investigação usa POST explícito e preserva aprovação, seleção, prévia e cópias', async () => {
   const task = summaryTask({ status: 'pending', plan: { objective: 'Plano', changes: [
     { path: 'example.py', change_type: 'create', content: 'VALUE = 1\n' }], tests: [], risks: [] } });
