@@ -440,6 +440,15 @@ MANIFESTO SHA256 DAS FONTES UTF-8:
                 raise MissingChangesError("missing")
             raise ValueError("Campo obrigatório 'changes' ausente.")
         self._validate_required_changes(instruction, changes_data)
+        for item in changes_data:
+            if isinstance(item, dict) and "edits" in item:
+                kind = item.get("change_type")
+                if kind is None:
+                    kind = item.get("type")
+                if kind != "modify" or "content" in item:
+                    continue  # Local-edit preflight reports these constraints.
+                item = {**item, "content": ""}
+            self._validate_change_item(item)
         return fields
 
     def _build_plan(
