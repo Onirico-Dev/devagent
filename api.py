@@ -209,6 +209,19 @@ class APIHandler(BaseHTTPRequestHandler):
 
             task_route = path.split("/")
 
+            if len(task_route) == 3 and task_route[1] == "chat" and task_route[2]:
+                try:
+                    result = service.get_chat(task_route[2])
+                except Exception as error:
+                    self.log_error("Falha ao atualizar conversa: %s", type(error).__name__)
+                    self.send_json(500, {"error": "Não foi possível atualizar a conversa."})
+                    return
+                if result is None:
+                    self.send_json(404, {"error": "Conversa não encontrada"})
+                else:
+                    self.send_json(200, result)
+                return
+
             if len(task_route) == 3 and task_route[1] == "consultations" and task_route[2]:
                 result = service.get_consultation(task_route[2])
                 if result is None:
@@ -303,9 +316,9 @@ class APIHandler(BaseHTTPRequestHandler):
                 self.handle_error(error)
             return
 
-        if path in ("/plan", "/consultations"):
+        if path in ("/plan", "/consultations", "/chat"):
             try:
-                if path == "/consultations" and self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json":
+                if path in ("/consultations", "/chat") and self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json":
                     self.send_json(415, {"error": "Use Content-Type application/json"})
                     return
                 content_length = self.headers.get(
@@ -370,6 +383,14 @@ class APIHandler(BaseHTTPRequestHandler):
                     )
                     return
 
+                if path == "/chat":
+                    if set(data) != {"message", "history"}:
+                        self.send_json(400, {"error": "A conversa exige somente message e history"})
+                        return
+                    result = self._service().start_chat(data["message"], data["history"])
+                    self.send_json(202 if result["status"] == "running" else 200, result)
+                    return
+
                 instruction = data.get("instruction")
 
                 if (
@@ -398,7 +419,12 @@ class APIHandler(BaseHTTPRequestHandler):
                 )
 
             except Exception as error:
-                self.handle_error(error)
+                if path == "/chat":
+                    self.log_error("Falha ao iniciar conversa: %s", type(error).__name__)
+                    self.send_json(409 if isinstance(error, ValueError) else 500,
+                                   {"error": "Não foi possível iniciar a conversa. Confira a mensagem e tente novamente."})
+                else:
+                    self.handle_error(error)
 
             return
 

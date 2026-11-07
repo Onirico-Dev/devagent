@@ -207,5 +207,12 @@ class TaskInvestigations:
                 return None
             return self._view(job)
 
+    def get_chat(self, job_id, owner):
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if job is None or job["owner"] is not owner or not job["approval_id"].startswith("chat:"):
+                return None
+            return self._view(job)
+
 
 TASK_INVESTIGATIONS = TaskInvestigations()

@@ -4,6 +4,7 @@ from core.adapters.groq import GroqAdapter
 from core.api.task_diagnostic import diagnose_task
 from core.api.task_investigation import TASK_INVESTIGATIONS
 from core.api.project_consultation import public_consultation, start_consultation
+from core.api.project_chat import public_chat, start_chat
 
 
 class APIService:
@@ -110,6 +111,16 @@ class APIService:
 
     def get_consultation(self, job_id):
         return public_consultation(TASK_INVESTIGATIONS.get_consultation(job_id, self.gateway))
+
+    def start_chat(self, message, history):
+        root = getattr(self.agent, "root", None)
+        if not isinstance(root, str) or not root:
+            raise ValueError("Raiz do projeto indisponível para conversa.")
+        return start_chat(TASK_INVESTIGATIONS, root, message, history,
+                          getattr(self.agent, "ai", None), self.gateway)
+
+    def get_chat(self, job_id):
+        return public_chat(TASK_INVESTIGATIONS.get_chat(job_id, self.gateway))
 
     def create_task(self, instruction):
         self.gateway.agent = self.agent
