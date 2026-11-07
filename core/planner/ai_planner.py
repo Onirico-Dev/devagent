@@ -287,10 +287,12 @@ MANIFESTO SHA256 DAS FONTES UTF-8:
                 "Objetivo não pode ser vazio."
             )
 
-        changes_data = data.get(
-            "changes",
-            [],
-        )
+        if "changes" not in data:
+            raise ValueError(
+                "Campo obrigatório 'changes' ausente."
+            )
+
+        changes_data = data["changes"]
         tests = data.get(
             "tests",
             [],

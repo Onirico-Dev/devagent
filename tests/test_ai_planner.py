@@ -11,8 +11,10 @@ class FixedAdapter:
     def __init__(self, response):
         self.response = response
         self.last_prompt = None
+        self.generate_calls = 0
 
     def generate(self, prompt):
+        self.generate_calls += 1
         self.last_prompt = prompt
         return self.response
 
@@ -48,6 +50,7 @@ def test_ai_planner_creates_plan_from_valid_json():
     assert plan.changes[0].reason == "Criar arquivo principal"
     assert plan.tests == ["tests/test_ai_planner.py"]
     assert plan.risks == ["Baixo"]
+    assert adapter.generate_calls == 1
 
 
 def test_ai_planner_supports_multiple_change_types():
@@ -119,6 +122,51 @@ def test_ai_planner_rejects_non_object_json():
         match="deve ser um objeto JSON",
     ):
         AIPlanner(adapter).create_plan("Crie app.py")
+
+
+@pytest.mark.parametrize(
+    "changes_fields, expected_error",
+    [
+        ({}, "Campo obrigatório 'changes' ausente."),
+        ({"changes": None}, "Campo 'changes' deve ser uma lista."),
+        ({"changes": {}}, "Campo 'changes' deve ser uma lista."),
+        ({"changes": "invalido"}, "Campo 'changes' deve ser uma lista."),
+        ({"changes": 1}, "Campo 'changes' deve ser uma lista."),
+        ({"changes": False}, "Campo 'changes' deve ser uma lista."),
+        (
+            {"changes": []},
+            "A solicitação exige alteração no projeto, "
+            "mas a IA retornou um plano sem alterações.",
+        ),
+    ],
+)
+def test_ai_planner_validates_changes_without_retry(changes_fields, expected_error):
+    response = {
+        "objective": "Criar arquivo",
+        "tests": [],
+        "risks": [],
+        **changes_fields,
+    }
+    adapter = FixedAdapter(json.dumps(response))
+
+    with pytest.raises(ValueError) as error:
+        AIPlanner(adapter).create_plan("criar o arquivo novo.py")
+
+    assert str(error.value) == expected_error
+    assert adapter.generate_calls == 1
+
+
+def test_ai_planner_rejects_missing_changes_without_instruction():
+    response = {
+        "objective": "Objetivo válido",
+        "tests": [],
+        "risks": [],
+    }
+
+    with pytest.raises(ValueError) as error:
+        AIPlanner._validate_plan_data(response)
+
+    assert str(error.value) == "Campo obrigatório 'changes' ausente."
 
 
 def test_ai_planner_rejects_non_list_changes():
