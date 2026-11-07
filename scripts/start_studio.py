@@ -26,11 +26,23 @@ def main():
     if not isinstance(api.agent.ai, CodexAdapter):
         raise SystemExit("Adaptador Codex não selecionado.")
 
-    server = HTTPServer(("127.0.0.1", 0), api.APIHandler)
-    url = f"http://127.0.0.1:{server.server_port}"
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
+    server = None
+    worker = None
+    failures = []
+    reason = "startup_failure"
     try:
+        server = HTTPServer(("127.0.0.1", 0), api.APIHandler)
+        url = f"http://127.0.0.1:{server.server_port}"
+
+        def serve():
+            try:
+                server.serve_forever()
+            except BaseException as error:
+                failures.append(error)
+
+        worker = threading.Thread(target=serve, daemon=False)
+        worker.start()
+        reason = "loop_failure"
         print("Adaptador: Codex", flush=True)
         print("Projeto:", root, flush=True)
         print("Studio:", url, flush=True)
@@ -43,11 +55,34 @@ def main():
             except OSError:
                 print("Abra o endereço acima manualmente.", flush=True)
         worker.join()
+        if failures:
+            raise failures[0]
+        reason = "loop_returned"
     except KeyboardInterrupt:
+        reason = "keyboard_interrupt"
         print("\nEncerrando Studio...", flush=True)
+    except BaseException as error:
+        print(
+            f"DevAgent Studio: {reason}; type={type(error).__name__}",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise
     finally:
-        server.shutdown()
-        server.server_close()
+        try:
+            if worker is not None and worker.ident is not None:
+                # Wait for an active request before closing the listening socket.
+                if worker.is_alive():
+                    server.shutdown()
+                worker.join()
+            if server is not None:
+                server.server_close()
+        finally:
+            print(
+                f"DevAgent Studio: stopped; reason={reason}",
+                file=sys.stderr,
+                flush=True,
+            )
 
 
 if __name__ == "__main__":

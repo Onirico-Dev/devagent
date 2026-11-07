@@ -99,7 +99,6 @@ def test_second_bad_anchor_refuses_without_third_call():
     (document(path="../app.py"), "presente no contexto"),
     (document(content="x"), "MODIFY"),
     (document(new="é" * 100001), "200000 bytes"),
-    ({"objective": "Atualizar", "changes": [], "tests": [], "risks": []}, "sem alterações"),
 ])
 @pytest.mark.parametrize("after_anchor", [False, True])
 def test_other_validation_errors_are_not_retried(response, message, after_anchor):
@@ -182,22 +181,20 @@ def test_second_failure_registers_no_task_and_preserves_files(tmp_path):
     assert len(adapter.prompts) == 2
 
 
-def test_invalid_replacement_recovers_once():
+def test_invalid_replacement_is_not_eligible_for_retry():
     adapter = Adapter(
         document("VALUE = 1", "VALUE = 1"),
         document(),
     )
-    result = plan(adapter)
-    assert result.changes[0].content == SOURCE.replace("VALUE = 1", "VALUE = 2")
-    assert len(adapter.prompts) == 2
-    assert "invalid_replacement" in adapter.prompts[1]
-    assert "uma substituição local era inválida ou sem alteração" in adapter.prompts[1]
-    assert "uma âncora old era ausente ou ambígua" not in adapter.prompts[1]
+    with pytest.raises(ValueError, match="Substituição local inválida"):
+        plan(adapter)
+    assert len(adapter.prompts) == 1
+    assert len(adapter.responses) == 1
 
 
 def test_invalid_replacement_second_failure_stops():
     adapter = Adapter(
-        document("VALUE = 1", "VALUE = 1"),
+        document("ABSENT"),
         document("", "VALUE = 2"),
         document(),
     )

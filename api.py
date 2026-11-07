@@ -1,6 +1,7 @@
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlsplit
 import json
+import sys
 from pathlib import Path
 
 from agent import DevAgent
@@ -98,6 +99,7 @@ class APIHandler(BaseHTTPRequestHandler):
             )
             return
 
+        self.log_error("Falha interna na rota: %s", type(error).__name__)
         self.send_json(
             500,
             {
@@ -467,24 +469,45 @@ class APIHandler(BaseHTTPRequestHandler):
 
 
 def run():
-    server = HTTPServer(
-        ("127.0.0.1", 8765),
-        APIHandler,
-    )
-
-    print(
-        "DevAgent API em "
-        "http://127.0.0.1:8765"
-    )
-
+    server = None
+    reason = "startup_failure"
     try:
-        server.serve_forever()
+        server = HTTPServer(
+            ("127.0.0.1", 8765),
+            APIHandler,
+        )
+        print(
+            "DevAgent API em "
+            "http://127.0.0.1:8765",
+            flush=True,
+        )
+        reason = "loop_failure"
+        try:
+            server.serve_forever()
+            reason = "loop_returned"
+        except KeyboardInterrupt:
+            reason = "keyboard_interrupt"
+            print("\nServidor encerrado.", flush=True)
 
-    except KeyboardInterrupt:
-        print("\nServidor encerrado.")
+    except BaseException as error:
+        # Preserve exception/exit status; never log instructions or credentials.
+        print(
+            f"DevAgent HTTP: {reason}; type={type(error).__name__}",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise
 
     finally:
-        server.server_close()
+        try:
+            if server is not None:
+                server.server_close()
+        finally:
+            print(
+                f"DevAgent HTTP: stopped; reason={reason}",
+                file=sys.stderr,
+                flush=True,
+            )
 
 
 if __name__ == "__main__":

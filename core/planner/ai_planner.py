@@ -14,6 +14,20 @@ from core.schemas.models import (
 )
 
 
+class MissingChangesError(ValueError):
+    """Validated absence of changes required by the instruction."""
+
+    def __init__(self, reason):
+        self.reason = reason
+        message = (
+            "Campo obrigatório 'changes' ausente."
+            if reason == "missing"
+            else "A solicitação exige alteração no projeto, "
+                 "mas a IA retornou um plano sem alterações."
+        )
+        super().__init__(message)
+
+
 class AIPlanner:
     MAX_CONTEXT_CHARS = 262144
 
@@ -227,13 +241,11 @@ MANIFESTO SHA256 DAS FONTES UTF-8:
             except (json.JSONDecodeError, TypeError) as error:
                 raise ValueError("A IA retornou um plano que não é JSON válido.") from error
             try:
+                self._validate_response_data(data, instruction)
                 expanded = expand_local_edits(data, sources)
-            except (LocalEditAnchorError, ValueError) as error:
-                invalid_replacement = (
-                    type(error) is ValueError
-                    and str(error) == "Substituição local inválida ou sem alteração."
-                )
-                if not isinstance(error, LocalEditAnchorError) and not invalid_replacement:
+                return self._build_plan(expanded, instruction)
+            except (LocalEditAnchorError, MissingChangesError) as error:
+                if isinstance(error, LocalEditAnchorError) and error.reason not in {"missing", "ambiguous"}:
                     raise
                 if attempt == 1:
                     raise
@@ -244,26 +256,30 @@ MANIFESTO SHA256 DAS FONTES UTF-8:
                     }, ensure_ascii=False)
                 else:
                     diagnostic = json.dumps({
-                        "reason": "invalid_replacement",
+                        "reason": error.reason,
                     }, ensure_ascii=False)
                 failure_description = (
                     "uma âncora old era ausente ou ambígua"
                     if isinstance(error, LocalEditAnchorError)
-                    else "uma substituição local era inválida ou sem alteração"
+                    else "as alterações exigidas estavam ausentes"
+                )
+                recovery = (
+                    "Amplie as âncoras com contexto literal da função, conferindo cada old após as edições anteriores. "
+                    "Se não conseguir garantir a unicidade, use o formato content completo apenas para esse arquivo. "
+                    if isinstance(error, LocalEditAnchorError)
+                    else "Retorne o campo changes com uma lista não vazia das alterações exigidas pela instrução. "
                 )
                 retry_prompt = prompt + (
                     "\nNOVA TENTATIVA ÚNICA DE PLANEJAMENTO:\n"
                     f"A resposta anterior foi recusada antes de cadastrar um plano: {failure_description}. "
                     "Nenhuma alteração foi aplicada. Gere novamente o plano completo a partir das fontes originais já fornecidas. "
-                    "Amplie as âncoras com contexto literal da função, conferindo cada old após as edições anteriores. "
-                    "Se não conseguir garantir a unicidade, use o formato content completo apenas para esse arquivo. "
+                    + recovery +
                     "Preserve o objetivo, escopo e testes solicitados. Os hashes e todas as validações continuam obrigatórios. "
                     "Não use ferramentas nem execute comandos. Retorne somente JSON.\n"
                     "DIAGNÓSTICO DA VALIDAÇÃO:\n" + diagnostic
                 )
                 response = self.ai.generate(retry_prompt)
                 continue
-            return self._build_plan(expanded, instruction)
 
     @staticmethod
     def _validate_plan_data(data):
@@ -409,10 +425,22 @@ MANIFESTO SHA256 DAS FONTES UTF-8:
             and self._requires_change(instruction)
             and not changes
         ):
-            raise ValueError(
-                "A solicitação exige alteração no projeto, "
-                "mas a IA retornou um plano sem alterações."
-            )
+            raise MissingChangesError("empty")
+
+    def _validate_response_data(self, data, instruction):
+        missing = isinstance(data, dict) and "changes" not in data
+        # The temporary envelope validates all other fields; missing changes
+        # are still refused below and never accepted as an empty plan.
+        envelope = {**data, "changes": []} if missing else data
+        fields = self._validate_plan_data(envelope)
+        objective, changes_data, tests, risks = fields
+        self._validate_plan_tests_and_risks(tests, risks)
+        if missing:
+            if isinstance(instruction, str) and self._requires_change(instruction):
+                raise MissingChangesError("missing")
+            raise ValueError("Campo obrigatório 'changes' ausente.")
+        self._validate_required_changes(instruction, changes_data)
+        return fields
 
     def _build_plan(
         self,
@@ -424,12 +452,7 @@ MANIFESTO SHA256 DAS FONTES UTF-8:
             changes_data,
             tests,
             risks,
-        ) = self._validate_plan_data(data)
-
-        self._validate_plan_tests_and_risks(
-            tests,
-            risks,
-        )
+        ) = self._validate_response_data(data, instruction)
 
         changes = self._build_changes(
             changes_data,

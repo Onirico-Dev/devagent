@@ -140,7 +140,7 @@ def test_ai_planner_rejects_non_object_json():
         ),
     ],
 )
-def test_ai_planner_validates_changes_without_retry(changes_fields, expected_error):
+def test_ai_planner_validates_changes_with_bounded_eligible_retry(changes_fields, expected_error):
     response = {
         "objective": "Criar arquivo",
         "tests": [],
@@ -153,7 +153,8 @@ def test_ai_planner_validates_changes_without_retry(changes_fields, expected_err
         AIPlanner(adapter).create_plan("criar o arquivo novo.py")
 
     assert str(error.value) == expected_error
-    assert adapter.generate_calls == 1
+    eligible = not changes_fields or changes_fields.get("changes") == []
+    assert adapter.generate_calls == (2 if eligible else 1)
 
 
 def test_ai_planner_rejects_missing_changes_without_instruction():
