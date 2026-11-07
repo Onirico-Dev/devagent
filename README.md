@@ -26,7 +26,7 @@ Esses resultados representam o estado validado naquele momento. Não garantem au
 - Observações e propostas de execução supervisionada.
 - Interface de linha de comando (CLI).
 - API HTTP local.
-- Adaptadores de IA, incluindo Mock e Groq.
+- Adaptadores de IA, incluindo Mock, Groq e Codex.
 
 ## 3. Requisitos
 
@@ -310,6 +310,28 @@ A API retorna HTTP 400 para erros de validação da requisição de planejamento
 Antes de integrar um cliente externo, consulte os testes e o código para verificar os formatos exatos das respostas e os códigos de erro de cada operação.
 
 **Segurança:** não exponha a API diretamente à Internet sem autenticação, autorização, controles de acesso e proteção de transporte apropriados. O endereço local, por si só, não constitui autenticação.
+
+### 7.8. Studio com Codex e encerramento
+
+Em um ambiente com o adaptador Codex já configurado, inicie o Studio na raiz do projeto:
+
+```bash
+python scripts/start_studio.py --no-browser
+```
+
+Abra o endereço mostrado na linha `Studio:`. Esse iniciador escolhe uma porta disponível; ela pode mudar em cada inicialização. Sem `--no-browser`, ele também tenta abrir o navegador pelo Termux.
+
+Mantenha a sessão aberta enquanto usar o Studio. Ctrl+C solicita o encerramento e aguarda o worker antes de fechar o socket. Falhas do worker são propagadas à thread principal, preservando o código de saída. Os registros de ciclo são enviados para stderr; redirecione ou capture essa saída quando precisar preservá-la.
+
+Os sockets de clientes HTTP têm limite de 30 segundos de inatividade. Um corpo incompleto que exceda esse limite retorna HTTP 408; um corpo encerrado antes do tamanho declarado retorna HTTP 400. A operação não é iniciada nesses casos. Esse limite de entrada não altera o timeout do adaptador de IA nem estabelece um prazo total para a geração de planos.
+
+### 7.9. Operação mais recente e recuperação de planejamento
+
+`GET /tasks/latest` compara instantes de `updated_at`, incluindo seus fusos. Se a data não puder ser interpretada, usa `created_at`; registros sem data utilizável ficam atrás dos registros com data válida. Datas legadas sem fuso são interpretadas como UTC. Empates preservam a ordem existente, sem usar o identificador da operação como data. A consulta não regrava o histórico.
+
+O planejador valida objetivo, testes, riscos, campos das alterações e restrições estáticas das edições locais antes de procurar âncoras. Assim, um hash ou uma substituição inválida em outro ponto da resposta não fica oculto pela primeira âncora ausente. A reconstrução continua sequencial e mantém a verificação do limite final de conteúdo.
+
+O orçamento de recuperação permanece em duas chamadas totais à IA: a chamada inicial e, quando elegível, uma regeneração. Campo `changes` ausente, lista vazia exigindo alterações e âncora ausente/ambígua compartilham esse orçamento. Substituições inválidas, hashes incorretos e erros estruturais não recebem uma nova tentativa. Os hashes, limites de conteúdo, ocorrência única e aprovação humana continuam obrigatórios.
 
 ## 8. Persistência e diretório de trabalho
 
