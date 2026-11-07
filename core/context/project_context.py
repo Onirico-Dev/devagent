@@ -1,5 +1,6 @@
 import os
 import re
+import json
 from pathlib import Path
 
 from core.context.python_analyzer import PythonAnalyzer
@@ -71,13 +72,13 @@ class ProjectContext:
         return any(part.startswith(".env.") for part in path.parts)
 
     def _is_relevant(self, path: Path) -> bool:
+        if self._is_ignored(path):
+            return False
+
         if path.is_symlink():
             return False
 
         if not path.is_file():
-            return False
-
-        if self._is_ignored(path):
             return False
 
         return path.suffix.lower() in self.DEFAULT_EXTENSIONS
@@ -95,17 +96,56 @@ class ProjectContext:
                 if self._is_relevant(path):
                     yield path.relative_to(self.root)
 
+    @staticmethod
+    def explicit_path_candidates(instruction):
+        return list(dict.fromkeys(re.findall(
+            r"(?<![\w./-])(?:[\w./-]+\.[A-Za-z0-9]+|\.env\b)", instruction
+        )))
+
+    def source_omission(self, name):
+        """Classify a candidate without probing lexically protected paths."""
+        relative = Path(name)
+        unresolved = self.root / relative
+        if relative.is_absolute() or self._is_ignored(unresolved):
+            return "protected"
+        try:
+            path = unresolved.resolve()
+            if not path.is_relative_to(self.root) or self._is_ignored(path) or unresolved.is_symlink():
+                return "protected"
+            if path.suffix.lower() not in self.DEFAULT_EXTENSIONS:
+                return "extension"
+            if not path.is_file():
+                return "not_found"
+        except OSError:
+            return "unavailable"
+        return None
+
+    @staticmethod
+    def record_source_selection(diagnostics, name, reason):
+        if diagnostics is None:
+            return
+        path = str(name)
+        if reason == "protected" or Path(path).is_absolute() or ".." in Path(path).parts:
+            path = "[caminho bloqueado]"
+        if len(path) > 240:
+            diagnostics["truncated"] = True
+            return
+        record = {"path": path, "reason": reason}
+        if record in diagnostics["records"]:
+            return
+        proposed = [*diagnostics["records"], record]
+        if len(proposed) > 48 or len(json.dumps(proposed, ensure_ascii=False).encode("utf-8")) > 12000:
+            diagnostics["truncated"] = True
+            return
+        diagnostics["records"].append(record)
+
     def select_explicit_paths(self, instruction):
         """Return validated existing paths explicitly named in the instruction."""
         explicit = []
-        for name in re.findall(r"(?<![\w./-])[\w./-]+\.[A-Za-z0-9]+", instruction):
+        for name in self.explicit_path_candidates(instruction):
             relative = Path(name)
-            path = (self.root / relative).resolve()
             if (
-                not relative.is_absolute()
-                and path.is_relative_to(self.root)
-                and not self._is_ignored(path)
-                and self._is_relevant(self.root / relative)
+                self.source_omission(name) is None
                 and relative not in explicit
             ):
                 explicit.append(relative)
@@ -229,9 +269,12 @@ class ProjectContext:
             f"CLASSES: {analysis['classes']}\n"
         )
 
-    def build(self, relevant_paths=None, *, focused=False, snapshots=None):
+    def build(self, relevant_paths=None, *, focused=False, snapshots=None, diagnostics=None):
         if snapshots is not None:
             snapshots.clear()
+        if diagnostics is not None:
+            diagnostics.clear()
+            diagnostics.update(records=[], truncated=False)
         requested = list(dict.fromkeys(
             Path(path)
             for path in (relevant_paths or [])
@@ -242,23 +285,27 @@ class ProjectContext:
 
         for relative in sorted(relevant_paths):
             if relative not in files:
+                if self._is_ignored(self.root / relative):
+                    self.record_source_selection(diagnostics, relative, "protected")
+                    continue
                 absolute = (self.root / relative).resolve()
 
                 try:
                     absolute.relative_to(self.root)
                 except ValueError:
+                    self.record_source_selection(diagnostics, relative, "protected")
                     continue
 
-                if not absolute.is_file():
-                    continue
-
-                if (self.root / relative).is_symlink():
-                    continue
-
-                if self._is_ignored(self.root / relative) or self._is_ignored(absolute):
+                if self._is_ignored(absolute) or (self.root / relative).is_symlink():
+                    self.record_source_selection(diagnostics, relative, "protected")
                     continue
 
                 if absolute.suffix.lower() not in self.DEFAULT_EXTENSIONS:
+                    self.record_source_selection(diagnostics, relative, "extension")
+                    continue
+
+                if not absolute.is_file():
+                    self.record_source_selection(diagnostics, relative, "not_found")
                     continue
 
                 files.append(relative)
@@ -287,6 +334,7 @@ class ProjectContext:
             path = (self.root / relative).resolve()
 
             if path.stat().st_size > self.max_file_size:
+                self.record_source_selection(diagnostics, relative, "file_size")
                 continue
 
             content = self.read_file(relative, preserve_newlines=True) if snapshots is not None else self.read_file(relative)
@@ -303,11 +351,14 @@ class ProjectContext:
                 )
 
             if total + len(section) + 1 > self.max_context_chars:
+                self.record_source_selection(diagnostics, relative, "context_budget")
                 continue
 
             sections.append(section)
             if snapshots is not None and not content.startswith("[ARQUIVO BINÁRIO OMITIDO:"):
                 snapshots[relative.as_posix()] = content
+            self.record_source_selection(diagnostics, relative,
+                "binary" if content.startswith("[ARQUIVO BINÁRIO OMITIDO:") else "included")
             total += len(section) + 1
             included += 1
 

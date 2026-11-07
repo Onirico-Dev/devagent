@@ -3,6 +3,7 @@
 import hashlib
 import json
 import re
+from pathlib import Path
 
 from core.api.task_investigation import MAX_RESPONSE, _text, _unique_object, excerpt, investigation_facts
 from core.context.project_context import ProjectContext
@@ -17,16 +18,31 @@ CONCEPTS = (
 
 def consultation_facts(root, instruction, task):
     context = ProjectContext(root, max_files=16, max_file_size=100000, max_context_chars=120000)
+    explicit = context.explicit_path_candidates(instruction)
     selected = context.select_explicit_paths(instruction)
+    origin = "explicit"
     if not selected:
         selected = [path for pattern, paths in CONCEPTS if re.search(pattern, instruction, re.IGNORECASE) for path in paths]
+        origin = "concept"
     if not selected:
-        selected = context.select_relevant_paths(instruction)[:16]
+        selected = context.select_relevant_paths(instruction)
+        origin = "relevance"
     snapshots = {}
-    context.build(relevant_paths=selected[:16], focused=True, snapshots=snapshots)
+    diagnostics = {}
+    context.build(relevant_paths=selected[:16], focused=True, snapshots=snapshots, diagnostics=diagnostics)
+    # Diagnose omitted requests without reading content or displacing selected sources.
+    explicit = [str(Path(path)) for path in explicit]
+    for path in dict.fromkeys([*explicit, *selected[16:]]):
+        if path not in selected[:16]:
+            context.record_source_selection(diagnostics, path, context.source_omission(path) or "file_limit")
+    selection = {"version": 1, "records": [
+        {**record, "origin": "explicit" if record["path"] in explicit or record["path"] == "[caminho bloqueado]"
+         else origin if record["path"] in selected else "relevance"}
+        for record in diagnostics["records"]], "truncated": diagnostics["truncated"]}
     sources = {path: {"sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
                       "text": excerpt(content, 100000)} for path, content in snapshots.items()}
     return {"request": excerpt(instruction, 12000), "sources": sources,
+            "source_selection": selection,
             "operation": {"approval_id": task["approval_id"], **investigation_facts(task)} if task else None}
 
 
@@ -44,7 +60,8 @@ def consultation_prompt(facts):
         "next_steps (1 a 6 textos até 600), missing_information (0 a 8 textos até 600), "
         "correction_proposal (null se injustificada, ou texto até 1200 para revisão humana). "
         "Cada evidence é uma lista de 1 a 4 referências: request (relato), operation (se presente) ou caminho exato de uma fonte enviada. "
-        "Não apresente conteúdo para execução automática.\nDADOS DA CONSULTA:\n" + json.dumps(facts, ensure_ascii=False)
+        "Não apresente conteúdo para execução automática.\nDADOS DA CONSULTA:\n"
+        + json.dumps({key: value for key, value in facts.items() if key != "source_selection"}, ensure_ascii=False)
     )
 
 
@@ -81,6 +98,7 @@ def consultation_report(raw, facts):
     if report["correction_proposal"] is not None and not _text(report["correction_proposal"], 1200):
         raise ValueError("Proposta inválida.")
     return {**report, "sources": [{"path": path, "sha256": source["sha256"]} for path, source in facts["sources"].items()],
+            **({"source_selection": facts["source_selection"]} if "source_selection" in facts else {}),
             "operation_id": facts["operation"]["approval_id"] if facts["operation"] else None}
 
 

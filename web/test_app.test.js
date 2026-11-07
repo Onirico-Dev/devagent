@@ -2700,6 +2700,96 @@ function consultationCopy(h) {
   return findSummaryNode(h.api.elements.consultationPanel, n => n.tagName === 'BUTTON' && n.textContent === 'Copiar consulta');
 }
 
+function sourceSelection(records = [], truncated = false) {
+  return { version: 1, records, truncated };
+}
+
+test('consulta apresenta e copia diagnóstico local com origens e motivos de omissão', async () => {
+  const job = consultationJob();
+  job.report.source_selection = sourceSelection([
+    { path: 'core/executor/test_runner.py', origin: 'explicit', reason: 'included' },
+    { path: 'tests/missing.py', origin: 'explicit', reason: 'not_found' },
+    { path: 'core/gateway.py', origin: 'concept', reason: 'file_size' },
+    { path: 'other.py', origin: 'relevance', reason: 'context_budget' },
+    { path: '[caminho bloqueado]', origin: 'explicit', reason: 'protected' },
+    { path: 'image.png', origin: 'explicit', reason: 'extension' },
+    { path: 'binary.py', origin: 'explicit', reason: 'binary' },
+    { path: 'last.py', origin: 'explicit', reason: 'file_limit' },
+    { path: 'unavailable.py', origin: 'explicit', reason: 'unavailable' },
+  ], true);
+  const h = createHarness([summaryTask({ status: 'pending' })], { consultationData: job });
+  await h.api.selectTask('163');
+  const preview = h.elements['plan-content'].firstChild;
+  h.elements.instruction.value = 'Examine as fontes sem alterar.';
+  await h.api.elements.consultButton.listeners.click();
+  const text = allText(h.api.elements.consultationPanel);
+  assert.match(text, /Cobertura da seleção de fontes/);
+  assert.match(text, /Diagnóstico gerado pelo coletor local/);
+  for (const expected of ['Solicitado', 'Por conceito', 'Por relevância', 'Incluído', 'Arquivo não encontrado',
+    'Limite de tamanho', 'contexto agregado', 'Caminho bloqueado', 'Extensão não permitida',
+    'Conteúdo binário', 'quantidade de fontes', 'Arquivo indisponível', 'Diagnóstico abreviado']) {
+    assert.ok(text.includes(expected), expected);
+  }
+  await consultationCopy(h).listeners.click();
+  assert.ok(h.copied[0].includes('tests/missing.py — Arquivo não encontrado'));
+  assert.ok(h.copied[0].includes('Diagnóstico abreviado'));
+  assert.equal(h.elements['plan-content'].firstChild, preview);
+  assert.equal(h.api.state.pendingApprovalId, '163');
+  assert.equal(h.requests.filter(r => r.options.method === 'POST').length, 1);
+});
+
+test('relatório antigo sem diagnóstico de seleção permanece utilizável e copiável', async () => {
+  const h = createHarness([], { consultationData: consultationJob() });
+  h.elements.instruction.value = 'Examine sem alterar.';
+  await h.api.elements.consultButton.listeners.click();
+  assert.doesNotMatch(allText(h.api.elements.consultationPanel), /Cobertura da seleção/);
+  await consultationCopy(h).listeners.click();
+  assert.match(h.copied[0], /SHA256/);
+});
+
+const selectionRecord = { path: 'app.py', origin: 'explicit', reason: 'included' };
+for (const selection of [null, {}, [], 'arbitrary', sourceSelection([], 'true'),
+  { ...sourceSelection(), version: 2 }, { ...sourceSelection(), extra: 'PRIVATE_SENTINEL' },
+  sourceSelection(Array(49).fill(selectionRecord)), sourceSelection([null]),
+  sourceSelection([{ ...selectionRecord, path: '' }]),
+  sourceSelection([{ ...selectionRecord, path: 'x'.repeat(241) }]),
+  sourceSelection([{ ...selectionRecord, path: '/private/absolute.py' }]),
+  sourceSelection([{ ...selectionRecord, path: '../private.py' }]),
+  sourceSelection([{ ...selectionRecord, path: 'private\\file.py' }]),
+  sourceSelection([{ ...selectionRecord, reason: 'toString' }]),
+  sourceSelection([{ ...selectionRecord, reason: ['included'] }]),
+  sourceSelection([{ ...selectionRecord, origin: 'ai' }]),
+  sourceSelection([{ ...selectionRecord, origin: ['explicit'] }]),
+  sourceSelection([{ ...selectionRecord, secret: 'PRIVATE_SENTINEL' }]),
+  sourceSelection(Array(48).fill({ ...selectionRecord, path: '𠀀'.repeat(235), reason: 'context_budget' })),
+]) {
+  test(`consulta rejeita diagnóstico de seleção inválido: ${JSON.stringify(selection).slice(0, 90)}`, async () => {
+    const job = consultationJob();
+    job.report.source_selection = selection;
+    const h = createHarness([], { consultationData: job });
+    h.elements.instruction.value = 'Examine sem alterar.';
+    await h.api.elements.consultButton.listeners.click();
+    assert.equal(h.elements.notification.className, 'notification error');
+    assert.equal(h.api.state.consultationContext.report, null);
+    assert.doesNotMatch(allText(h.api.elements.consultationPanel), /PRIVATE_SENTINEL/);
+    assert.equal(h.api.elements.consultButton.disabled, false);
+  });
+}
+
+test('diagnóstico recebido no acompanhamento GET é exibido como texto literal', async () => {
+  let job = consultationJob('running');
+  const h = createHarness([], { consultationResponse: async () => reportResponse(job) });
+  h.api.startPolling();
+  h.elements.instruction.value = 'Examine sem alterar.';
+  await h.api.elements.consultButton.listeners.click();
+  job = consultationJob();
+  job.report.source_selection = sourceSelection([{ ...selectionRecord, path: '<img src=x>.py' }]);
+  await h.runPollingTimer();
+  assert.match(allText(h.api.elements.consultationPanel), /<img src=x>.py/);
+  assert.equal(findSummaryNode(h.api.elements.consultationPanel, n => n.tagName === 'IMG'), null);
+  assert.equal(h.api.state.consultationContext.running, false);
+});
+
 test('consulta explícita usa fontes e contexto selecionado sem criar plano ou mudar aprovação', async () => {
   const task = summaryTask({ status: 'pending', plan: { objective: 'Plano', changes: [
     { path: 'example.py', change_type: 'create', content: 'VALUE = 1\n' }], tests: [], risks: [] } });

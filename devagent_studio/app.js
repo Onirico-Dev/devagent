@@ -1048,6 +1048,32 @@
     panel.append(editor);
   }
 
+  const sourceSelectionReasons = {
+    included: "Incluído",
+    protected: "Caminho bloqueado",
+    not_found: "Arquivo não encontrado",
+    extension: "Extensão não permitida",
+    file_size: "Limite de tamanho do arquivo",
+    context_budget: "Limite do contexto agregado",
+    binary: "Conteúdo binário",
+    file_limit: "Limite de quantidade de fontes",
+    unavailable: "Arquivo indisponível",
+  };
+  const sourceSelectionOrigins = { explicit: "Solicitado", concept: "Por conceito", relevance: "Por relevância" };
+
+  function validSourceSelection(selection) {
+    return selection && Object.keys(selection).sort().join(",") === "records,truncated,version" &&
+      selection.version === 1 && typeof selection.truncated === "boolean" &&
+      Array.isArray(selection.records) && selection.records.length <= 48 &&
+      JSON.stringify(selection).length <= 16000 && selection.records.every(record =>
+        record && Object.keys(record).sort().join(",") === "origin,path,reason" &&
+        typeof record.path === "string" && record.path.trim().length > 0 && [...record.path].length <= 240 &&
+        (record.path === "[caminho bloqueado]" ||
+          (!record.path.startsWith("/") && !record.path.includes("\\") && !record.path.split("/").includes(".."))) &&
+        typeof record.reason === "string" && typeof record.origin === "string" &&
+        Object.hasOwn(sourceSelectionReasons, record.reason) && Object.hasOwn(sourceSelectionOrigins, record.origin));
+  }
+
   function renderConsultation(context) {
     const panel = elements.consultationPanel;
     clearNode(panel);
@@ -1074,6 +1100,14 @@
       ["Proposta para revisão humana", report.correction_proposal ? [report.correction_proposal] : ["Nenhuma proposta justificada pelos dados disponíveis."]],
       ["Fontes consultadas na abertura da consulta", report.sources.map(source => `${source.path} — SHA256 ${source.sha256}`)],
     ];
+    if (report.source_selection !== undefined) {
+      sections.push(["Cobertura da seleção de fontes", [
+        "Diagnóstico gerado pelo coletor local.",
+        ...report.source_selection.records.map(record =>
+          `${sourceSelectionOrigins[record.origin]}: ${record.path} — ${sourceSelectionReasons[record.reason]}.`),
+        ...(report.source_selection.truncated ? ["Diagnóstico abreviado: nem todos os registros foram apresentados."] : []),
+      ]]);
+    }
     for (const [title, values] of sections) {
       panel.append(element("strong", "", title));
       const list = document.createElement("ul");
@@ -1114,6 +1148,9 @@
       if (!r || !textOk(r.summary, 1200) || !Array.isArray(r.sources) || r.sources.length > 16 ||
           !r.sources.every(s => s && textOk(s.path, 240) && /^[a-f0-9]{64}$/.test(s.sha256)) ||
           !(r.operation_id === null || textOk(r.operation_id, 100))) throw new Error("Fontes da consulta inválidas.");
+      if (r.source_selection !== undefined && !validSourceSelection(r.source_selection)) {
+        throw new Error("Seleção de fontes inválida.");
+      }
       const allowed = new Set(["request", ...r.sources.map(s => s.path), ...(r.operation_id ? ["operation"] : [])]);
       const evidenceOk = values => Array.isArray(values) && values.length > 0 && values.length <= 4 && values.every(v => allowed.has(v));
       const listOk = (values, min, max) => Array.isArray(values) && values.length >= min && values.length <= max;
