@@ -333,6 +333,8 @@ O planejador valida objetivo, testes, riscos, campos das alterações e restriç
 
 O orçamento de recuperação permanece em duas chamadas totais à IA: a chamada inicial e, quando elegível, uma regeneração. Campo `changes` ausente, lista vazia exigindo alterações e âncora ausente/ambígua compartilham esse orçamento. Substituições inválidas, hashes incorretos e erros estruturais não recebem uma nova tentativa. Os hashes, limites de conteúdo, ocorrência única e aprovação humana continuam obrigatórios.
 
+Na resposta da IA, variações de maiúsculas e minúsculas dos tipos conhecidos `create`, `modify` e `delete` são normalizadas antes da validação. Isso não consome uma regeneração. O plano apresentado e persistido mantém os tipos canônicos em minúsculas; valores desconhecidos continuam inválidos. Caminhos, conteúdos, hashes e âncoras não passam por essa normalização.
+
 ## 8. Persistência e diretório de trabalho
 
 O estado é distribuído entre componentes. Entre os locais relevantes estão:

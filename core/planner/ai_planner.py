@@ -240,6 +240,7 @@ MANIFESTO SHA256 DAS FONTES UTF-8:
                 data = json.loads(response)
             except (json.JSONDecodeError, TypeError) as error:
                 raise ValueError("A IA retornou um plano que não é JSON válido.") from error
+            data = self._normalize_change_types(data)
             try:
                 self._validate_response_data(data, instruction)
                 expanded = expand_local_edits(data, sources)
@@ -280,6 +281,24 @@ MANIFESTO SHA256 DAS FONTES UTF-8:
                 )
                 response = self.ai.generate(retry_prompt)
                 continue
+
+    @staticmethod
+    def _normalize_change_types(data):
+        """Canonicalize known AI action values; keep the internal enum strict."""
+        if not isinstance(data, dict) or not isinstance(data.get("changes"), list):
+            return data
+        allowed = {kind.value for kind in ChangeType}
+        changes = []
+        for item in data["changes"]:
+            if isinstance(item, dict):
+                normalized = dict(item)
+                for field in ("type", "change_type"):
+                    value = item.get(field)
+                    if isinstance(value, str) and value.lower() in allowed:
+                        normalized[field] = value.lower()
+                item = normalized
+            changes.append(item)
+        return {**data, "changes": changes}
 
     @staticmethod
     def _validate_plan_data(data):
