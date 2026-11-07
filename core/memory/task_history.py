@@ -299,6 +299,21 @@ class TaskHistory:
             if task["status"] == TaskHistoryStatus.PENDING.value
         ]
 
+    @staticmethod
+    def _latest_timestamp(task):
+        for field in ("updated_at", "created_at"):
+            value = task.get(field)
+            if not isinstance(value, str):
+                continue
+            try:
+                instant = datetime.fromisoformat(value)
+                if instant.tzinfo is None:
+                    instant = instant.replace(tzinfo=timezone.utc)
+                return instant.timestamp()
+            except (ValueError, OverflowError, OSError):
+                continue
+        return float("-inf")
+
     def latest(self):
         tasks = self.list_all()
 
@@ -307,8 +322,5 @@ class TaskHistory:
 
         return max(
             tasks,
-            key=lambda task: task.get(
-                "updated_at",
-                "",
-            ),
+            key=self._latest_timestamp,
         )
